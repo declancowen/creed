@@ -12,6 +12,7 @@ export type SupabaseLikeQueryResult = {
 
 export type SupabaseLikeQuery = PromiseLike<SupabaseLikeQueryResult> & {
   eq: (column: string, value: unknown) => SupabaseLikeQuery;
+  is: (column: string, value: unknown) => SupabaseLikeQuery;
   in: (column: string, values: unknown[]) => SupabaseLikeQuery;
   gte: (column: string, value: unknown) => SupabaseLikeQuery;
   lte: (column: string, value: unknown) => SupabaseLikeQuery;

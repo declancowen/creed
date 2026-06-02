@@ -11,10 +11,7 @@ import {
   Plug,
   Unplug,
 } from "lucide-react";
-import { AnimatedCheckmark } from "@/components/ui/animated-checkmark";
-import { CopyIcon } from "@/components/ui/copy";
 import { DownloadIcon } from "@/components/ui/download";
-import { RotateCCWIcon } from "@/components/ui/rotate-ccw";
 import { useRouter } from "next/navigation";
 import {
   DropdownMenu,
@@ -112,24 +109,6 @@ function formatGitHubAccessErrorForState(message: string, githubConnected: boole
   return formatGitHubAccessError(message);
 }
 
-function maskToken(token: string) {
-  if (!token) {
-    return token;
-  }
-
-  if (token.length <= 12) {
-    return `${token.slice(0, 4)}****${token.slice(-2)}`;
-  }
-
-  return `${token.slice(0, 8)}********${token.slice(-6)}`;
-}
-
-function maskSensitiveText(value: string) {
-  return value
-    .replace(/token=([A-Za-z0-9_-]+)/g, (_match, token: string) => `token=${maskToken(token)}`)
-    .replace(/\bxt_(?:read|proposal|write|mcp)_[A-Za-z0-9_-]+\b/g, (token: string) => maskToken(token));
-}
-
 export function SettingsScreen() {
   const router = useRouter();
   const {
@@ -141,13 +120,10 @@ export function SettingsScreen() {
     exportActivityJson,
     exportAllDataJson,
     refreshState,
-    rotateMcpCredential,
     deleteAccount,
   } = useCreed();
   const [nameDraft, setNameDraft] = useState(state.user.name);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [mcpCopied, setMcpCopied] = useState(false);
-  const [rotatingMcp, setRotatingMcp] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [connectingGitHub, setConnectingGitHub] = useState(false);
   const [disconnectingGitHub, setDisconnectingGitHub] = useState(false);
@@ -388,12 +364,6 @@ export function SettingsScreen() {
     state.settings.versionControl.lastSyncedContentHash,
   ]);
 
-  async function copyMcpConfig() {
-    await navigator.clipboard.writeText(state.mcpConfig);
-    setMcpCopied(true);
-    window.setTimeout(() => setMcpCopied(false), 1500);
-  }
-
   function downloadFile(filename: string, content: string, type: string) {
     const blob = new Blob([content], { type });
     const url = URL.createObjectURL(blob);
@@ -402,18 +372,6 @@ export function SettingsScreen() {
     link.download = filename;
     link.click();
     URL.revokeObjectURL(url);
-  }
-
-  async function handleRotateMcpCredential() {
-    try {
-      setRotatingMcp(true);
-      await rotateMcpCredential();
-      toast.success("MCP credential rotated");
-    } catch {
-      toast.error("Couldn't rotate MCP credential");
-    } finally {
-      setRotatingMcp(false);
-    }
   }
 
   async function handleDeleteAccount() {
@@ -950,64 +908,6 @@ export function SettingsScreen() {
                       </span>
                     </>
                   ) : null}
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <Separator className="my-10 bg-[var(--creed-border)]" />
-
-          <section>
-            <h2 className="text-[16px] font-medium text-[var(--creed-text-primary)]">
-              Agent credentials
-            </h2>
-            <div className="mt-4 rounded-[var(--radius-xl)] border border-[var(--creed-border)] bg-[var(--creed-surface)] p-5">
-              <div>
-                <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <div className="text-[14px] font-medium text-[var(--creed-text-primary)]">
-                      Creed MCP
-                    </div>
-                  </div>
-                </div>
-                <div className="mb-4 hidden overflow-hidden rounded-[var(--radius-lg)] border border-[var(--creed-border)] bg-[var(--creed-background)] px-4 py-4 font-mono text-[13px] text-[var(--creed-text-primary)] md:block">
-                  <span className="block break-all">
-                    {maskSensitiveText(state.mcpConfig)}
-                  </span>
-                </div>
-                <div className="flex flex-wrap items-center gap-3">
-                  <AnimatedIconButton
-                    icon={CopyIcon}
-                    showIcon={!mcpCopied}
-                    variant="outline"
-                    className="rounded-md border-[var(--creed-border)]"
-                    onClick={() => void copyMcpConfig()}
-                  >
-                    {mcpCopied ? (
-                      <>
-                        <AnimatedCheckmark className="h-4 w-4" size={16} />
-                        Copied
-                      </>
-                    ) : (
-                      "Copy MCP"
-                    )}
-                  </AnimatedIconButton>
-                  <AnimatedIconButton
-                    icon={RotateCCWIcon}
-                    showIcon={!rotatingMcp}
-                    variant="outline"
-                    className="rounded-md border-[var(--creed-border)] text-[var(--creed-text-primary)]"
-                    onClick={() => void handleRotateMcpCredential()}
-                    disabled={rotatingMcp}
-                  >
-                    {rotatingMcp ? (
-                      <LoaderCircle className="h-4 w-4 animate-spin" />
-                    ) : null}
-                    Rotate MCP
-                  </AnimatedIconButton>
-                  <span className="text-[13px] text-[var(--creed-text-secondary)]">
-                    Rotating breaks existing MCP clients.
-                  </span>
                 </div>
               </div>
             </div>

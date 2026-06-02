@@ -155,16 +155,17 @@ If you're standing up a separate hosted Creed (not contributing back to this rep
 
 ## Connect an agent
 
-Once you have a Creed, copy the setup prompt from `/connections` into your agent of choice. We have first-class flows for:
+Once you have a Creed, open `/connections` and add the Creed MCP URL to your agent as a custom connector. The client opens a browser, you click **Allow** on the Creed consent screen, and it's connected. No tokens to copy. We have first-class flows for:
 
-- Claude Code
+- Claude Code (a one-line `claude mcp add` command)
 - Codex
 - OpenClaw
 - Hermes
 - OpenCode
-- Custom Agent (any client that speaks MCP or HTTP)
+- Cursor (one-click "Add to Cursor")
+- Custom Agent (any client that speaks MCP)
 
-MCP is the preferred path. The agent installs Creed as an MCP server, verifies it can read your file, and starts shaping replies around it from the next message forward. API fallback exists for clients that don't speak MCP yet.
+MCP uses OAuth 2.1: Creed is its own authorization server (`/authorize`, `/token`, `/register`, `/.well-known/*`), so any spec-compliant client connects from the server URL alone. The agent verifies it can read your file and starts shaping replies around it from the next message forward. For clients that don't speak MCP, the `/api/creed` HTTP API is the documented fallback.
 
 ---
 

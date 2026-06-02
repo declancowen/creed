@@ -52,9 +52,6 @@ export function validateCreedState(input: unknown): CreedStateValidationResult {
     ["writeToken", input.writeToken],
     ["directEditToken", input.directEditToken],
     ["mcpUrl", input.mcpUrl],
-    ["mcpToken", input.mcpToken],
-    ["mcpConfig", input.mcpConfig],
-    ["universalConnectionPrompt", input.universalConnectionPrompt],
     ["syncLabel", input.syncLabel],
   ];
 

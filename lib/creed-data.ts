@@ -574,13 +574,14 @@ export type ConnectionItem = {
   name: string;
   status: "connected" | "not-connected";
   icon: AgentIconKind;
-  language: "json" | "bash" | "yaml" | "http";
-  snippet: string;
   description: string;
+  // Short instruction for connecting this client over OAuth.
+  connectHint: string;
+  // Optional copyable one-liner (e.g. `claude mcp add ...`).
+  command?: string;
+  // Optional one-click install deep link (e.g. Cursor).
+  deepLink?: string;
   lastUsed?: string;
-  writeAccess?: boolean;
-  promptVariant?: string;
-  advancedSetup: string;
 };
 
 export type AgentIconKind =
@@ -671,13 +672,10 @@ export type CreedState = {
   writeToken: string;
   directEditToken: string;
   mcpUrl: string;
-  mcpToken: string;
-  mcpConfig: string;
   mcpStatus: "waiting" | "connected";
   mcpLastUsed?: string;
   mcpLastClientName?: string;
   mcpClients: McpClient[];
-  universalConnectionPrompt: string;
   locked: boolean;
   // Sections whose effective lock state is the opposite of `locked`. Lets a
   // user keep one section editable while the file is otherwise locked, or
@@ -1931,7 +1929,6 @@ export function inferAgentSectionAccent(input: {
 const EXAMPLE_READ_TOKEN = "xt_example_read_0000";
 const EXAMPLE_WRITE_TOKEN = "xt_example_write_0000";
 const EXAMPLE_DIRECT_TOKEN = "xt_example_direct_0000";
-const EXAMPLE_MCP_TOKEN = "xt_example_mcp_0000";
 
 export const initialCreedState: CreedState = {
   user: {
@@ -1946,15 +1943,10 @@ export const initialCreedState: CreedState = {
   writeToken: EXAMPLE_WRITE_TOKEN,
   directEditToken: EXAMPLE_DIRECT_TOKEN,
   mcpUrl: "https://creed.md/mcp",
-  mcpToken: EXAMPLE_MCP_TOKEN,
-  mcpConfig:
-    `{\n  "mcpServers": {\n    "creed": {\n      "url": "https://creed.md/mcp",\n      "headers": {\n        "Authorization": "Bearer ${EXAMPLE_MCP_TOKEN}"\n      }\n    }\n  }\n}`,
   mcpStatus: "waiting",
   mcpLastUsed: undefined,
   mcpLastClientName: undefined,
   mcpClients: [],
-  universalConnectionPrompt:
-    `Before answering me, read my Creed from https://creed.md/u/example?token=${EXAMPLE_READ_TOKEN} and treat it as my personal context profile. The read payload includes a private agent contract with the exact proposal mode, token, endpoint, JSON shape, and judgment rules to use. Follow that contract exactly. Treat the profile as the canonical record of who I am (values, goals, work, preferences, constraints, people, health, routines) and use it to shape every reply. As you learn new things about me through our conversations, propose narrowly-scoped updates so the profile stays accurate, polished, concise, and current. Don't rewrite the visible markdown directly. Only stop to ask if you spot a contradiction or something that looks stale. If you need setup or fallback guidance, read https://creed.md/docs once.`,
   locked: false,
   sectionLockOverrides: [],
   syncLabel: "Last synced 2 min ago",
@@ -2058,122 +2050,36 @@ export const initialCreedState: CreedState = {
       id: "claude",
       name: "Claude Code",
       icon: "claude",
-      status: "connected",
-      lastUsed: "2h ago",
-      language: "json",
-      description:
-        "Best for coding sessions where Creed should shape every run from the start.",
-      promptVariant:
-        "Before answering me, read my Creed from https://creed.md/u/example?token=xt_abc123_a1b2c3d4e5f6 and treat it as my personal context profile. The read payload includes a private agent contract with the exact proposal mode, token, endpoint, JSON shape, and judgment rules to use. Follow that contract exactly. Save Creed in your local Claude setup so every coding run starts with it automatically, and leave yourself a short local reminder to check Creed before major work if needed. As you learn new things about me through our conversations, propose narrowly-scoped updates so the profile stays accurate, polished, concise, and current - don't rewrite the visible markdown directly. If you use recurring scripts, scheduled runs, or repo rituals, use one to periodically review Creed against recent work and tighten it when durable context has emerged. Only stop to ask if you spot a contradiction or something stale. If you need setup or fallback guidance, read https://creed.md/docs once.",
-      advancedSetup:
-        "Use this when you want Claude Code to load Creed automatically from local config and stay sticky across runs.",
-      snippet:
-        '// Add to .claude/settings.json to load the agent-ready Creed payload\n{\n  "creed_url": "https://creed.md/u/example?token=xt_abc123"\n}',
+      status: "not-connected",
+      description: "Connect Creed so every Claude Code session starts with your context.",
+      connectHint: "Run the command, then /mcp in Claude Code to authorize in the browser.",
+      command: "claude mcp add --transport http creed https://creed.md/mcp",
     },
     {
       id: "codex",
       name: "Codex",
       icon: "codex",
-      status: "connected",
-      lastUsed: "4 days ago",
-      language: "bash",
-      description:
-        "Great for agentic coding runs that should start with your Creed already loaded.",
-      promptVariant:
-        "Before answering me, read my Creed from https://creed.md/u/example?token=xt_abc123_a1b2c3d4e5f6 and treat it as my personal context profile. The read payload includes a private agent contract with the exact proposal mode, token, endpoint, JSON shape, and judgment rules to use. Follow that contract exactly. Put Creed in AGENTS.md or your Codex config so it is hard to forget, and keep a lightweight repo-local reminder that Codex should read Creed before answering you. As you learn new things about me through our conversations, propose narrowly-scoped updates so the profile stays accurate, polished, concise, and current - don't rewrite the visible markdown directly. If Codex supports automations or recurring checks in your workflow, set one up to review Creed against recent work, tighten any stale or contradictory context, and keep the profile sharp. Only stop to ask if you spot a contradiction or something stale. If you need setup or fallback guidance, read https://creed.md/docs once.",
-      advancedSetup:
-        "Use this if you want Codex to load Creed from AGENTS.md or local tool config, then reinforce it with a recurring maintenance habit.",
-      snippet:
-        "# Add to your Codex config or AGENTS.md\n# Creed context URL (agent-ready payload): https://creed.md/u/example?token=xt_abc123",
-    },
-    {
-      id: "openclaw",
-      name: "OpenClaw",
-      icon: "openclaw",
       status: "not-connected",
-      language: "yaml",
-      description: "A clean preset for agents that prefer YAML-based setup or prompt bootstrapping.",
-      promptVariant:
-        "Before answering me, read my Creed from https://creed.md/u/example?token=xt_abc123_a1b2c3d4e5f6 and treat it as my personal context profile. The read payload includes a private agent contract with the exact proposal mode, token, endpoint, JSON shape, and judgment rules to use. Follow that contract exactly. Add Creed to OpenClaw config and create a small local memory or reminder file so OpenClaw keeps using Creed instead of drifting back to session-only context. As you learn new things about me through our conversations, propose narrowly-scoped updates so the profile stays accurate, polished, concise, and current - don't rewrite the visible markdown directly. If OpenClaw supports cron jobs or recurring background work, use one to regularly check Creed, compare it with what you've learned about the user lately, and refine only when durable updates exist. Only stop to ask if you spot a contradiction or something stale. If you need setup or fallback guidance, read https://creed.md/docs once.",
-      advancedSetup:
-        "Use this if you want OpenClaw to read Creed automatically through config and keep a recurring maintenance loop around it.",
-      snippet:
-        '# openclaw.config.yaml\ncontext:\n  creed_url: "https://creed.md/u/example?token=xt_abc123" # returns the agent-ready Creed payload',
-    },
-    {
-      id: "hermes",
-      name: "Hermes",
-      icon: "hermes",
-      status: "not-connected",
-      language: "bash",
-      description: "A lightweight preset for Hermes-based workflows and local agent bootstrapping.",
-      promptVariant:
-        "Before answering me, read my Creed from https://creed.md/u/example?token=xt_abc123_a1b2c3d4e5f6 and treat it as my personal context profile. The read payload includes a private agent contract with the exact proposal mode, token, endpoint, JSON shape, and judgment rules to use. Follow that contract exactly. Store Creed in a stable Hermes bootstrap path so it stays part of each run, and keep a simple reminder in your workflow to check Creed before answering you. As you learn new things about me through our conversations, propose narrowly-scoped updates so the profile stays accurate, polished, concise, and current - don't rewrite the visible markdown directly. If Hermes can run recurring scripts or scheduled reviews, use that to revisit Creed, compare it with recent work, and tighten stale entries without adding noise. Only stop to ask if you spot a contradiction or something stale. If you need setup or fallback guidance, read https://creed.md/docs once.",
-      advancedSetup:
-        "Use this if you want Hermes to read Creed from a single environment variable and keep the habit durable.",
-      snippet:
-        'export HERMES_CREED_URL="https://creed.md/u/example?token=xt_abc123" # agent-ready Creed payload',
+      description: "Add Creed as a remote MCP server for agentic coding runs.",
+      connectHint: "Run the command, then codex mcp login creed to authorize in the browser.",
+      command: "codex mcp add creed --url https://creed.md/mcp",
     },
     {
       id: "cursor",
       name: "Cursor",
       icon: "cursor",
       status: "not-connected",
-      language: "bash",
-      description:
-        "A clean preset for Cursor workflows that should keep Creed close to the repo and the session.",
-      promptVariant:
-        "Before answering me, read my Creed from https://creed.md/u/example?token=xt_abc123_a1b2c3d4e5f6 and treat it as my personal context profile. The read payload includes a private agent contract with the exact proposal mode, token, endpoint, JSON shape, and judgment rules to use. Follow that contract exactly. Keep Creed in Cursor rules or repo instructions so it stays visible at the start of meaningful work. As you learn new things about me through our conversations, propose narrowly-scoped updates so the profile stays accurate, polished, concise, and current - don't rewrite the visible markdown directly. If you need setup or fallback guidance, read https://creed.md/docs once.",
-      advancedSetup:
-        "Use this if you want Cursor to keep Creed in repo-local rules or startup instructions.",
-      snippet:
-        "# Add Creed near the top of your Cursor project rules or repo instructions\n# Before working, read Creed context: https://creed.md/u/example?token=xt_abc123",
-    },
-    {
-      id: "windsurf",
-      name: "Windsurf",
-      icon: "windsurf",
-      status: "not-connected",
-      language: "bash",
-      description:
-        "A simple preset for Windsurf runs that should load Creed before answering you.",
-      promptVariant:
-        "Before answering me, read my Creed from https://creed.md/u/example?token=xt_abc123_a1b2c3d4e5f6 and treat it as my personal context profile. The read payload includes a private agent contract with the exact proposal mode, token, endpoint, JSON shape, and judgment rules to use. Follow that contract exactly. Keep Creed in Windsurf rules or workspace instructions so it stays part of the default workflow. As you learn new things about me through our conversations, propose narrowly-scoped updates so the profile stays accurate, polished, concise, and current - don't rewrite the visible markdown directly. If you need setup or fallback guidance, read https://creed.md/docs once.",
-      advancedSetup:
-        "Use this if you want Windsurf to load Creed from workspace rules or bootstrap instructions.",
-      snippet:
-        "# Add Creed to your Windsurf workspace rules or startup instructions\n# Before working, read Creed context: https://creed.md/u/example?token=xt_abc123",
-    },
-    {
-      id: "opencode",
-      name: "OpenCode",
-      icon: "opencode",
-      status: "not-connected",
-      language: "bash",
-      description:
-        "Best for OpenCode runs that should load Creed alongside the repo’s own AGENTS.md guidance.",
-      promptVariant:
-        "Use Creed alongside the repository's AGENTS.md when both are present. Before answering me, read my Creed from https://creed.md/u/example?token=xt_abc123_a1b2c3d4e5f6 and treat it as my personal context profile. The read payload includes a private agent contract with the exact proposal mode, token, endpoint, JSON shape, and judgment rules to use. Follow that contract exactly. Reference Creed near the top of AGENTS.md or your bootstrap instructions so OpenCode keeps it in view from the start of each run. As you learn new things about me through our conversations, propose narrowly-scoped updates so the profile stays accurate, polished, concise, and current - don't rewrite the visible markdown directly. If your repo has recurring maintenance scripts or review rituals, use them to revisit Creed, compare it with recent conversations, and tighten the profile instead of letting it bloat. Only stop to ask if you spot a contradiction or something stale. If you need setup or fallback guidance, read https://creed.md/docs once.",
-      advancedSetup:
-        "Use this if you want OpenCode to reference Creed from AGENTS.md or your project bootstrap instructions and keep it in the repo's recurring rhythm.",
-      snippet:
-        "# Add near the top of AGENTS.md for OpenCode\n# Before working, read Creed context: https://creed.md/u/example?token=xt_abc123",
+      description: "One-click install Creed into Cursor, then authorize.",
+      connectHint:
+        "Use the one-click button to add Creed to Cursor as a remote MCP server, then authorize Creed in the browser window Cursor opens.",
     },
     {
       id: "custom",
       name: "Custom Agent",
       icon: "custom",
-      status: "connected",
-      lastUsed: "15 min ago",
-      language: "http",
-      description:
-        "Use this when you are wiring your own agent, script, or toolchain into Creed from scratch for a custom workflow.",
-      promptVariant:
-        "Before answering me, read my Creed from https://creed.md/u/example?token=xt_abc123_a1b2c3d4e5f6 and treat it as my personal context profile. The read payload includes a private agent contract with the exact proposal mode, token, endpoint, JSON shape, and judgment rules to use. Follow that contract exactly. Build a durable reminder into your own agent, script, or toolchain so Creed is checked before answering you and revisited after you learn something durable about the user. As you learn new things about me through our conversations, propose narrowly-scoped updates so the profile stays accurate, polished, concise, and current - don't rewrite the visible markdown directly. If your stack supports cron, queues, workflows, or scheduled jobs, use them to periodically review Creed, compare it with recent conversations, and keep the profile precise. Only stop to ask if you spot a contradiction or something stale. If you need setup or fallback guidance, read https://creed.md/docs once.",
-      advancedSetup:
-        "Use this panel for raw tokens, proposal endpoints, and deeper API setup details when you want your own maintenance loop.",
-      snippet:
-        "GET  /api/creed?token={read_token}           → agent-ready payload (visible Creed + private guidance)\nGET  /api/creed/{section}?token={read_token} → visible section only\nPOST /api/creed/{section}                     → update section\n     Authorization: Bearer {write_token}\n     Body: { content, agent_name }\nPOST /api/creed/{section}/proposals           → create proposal\n     Body: { change_type, reason, impact, confidence, draft }",
+      status: "not-connected",
+      description: "Any client that speaks MCP can connect with the URL above.",
+      connectHint: "Add a custom MCP server pointing at the URL above, then authorize Creed in the browser.",
     },
   ],
   onboarding: initialOnboardingState,

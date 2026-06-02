@@ -35,7 +35,6 @@ import {
   normalizeProposalForSection,
   type AccentKey,
   type ActivityEntry,
-  type ConnectionItem,
   type CreedSection,
   type CreedSettings,
   type CreedState,
@@ -62,16 +61,11 @@ type CreedContextValue = {
   acceptProposals: (proposalIds: string[]) => void;
   rejectProposal: (proposalId: string) => void;
   editProposalDraft: (proposalId: string, draft: ProposalDraft) => void;
-  toggleConnectionWriteAccess: (connectionId: string) => void;
-  connectIntegration: (connectionId: string) => void;
-  disconnectIntegration: (connectionId: string) => void;
   setRequireApproval: (value: boolean) => void;
   setVersionControlConfig: (patch: Partial<CreedSettings["versionControl"]>) => void;
   setDisplayName: (name: string) => void;
   refreshState: () => Promise<void>;
   importSections: (sections: CreedSection[]) => Promise<void>;
-  rotateTokens: () => Promise<void>;
-  rotateMcpCredential: () => Promise<void>;
   deleteAccount: () => Promise<void>;
   updateOnboarding: (patch: Partial<CreedState["onboarding"]>) => void;
   resetOnboarding: () => void;
@@ -125,13 +119,10 @@ function mergeExternalState(current: CreedState, incoming: CreedState, canReplac
     writeToken: incoming.writeToken,
     directEditToken: incoming.directEditToken,
     mcpUrl: incoming.mcpUrl,
-    mcpToken: incoming.mcpToken,
-    mcpConfig: incoming.mcpConfig,
     mcpStatus: incoming.mcpStatus,
     mcpLastUsed: incoming.mcpLastUsed,
     mcpLastClientName: incoming.mcpLastClientName,
     mcpClients: incoming.mcpClients,
-    universalConnectionPrompt: incoming.universalConnectionPrompt,
     sections: canReplaceSections ? incoming.sections : current.sections,
     proposals: incoming.proposals,
     activity: incoming.activity,
@@ -940,53 +931,6 @@ export function CreedProvider({
     );
   }
 
-  function updateConnection(
-    current: CreedState,
-    connectionId: string,
-    patch: Partial<ConnectionItem>
-  ) {
-    return current.connections.map((connection) =>
-      connection.id === connectionId ? { ...connection, ...patch } : connection
-    );
-  }
-
-  function toggleConnectionWriteAccess(connectionId: string) {
-    commitState((current) =>
-      nextMutationTick({
-        ...current,
-        connections: updateConnection(current, connectionId, {
-          writeAccess: !current.connections.find((item) => item.id === connectionId)?.writeAccess,
-        }),
-      })
-    );
-  }
-
-  function connectIntegration(connectionId: string) {
-    commitState((current) =>
-      nextMutationTick({
-        ...current,
-        connections: updateConnection(current, connectionId, {
-          status: "connected",
-          lastUsed: "just now",
-          writeAccess: true,
-        }),
-      })
-    );
-  }
-
-  function disconnectIntegration(connectionId: string) {
-    commitState((current) =>
-      nextMutationTick({
-        ...current,
-        connections: updateConnection(current, connectionId, {
-          status: "not-connected",
-          lastUsed: undefined,
-          writeAccess: false,
-        }),
-      })
-    );
-  }
-
   function setRequireApproval(value: boolean) {
     commitState((current) =>
       nextMutationTick({
@@ -1040,67 +984,6 @@ export function CreedProvider({
         body: JSON.stringify({ name: trimmedName }),
       });
     }
-  }
-
-  async function rotateTokens() {
-    if (!persistenceEnabled) {
-      return;
-    }
-
-    const response = await fetch("/api/app/tokens/rotate", {
-      method: "POST",
-    });
-
-    if (!response.ok) {
-      throw new Error("Could not rotate Creed tokens.");
-    }
-
-    const payload = (await response.json()) as Pick<
-      CreedState,
-      "readToken" | "writeToken" | "directEditToken" | "readUrl" | "universalConnectionPrompt" | "connections"
-    > & { proposalToken?: string };
-
-    setState((current) => ({
-      ...current,
-      readToken: payload.readToken,
-      writeToken: payload.proposalToken ?? payload.writeToken,
-      directEditToken: payload.directEditToken,
-      readUrl: payload.readUrl,
-      universalConnectionPrompt: payload.universalConnectionPrompt,
-      connections: payload.connections,
-      syncLabel: "Saved just now",
-    }));
-  }
-
-  async function rotateMcpCredential() {
-    if (!persistenceEnabled) {
-      return;
-    }
-
-    const response = await fetch("/api/app/mcp/rotate", {
-      method: "POST",
-    });
-
-    if (!response.ok) {
-      throw new Error("Could not rotate MCP credential.");
-    }
-
-    const payload = (await response.json()) as Pick<
-      CreedState,
-      "mcpToken" | "mcpUrl" | "mcpConfig" | "mcpStatus" | "mcpLastUsed" | "mcpLastClientName" | "mcpClients"
-    >;
-
-    setState((current) => ({
-      ...current,
-      mcpToken: payload.mcpToken,
-      mcpUrl: payload.mcpUrl,
-      mcpConfig: payload.mcpConfig,
-      mcpStatus: payload.mcpStatus,
-      mcpLastUsed: payload.mcpLastUsed,
-      mcpLastClientName: payload.mcpLastClientName,
-      mcpClients: payload.mcpClients,
-      syncLabel: "Saved just now",
-    }));
   }
 
   async function deleteAccount() {
@@ -1232,16 +1115,11 @@ export function CreedProvider({
       acceptProposals,
       rejectProposal,
       editProposalDraft,
-      toggleConnectionWriteAccess,
-      connectIntegration,
-      disconnectIntegration,
       setRequireApproval,
       setVersionControlConfig,
       setDisplayName,
       refreshState: syncFromServer,
       importSections,
-      rotateTokens,
-      rotateMcpCredential,
       deleteAccount,
       updateOnboarding,
       resetOnboarding,
@@ -1268,16 +1146,11 @@ export function CreedProvider({
       acceptProposals,
       rejectProposal,
       editProposalDraft,
-      toggleConnectionWriteAccess,
-      connectIntegration,
-      disconnectIntegration,
       setRequireApproval,
       setVersionControlConfig,
       setDisplayName,
       syncFromServer,
       importSections,
-      rotateTokens,
-      rotateMcpCredential,
       deleteAccount,
       updateOnboarding,
       resetOnboarding,

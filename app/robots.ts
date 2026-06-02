@@ -16,6 +16,9 @@ export default function robots(): MetadataRoute.Robots {
         disallow: [
           "/api/",
           "/auth/",
+          "/authorize",
+          "/register",
+          "/token",
           "/file",
           "/onboarding",
           "/connections",

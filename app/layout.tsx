@@ -26,6 +26,13 @@ const MARKETING_PREFIXES = [
   "/terms",
   "/stack",
   "/mcp",
+  // OAuth surface for MCP connect. /authorize is a page that runs its own auth
+  // check and never needs the loadCreedState fan-out; the rest are route
+  // handlers that bypass the layout anyway, listed here for intent.
+  "/authorize",
+  "/token",
+  "/register",
+  "/.well-known",
 ];
 
 function shouldSkipCreedState(pathname: string | null) {

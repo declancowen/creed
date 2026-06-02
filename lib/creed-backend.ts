@@ -113,17 +113,6 @@ type TokenRow = {
   updated_at: string;
 };
 
-type McpCredentialRow = {
-  user_id: string;
-  mcp_token: string | null;
-  mcp_token_hash?: string | null;
-  encrypted_mcp_token?: string | null;
-  last_seen_at: string | null;
-  last_client_name: string | null;
-  created_at: string;
-  updated_at: string;
-};
-
 type McpClientRow = {
   user_id: string;
   client_id: string;
@@ -505,7 +494,7 @@ function getAvatarInitials(name: string) {
   return parts.map((part) => part[0]?.toUpperCase() ?? "").join("");
 }
 
-function generateToken(prefix: "xt_read" | "xt_proposal" | "xt_direct" | "xt_mcp") {
+function generateToken(prefix: "xt_read" | "xt_proposal" | "xt_direct") {
   return `${prefix}_${randomBytes(18).toString("hex")}`;
 }
 
@@ -520,9 +509,8 @@ function tokenFields(token: string) {
 // Decrypt-only. The earlier plaintext-column fallback was removed so a DB
 // dump can never surface live tokens without the AES-256-GCM secret.
 //
-// Two failure modes both resolve to `""`, which the upgrade-on-read paths
-// in `ensureTokenRow` / `ensureMcpCredentialRow` use as the signal to
-// regenerate fresh tokens:
+// Two failure modes both resolve to `""`, which the upgrade-on-read path
+// in `ensureTokenRow` uses as the signal to regenerate fresh tokens:
 //   1. `encrypted` column is null - legacy row never written by the
 //      current code path.
 //   2. `decryptSecret` throws - the ciphertext was written with a
@@ -551,13 +539,6 @@ function resolveTokenRow(row: TokenRow) {
   };
 }
 
-function resolveMcpCredentialRow(row: McpCredentialRow) {
-  return {
-    ...row,
-    mcp_token: resolveSecret(row.encrypted_mcp_token, "MCP token"),
-  };
-}
-
 function resolveGitHubIntegrationRow(row: IntegrationRow) {
   return {
     ...row,
@@ -568,23 +549,6 @@ function resolveGitHubIntegrationRow(row: IntegrationRow) {
 
 function buildMcpUrl() {
   return `${getSiteUrl()}/mcp`;
-}
-
-function buildMcpConfig(mcpToken: string) {
-  return JSON.stringify(
-    {
-      mcpServers: {
-        creed: {
-          url: buildMcpUrl(),
-          headers: {
-            Authorization: `Bearer ${mcpToken}`,
-          },
-        },
-      },
-    },
-    null,
-    2
-  );
 }
 
 function normalizeIntegrationId(value?: string | null) {
@@ -680,188 +644,80 @@ function buildDirectEditUrl() {
   return `${getSiteUrl()}/api/creed/write`;
 }
 
-function buildPrompt(
-  url: string,
-  docsUrl: string,
-  options?: {
-    extraContext?: string;
-    reminderInstruction?: string;
-    maintenanceInstruction?: string;
-  }
-) {
-  const contextLine = options?.extraContext ? `${options.extraContext} ` : "";
-  const reminderLine = options?.reminderInstruction
-    ? ` ${options.reminderInstruction}`
-    : " Create a lightweight reminder in your own workflow so you read Creed at the start of conversations and revisit it after meaningful exchanges.";
-  const maintenanceLine = options?.maintenanceInstruction
-    ? ` ${options.maintenanceInstruction}`
-    : " If your environment supports recurring tasks or background checks, use them to periodically review Creed, compare it with what you've actually learned about me, and keep it sharp rather than just longer.";
-
-  return `${contextLine}Before answering me, read my Creed from ${url}. It is my personal context profile - who I am, what I care about, how I want you to talk to me, what to respect, and what to avoid. Treat it as the source of truth about me across every conversation. Store the Creed API key securely in local agent config when possible, ideally in a .env value like CREED_API_KEY, and use that stored value for future Creed requests instead of relying on conversation context alone. The read payload includes a private contract with the exact proposal mode, token, endpoint, JSON shape, and judgment rules to use. Follow that contract exactly.${reminderLine} As you learn new things about me through our conversations, propose narrowly-scoped updates so the profile stays accurate, polished, concise, and current. Do not rewrite the visible markdown directly.${maintenanceLine} Only stop to ask if there is an actual error or you detect an issue in Creed itself. If you need setup or fallback guidance, read ${docsUrl} once and use it as the guide.`;
-}
-
-function buildConnectionDefinitions(readToken: string, proposalToken: string, directEditToken: string) {
-  const baseReadUrl = buildReadUrl(readToken);
-  const proposalUrl = buildProposalUrl();
-  const docsUrl = `${getSiteUrl()}/docs`;
-
-  const withIntegration = (integration: string) =>
-    `${baseReadUrl}&integration=${integration}`;
+function buildConnectionDefinitions() {
+  const mcpUrl = buildMcpUrl();
+  // Cursor supports a one-click install deep link; the config is the remote
+  // server URL (Cursor runs the OAuth flow itself, so no token is embedded).
+  const cursorConfig = Buffer.from(JSON.stringify({ url: mcpUrl })).toString("base64");
+  const cursorDeepLink = `cursor://anysphere.cursor-deeplink/mcp/install?name=creed&config=${encodeURIComponent(cursorConfig)}`;
+  const remoteHint =
+    "Add a custom MCP server pointing at the URL above, then authorize Creed in the browser window your client opens.";
 
   return {
-    readUrl: baseReadUrl,
-    universalConnectionPrompt: buildPrompt(baseReadUrl, docsUrl),
     definitions: [
       {
         id: "claude",
         name: "Claude Code",
         icon: "claude",
-        language: "json",
-        description:
-          "Best for coding sessions where Creed should shape every run from the start.",
-        promptVariant: buildPrompt(withIntegration("claude"), docsUrl, {
-          reminderInstruction:
-            " Save Creed in your local Claude setup so every coding run starts with it automatically, and leave yourself a short local reminder to check Creed before major work if needed.",
-          maintenanceInstruction:
-            " If you use recurring scripts, scheduled runs, or repo rituals, use one to periodically review Creed against recent work and tighten it when durable context has emerged.",
-        }),
-        advancedSetup:
-          "Use this when you want Claude Code to load Creed automatically from local config and stay sticky across runs.",
-        snippet:
-          `// Add to .claude/settings.json\n{\n  "creed_url": "${withIntegration("claude")}"\n}`,
+        description: "Connect Creed so every Claude Code session starts with your context.",
+        connectHint: "Run the command, then /mcp in Claude Code to authorize in the browser.",
+        command: `claude mcp add --transport http creed ${mcpUrl}`,
       },
       {
         id: "codex",
         name: "Codex",
         icon: "codex",
-        language: "bash",
-        description:
-          "Great for agentic coding runs that should start with your Creed already loaded.",
-        promptVariant: buildPrompt(withIntegration("codex"), docsUrl, {
-          reminderInstruction:
-            " Put Creed in AGENTS.md or your Codex config so it is hard to forget, and keep a lightweight repo-local reminder that Codex should read Creed before answering me.",
-          maintenanceInstruction:
-            " If Codex supports automations or recurring checks in your workflow, set one up to review Creed against recent work, improve durable context, and keep the file sharp.",
-        }),
-        advancedSetup:
-          "Use this if you want Codex to load Creed from AGENTS.md or local tool config, then reinforce it with a recurring maintenance habit.",
-        snippet:
-          `# Add to AGENTS.md or your Codex config\n# Creed context URL: ${withIntegration("codex")}`,
+        description: "Add Creed as a remote MCP server for agentic coding runs.",
+        connectHint: "Run the command, then codex mcp login creed to authorize in the browser.",
+        command: `codex mcp add creed --url ${mcpUrl}`,
       },
       {
         id: "openclaw",
         name: "OpenClaw",
         icon: "openclaw",
-        language: "yaml",
-        description:
-          "A clean preset for agents that prefer YAML-based setup or prompt bootstrapping.",
-        promptVariant: buildPrompt(withIntegration("openclaw"), docsUrl, {
-          reminderInstruction:
-            " Add Creed to OpenClaw config and create a small local memory or reminder file so OpenClaw keeps using Creed instead of drifting back to session-only context.",
-          maintenanceInstruction:
-            " If OpenClaw supports cron jobs or recurring background work, use one to regularly check Creed, compare it with recent memory, and refine it with only durable updates.",
-        }),
-        advancedSetup:
-          "Use this if you want OpenClaw to read Creed automatically through config and keep a recurring maintenance loop around it.",
-        snippet:
-          `# openclaw.config.yaml\ncontext:\n  creed_url: "${withIntegration("openclaw")}"`,
+        description: "Add Creed to OpenClaw as a remote MCP server.",
+        connectHint: remoteHint,
       },
       {
         id: "hermes",
         name: "Hermes",
         icon: "hermes",
-        language: "bash",
-        description:
-          "A lightweight preset for Hermes-based workflows and local agent bootstrapping.",
-        promptVariant: buildPrompt(withIntegration("hermes"), docsUrl, {
-          reminderInstruction:
-            " Store Creed in a stable Hermes bootstrap path so it stays part of each run, and keep a simple reminder in your workflow to check Creed before answering me.",
-          maintenanceInstruction:
-            " If Hermes can run recurring scripts or scheduled reviews, use that to revisit Creed, compare it with recent work, and improve durable context without adding noise.",
-        }),
-        advancedSetup:
-          "Use this if you want Hermes to read Creed from a single environment variable and keep the habit durable.",
-        snippet:
-          `export HERMES_CREED_URL="${withIntegration("hermes")}"`,
+        description: "Add Creed to Hermes as a remote MCP server.",
+        connectHint: remoteHint,
       },
       {
         id: "cursor",
         name: "Cursor",
         icon: "cursor",
-        language: "md",
-        description:
-          "A clean preset for Cursor workflows that should keep Creed visible from the start.",
-        promptVariant: buildPrompt(withIntegration("cursor"), docsUrl, {
-          reminderInstruction:
-            " Keep Creed in Cursor rules or repo-level instructions so it is loaded before answering me and stays part of the default loop.",
-          maintenanceInstruction:
-            " If Cursor supports recurring checks or project rituals in your workflow, use one to revisit Creed, compare it with recent work, and improve only durable context.",
-        }),
-        advancedSetup:
-          "Use this if you want Cursor to reference Creed from project rules or repo instructions.",
-        snippet:
-          `# Add near the top of your Cursor rules or repo instructions\n# Before working, read Creed context: ${withIntegration("cursor")}`,
+        description: "One-click install Creed into Cursor, then authorize.",
+        connectHint:
+          "Use the one-click button to add Creed to Cursor as a remote MCP server, then authorize Creed in the browser window Cursor opens.",
+        deepLink: cursorDeepLink,
       },
       {
         id: "windsurf",
         name: "Windsurf",
         icon: "windsurf",
-        language: "md",
-        description:
-          "A simple preset for Windsurf runs that should keep Creed loaded before answering me.",
-        promptVariant: buildPrompt(withIntegration("windsurf"), docsUrl, {
-          reminderInstruction:
-            " Keep Creed in Windsurf rules or workspace instructions so it stays part of how each run starts.",
-          maintenanceInstruction:
-            " If Windsurf fits into any recurring review habit in your workflow, use that to revisit Creed, compare it with recent work, and sharpen only durable context.",
-        }),
-        advancedSetup:
-          "Use this if you want Windsurf to load Creed from workspace rules or startup instructions.",
-        snippet:
-          `# Add near the top of your Windsurf rules or workspace instructions\n# Before working, read Creed context: ${withIntegration("windsurf")}`,
+        description: "Add Creed to Windsurf as a remote MCP server.",
+        connectHint: remoteHint,
       },
       {
         id: "opencode",
         name: "OpenCode",
         icon: "opencode",
-        language: "bash",
-        description:
-          "Best for OpenCode runs that should load Creed alongside the repo’s own AGENTS.md guidance.",
-        promptVariant: buildPrompt(
-          withIntegration("opencode"),
-          docsUrl,
-          {
-            extraContext: "Use Creed alongside the repository's AGENTS.md when both are present.",
-            reminderInstruction:
-              " Reference Creed near the top of AGENTS.md or your bootstrap instructions so OpenCode keeps it in view from the start of each run.",
-            maintenanceInstruction:
-              " If your repo has recurring maintenance scripts or review rituals, use them to revisit Creed, compare it with recent work, and tighten the file instead of letting it bloat.",
-          }
-        ),
-        advancedSetup:
-          "Use this if you want OpenCode to reference Creed from AGENTS.md or your project bootstrap instructions and keep it in the repo's recurring rhythm.",
-        snippet:
-          `# Add near the top of AGENTS.md for OpenCode\n# Before working, read Creed context: ${withIntegration("opencode")}`,
+        description: "Add Creed to OpenCode as a remote MCP server.",
+        connectHint:
+          "Add the URL to opencode.json as a remote server, then run opencode mcp auth creed to authorize in the browser.",
       },
       {
         id: "custom",
         name: "Custom Agent",
         icon: "custom",
-        language: "http",
         description:
-          "Use this when you are wiring your own agent, script, or toolchain into Creed from scratch for a custom workflow.",
-        promptVariant: buildPrompt(withIntegration("custom"), docsUrl, {
-          reminderInstruction:
-            " Build a durable reminder into your own agent, script, or toolchain so Creed is checked before answering me and revisited after durable learning appears.",
-          maintenanceInstruction:
-            " If your stack supports cron, queues, workflows, or scheduled jobs, use them to periodically review Creed, compare it with recent behavior, and keep the file precise.",
-        }),
-        advancedSetup:
-          "Use this panel for raw tokens, proposal endpoint, and deeper API setup details.",
-        snippet:
-          `GET  ${baseReadUrl}&integration=custom\nAuthorization for proposals: Bearer ${proposalToken}\nAuthorization for direct edits: Bearer ${directEditToken}\nPOST ${proposalUrl}\nBody: { sectionId, sectionName, changeType, reason, impact, confidence, draft, agentName }`,
+          "Any client that speaks MCP can connect with the URL above. For non-MCP clients, the HTTP API is documented in the docs.",
+        connectHint: remoteHint,
       },
-    ] as Array<Omit<ConnectionItem, "status" | "lastUsed" | "writeAccess">>,
+    ] as Array<Omit<ConnectionItem, "status" | "lastUsed">>,
   };
 }
 
@@ -1106,119 +962,27 @@ async function ensureTokenRow(client: unknown, userId: string) {
   }
 }
 
-async function readMcpCredentialRow(client: SupabaseLikeClient, userId: string) {
-  const { data, error } = await client
-    .from("creed_mcp_credentials")
-    .select("*")
-    .eq("user_id", userId)
-    .maybeSingle();
-
-  assertNoError(error, "Could not load MCP credential.");
-  const row = (data as McpCredentialRow | null) ?? null;
-  return row ? resolveMcpCredentialRow(row) : null;
-}
-
-async function ensureMcpCredentialRow(client: unknown, userId: string) {
-  const db = client as SupabaseLikeClient;
-  const data = await readMcpCredentialRow(db, userId);
-
-  if (data) {
-    // Trigger upgrade when the row is legacy (no hash / no ciphertext) OR
-    // when `data.mcp_token` is empty - which means resolveSecret couldn't
-    // decrypt the stored ciphertext, typically because the encryption key
-    // was rotated. Either way, regenerate a fresh token now.
-    if (!data.mcp_token_hash || !data.encrypted_mcp_token || !data.mcp_token) {
-      const mcp = tokenFields(data.mcp_token || generateToken("xt_mcp"));
-      const { data: upgradedRow, error: upgradeError } = await db
-        .from("creed_mcp_credentials")
-        .update({
-          // Mirror encrypted into the legacy plaintext column for
-          // backwards-compat - see ensureTokenRow for the rationale.
-          mcp_token: mcp.encrypted,
-          mcp_token_hash: mcp.hash,
-          encrypted_mcp_token: mcp.encrypted,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("user_id", userId)
-        .select("*")
-        .single();
-
-      assertNoError(upgradeError, "Could not upgrade MCP credential.");
-      return resolveMcpCredentialRow(upgradedRow as McpCredentialRow);
-    }
-
-    return data;
+// Derives the overall "connected via MCP" status from the per-agent roster.
+// With OAuth there is no separate credential row to read; the roster is the
+// source of truth, and it is ordered most-recent-first.
+function deriveMcpStatus(mcpClients: McpClient[]): {
+  mcpStatus: CreedState["mcpStatus"];
+  mcpLastUsed?: string;
+  mcpLastClientName?: string;
+} {
+  if (mcpClients.length === 0) {
+    return { mcpStatus: "waiting" };
   }
-
-  const now = new Date().toISOString();
-  const mcp = tokenFields(generateToken("xt_mcp"));
-  const nextRow: McpCredentialRow = {
-    user_id: userId,
-    // Mirror encrypted blob into legacy plaintext column for backwards-
-    // compat with schemas that haven't dropped NOT NULL / kept UNIQUE.
-    // resolveSecret reads only encrypted_*; the legacy column holds
-    // ciphertext and is never decoded.
-    mcp_token: mcp.encrypted,
-    mcp_token_hash: mcp.hash,
-    encrypted_mcp_token: mcp.encrypted,
-    last_seen_at: null,
-    last_client_name: null,
-    created_at: now,
-    updated_at: now,
+  return {
+    mcpStatus: "connected",
+    mcpLastUsed: mcpClients[0]?.lastUsed,
+    mcpLastClientName: mcpClients[0]?.name,
   };
-
-  const { error: upsertError } = await db
-    .from("creed_mcp_credentials")
-    .upsert(nextRow, {
-      onConflict: "user_id",
-      ignoreDuplicates: true,
-    });
-
-  assertNoError(upsertError, "Could not create MCP credential.");
-
-  for (const delayMs of [0, 30]) {
-    if (delayMs > 0) {
-      await wait(delayMs);
-    }
-
-    const existingAfterWrite = await readMcpCredentialRow(db, userId);
-    if (existingAfterWrite) {
-      return existingAfterWrite;
-    }
-  }
-
-  try {
-    const admin = getSupabaseAdminClient() as unknown as SupabaseLikeClient;
-    const adminExisting = await readMcpCredentialRow(admin, userId);
-    if (adminExisting) {
-      return adminExisting;
-    }
-
-    const adminRow: McpCredentialRow = {
-      ...nextRow,
-      updated_at: new Date().toISOString(),
-    };
-    const { data: createdRow, error: adminError } = await admin
-      .from("creed_mcp_credentials")
-      .upsert(adminRow, { onConflict: "user_id" })
-      .select("*")
-      .single();
-
-    assertNoError(adminError, "Could not create MCP credential with admin client.");
-    return createdRow as McpCredentialRow;
-  } catch (error) {
-    if (error instanceof Error && /Supabase admin client is not configured/i.test(error.message)) {
-      throw new Error("Could not load MCP credential after creation.");
-    }
-
-    throw error;
-  }
 }
 
 export function createBlankCreedState(
   user: User,
   tokenRow?: Pick<TokenRow, "read_token" | "proposal_token" | "direct_edit_token" | "require_approval">,
-  mcpCredential?: McpCredentialRow | null,
   mcpClients: McpClient[] = [],
   githubIntegration?: IntegrationRow | null,
   versionControl?: VersionControlRow | null
@@ -1229,12 +993,7 @@ export function createBlankCreedState(
   const readToken = tokenRow?.read_token ?? "";
   const proposalToken = tokenRow?.proposal_token ?? "";
   const directEditToken = tokenRow?.direct_edit_token ?? "";
-  const mcpToken = mcpCredential?.mcp_token ?? "";
-  const { readUrl, universalConnectionPrompt, definitions } = buildConnectionDefinitions(
-    readToken,
-    proposalToken,
-    directEditToken
-  );
+  const { definitions } = buildConnectionDefinitions();
 
   return {
     ...initialCreedState,
@@ -1245,18 +1004,13 @@ export function createBlankCreedState(
       avatarUrl,
       email: user.email ?? "",
     },
-    readUrl,
+    readUrl: buildReadUrl(readToken),
     readToken,
     writeToken: proposalToken,
     directEditToken,
     mcpUrl: buildMcpUrl(),
-    mcpToken,
-    mcpConfig: buildMcpConfig(mcpToken),
-    mcpStatus: mcpCredential?.last_seen_at ? "connected" : "waiting",
-    mcpLastUsed: toRelativeTime(mcpCredential?.last_seen_at) ?? undefined,
-    mcpLastClientName: mcpCredential?.last_client_name ?? undefined,
+    ...deriveMcpStatus(mcpClients),
     mcpClients,
-    universalConnectionPrompt,
     syncLabel: "Saved just now",
     sections: [],
     proposals: [],
@@ -1270,7 +1024,6 @@ export function createBlankCreedState(
       ...connection,
       status: "not-connected",
       lastUsed: undefined,
-      writeAccess: true,
     })),
     onboarding: initialOnboardingState,
     sectionRevisions: {},
@@ -1341,10 +1094,7 @@ async function loadCreedStateImpl(
   const activityLimit = options?.activityLimit ?? 500;
   const db = client as SupabaseLikeClient;
   const resolvedUser = await enrichUserForState(user);
-  const [tokenRow, mcpCredential] = await Promise.all([
-    ensureTokenRow(db, user.id),
-    ensureMcpCredentialRow(db, user.id),
-  ]);
+  const tokenRow = await ensureTokenRow(db, user.id);
   const [
     { data: sectionRows, error: sectionError },
     { data: proposalRows, error: proposalError },
@@ -1372,7 +1122,7 @@ async function loadCreedStateImpl(
   const hasSections = Array.isArray(sectionRows) && sectionRows.length > 0;
   if (!hasSections) {
     return {
-      state: createBlankCreedState(resolvedUser, tokenRow, mcpCredential, mcpClients, githubIntegration, versionControl),
+      state: createBlankCreedState(resolvedUser, tokenRow, mcpClients, githubIntegration, versionControl),
       hasPersistedCreed: false,
     };
   }
@@ -1380,12 +1130,7 @@ async function loadCreedStateImpl(
   const readToken = tokenRow.read_token ?? "";
   const proposalToken = tokenRow.proposal_token ?? "";
   const directEditToken = tokenRow.direct_edit_token ?? "";
-  const mcpToken = mcpCredential.mcp_token ?? "";
-  const { readUrl, universalConnectionPrompt, definitions } = buildConnectionDefinitions(
-    readToken,
-    proposalToken,
-    directEditToken
-  );
+  const { definitions } = buildConnectionDefinitions();
 
   const connectionMap = new Map(
     ((connectionRows as ConnectionRow[] | null) ?? []).map((row) => [row.connection_id, row])
@@ -1394,7 +1139,6 @@ async function loadCreedStateImpl(
   const baseState = createBlankCreedState(
     resolvedUser,
     tokenRow,
-    mcpCredential,
     mcpClients,
     githubIntegration,
     versionControl
@@ -1403,18 +1147,13 @@ async function loadCreedStateImpl(
   return {
     state: {
       ...baseState,
-      readUrl,
+      readUrl: buildReadUrl(readToken),
       readToken,
       writeToken: proposalToken,
       directEditToken,
       mcpUrl: buildMcpUrl(),
-      mcpToken,
-      mcpConfig: buildMcpConfig(mcpToken),
-      mcpStatus: mcpCredential.last_seen_at ? "connected" : "waiting",
-      mcpLastUsed: toRelativeTime(mcpCredential.last_seen_at) ?? undefined,
-      mcpLastClientName: mcpCredential.last_client_name ?? undefined,
+      ...deriveMcpStatus(mcpClients),
       mcpClients,
-      universalConnectionPrompt,
       sections: ((sectionRows as SectionRow[] | null) ?? []).map(hydrateSection),
       proposals: ((proposalRows as ProposalRow[] | null) ?? []).map(hydrateProposal),
       activity: hydrateActivityEntries(
@@ -1433,7 +1172,6 @@ async function loadCreedStateImpl(
           ...definition,
           status: row?.status ?? "not-connected",
           lastUsed: toRelativeTime(row?.last_seen_at) ?? undefined,
-          writeAccess: true,
         };
       }),
       sectionRevisions: Object.fromEntries(
@@ -1662,68 +1400,6 @@ export async function persistCreedState(client: unknown, userId: string, state: 
   assertNoError(tokenError, "Could not persist Creed settings.");
 }
 
-export async function rotateUserTokens(client: unknown, userId: string) {
-  const db = client as SupabaseLikeClient;
-  const now = new Date().toISOString();
-  const read = tokenFields(generateToken("xt_read"));
-  const proposal = tokenFields(generateToken("xt_proposal"));
-  const directEdit = tokenFields(generateToken("xt_direct"));
-  const nextTokenRow = {
-    user_id: userId,
-    // Mirror encrypted into legacy plaintext columns for backwards-compat
-    // with schemas that haven't dropped the NOT NULL constraints.
-    read_token: read.encrypted,
-    proposal_token: proposal.encrypted,
-    direct_edit_token: directEdit.encrypted,
-    read_token_hash: read.hash,
-    proposal_token_hash: proposal.hash,
-    direct_edit_token_hash: directEdit.hash,
-    encrypted_read_token: read.encrypted,
-    encrypted_proposal_token: proposal.encrypted,
-    encrypted_direct_edit_token: directEdit.encrypted,
-    updated_at: now,
-  };
-
-  const { data, error } = await db
-    .from("creed_tokens")
-    .upsert(nextTokenRow, { onConflict: "user_id" })
-    .select("*")
-    .single();
-
-  assertNoError(error, "Could not rotate Creed tokens.");
-  return resolveTokenRow(data as TokenRow);
-}
-
-export async function rotateUserMcpCredential(client: unknown, userId: string) {
-  const db = client as SupabaseLikeClient;
-  const now = new Date().toISOString();
-  const mcp = tokenFields(generateToken("xt_mcp"));
-  const nextRow: McpCredentialRow = {
-    user_id: userId,
-    // Mirror encrypted blob into legacy plaintext column for backwards-
-    // compat with schemas that haven't dropped NOT NULL / kept UNIQUE.
-    // resolveSecret reads only encrypted_*; the legacy column holds
-    // ciphertext and is never decoded.
-    mcp_token: mcp.encrypted,
-    mcp_token_hash: mcp.hash,
-    encrypted_mcp_token: mcp.encrypted,
-    last_seen_at: null,
-    last_client_name: null,
-    created_at: now,
-    updated_at: now,
-  };
-
-  const { data, error } = await db
-    .from("creed_mcp_credentials")
-    .upsert(nextRow, { onConflict: "user_id" })
-    .select("*")
-    .single();
-
-  assertNoError(error, "Could not rotate MCP credential.");
-  const { error: clientError } = await db.from("creed_mcp_clients").delete().eq("user_id", userId);
-  assertNoError(clientError, "Could not clear MCP client history.");
-  return resolveMcpCredentialRow(data as McpCredentialRow);
-}
 
 export async function recordConnectionUsage(
   client: unknown,
@@ -1801,17 +1477,11 @@ export async function findUserIdByDirectEditToken(client: unknown, token: string
   );
 }
 
-export async function findUserIdByMcpToken(client: unknown, token: string) {
-  return findUserIdByTokenHash(
-    client as SupabaseLikeClient,
-    "creed_mcp_credentials",
-    "mcp_token_hash",
-    token,
-    "Could not verify MCP credential."
-  );
-}
-
-export async function recordMcpCredentialUsage(
+// Records that an MCP client read the user's Creed: bumps the per-agent roster
+// (creed_mcp_clients) and the daily read rollup. The overall "connected / last
+// seen" status shown in the UI is derived from this roster, so there is no
+// separate credential row to touch.
+export async function recordMcpClientUsage(
   client: unknown,
   userId: string,
   clientName?: string | null
@@ -1822,16 +1492,6 @@ export async function recordMcpCredentialUsage(
   const hasSpecificClientName =
     normalizedClientName !== null && normalizedClientName.toLowerCase() !== "mcp client";
 
-  const { error } = await db
-    .from("creed_mcp_credentials")
-    .update({
-      last_seen_at: now,
-      last_client_name: hasSpecificClientName ? normalizedClientName : null,
-      updated_at: now,
-    })
-    .eq("user_id", userId);
-
-  assertNoError(error, "Could not record MCP credential usage.");
   if (hasSpecificClientName) {
     const clientId = normalizeMcpClientId(normalizedClientName);
     const { error: clientError } = await db.from("creed_mcp_clients").upsert(

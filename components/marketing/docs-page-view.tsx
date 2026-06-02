@@ -69,18 +69,49 @@ const sections: DocsSection[] = [
   {
     id: "mcp-setup",
     label: "MCP setup",
-    title: "MCP setup should finish in one prompt",
+    title: "Connecting over MCP",
     paragraphs: [
-      "Creed MCP uses a long-lived bearer token. Agents should install the provided MCP config into persistent local configuration, verify the tools, read Creed once, confirm the write policy, and only then say the connection is ready.",
-      "You should not need to run a second prompt to make Creed sticky. If the agent can edit its own MCP configuration, it should do so during setup. If it cannot, it should provide the exact file path and ready-to-use config block.",
+      "Creed MCP uses OAuth, so there is nothing to copy. You add the Creed server URL to your agent as a custom MCP connector; the agent opens a browser, you click Allow on the Creed consent screen while signed in to creed.md, and it stays connected. The exact URL is on your Connections page (https://creed.md/mcp on the hosted app).",
+      "After connecting, the agent reads Creed once to confirm access, then reads it before meaningful work and proposes narrow updates as it learns. You should not need a second setup prompt.",
     ],
     bullets: [
-      "Always read https://creed.md/docs during setup if anything is unclear.",
-      "Verify by listing MCP tools and calling read_creed once.",
-      "Call get_write_policy and confirm whether updates should use propose_creed_update or direct_edit_creed.",
-      "Do not claim connected unless read_creed succeeds and a valid write policy is visible.",
-      "For OpenCode, configure Creed as a remote MCP with oauth set to false and an Authorization bearer header.",
-      "For OpenCode, do not run opencode mcp auth creed because Creed MCP does not use OAuth.",
+      "Connect from the Connections page: copy the server URL, or use the per-agent command or one-click button.",
+      "The first time the agent calls Creed it runs the OAuth flow and opens a browser. Approve while signed in to creed.md. Tokens refresh automatically after that.",
+      "Verify by listing the MCP tools and calling read_creed once. Do not claim connected unless read_creed succeeds.",
+      "Update sections with the flat creed_* tools. The server applies the edit directly or as a proposal based on your approval setting; get_write_policy reports the current mode.",
+      "If anything is unclear during setup, read https://creed.md/docs once and follow it.",
+    ],
+  },
+  {
+    id: "connect-each-agent",
+    label: "Connecting each agent",
+    title: "Connecting each agent",
+    paragraphs: [
+      "Every MCP client connects from the same server URL. These are the per-client steps; each one ends with a browser approval.",
+    ],
+    bullets: [
+      "Claude Code: run claude mcp add --transport http creed https://creed.md/mcp, then /mcp to authorize in the browser.",
+      "Codex: run codex mcp add creed --url https://creed.md/mcp, then codex mcp login creed to authorize.",
+      "Cursor: use the one-click Add MCP button on the Connections page, then authorize in the browser.",
+      "OpenCode: add Creed to opencode.json as a remote server (type remote, the server URL), then run opencode mcp auth creed to authorize.",
+      "ChatGPT and other MCP chatbots: add a custom connector with the server URL and approve in the browser.",
+      "Any other MCP client: add the server URL as a custom or remote MCP server and approve when prompted. Non-MCP clients can fall back to the HTTP read API.",
+    ],
+  },
+  {
+    id: "troubleshooting",
+    label: "Troubleshooting",
+    title: "Troubleshooting the connection",
+    paragraphs: [
+      "Almost every connection issue is the OAuth step. These cover the common ones.",
+    ],
+    bullets: [
+      "No browser popup: re-run the agent's connect or auth action (/mcp in Claude Code, codex mcp login creed, opencode mcp auth creed). It opens your default browser.",
+      "Stuck on sign-in: authorize while signed in to creed.md in that browser. Signed out, the consent screen signs you in first, then returns to Allow.",
+      "401 or 'unauthorized' from the MCP endpoint: the client isn't authorized yet or the token expired. Reconnect or re-run the auth step to get a fresh token.",
+      "An old connection stopped working: Creed moved from static tokens to OAuth. Remove the old server entry, re-add it by URL, and authorize again.",
+      "Registration fails on connect: make sure the client supports OAuth-based remote MCP (Claude, Cursor, Codex, OpenCode, ChatGPT connectors all do).",
+      "You must have an active, set-up Creed to authorize. Finish onboarding first if the consent screen asks you to.",
     ],
   },
   {
@@ -412,17 +443,21 @@ export function DocsPageView() {
 
     const observer = new IntersectionObserver(
       (entries) => {
-        const visible = entries
+        // Pick the topmost section intersecting the detection band, not the one
+        // with the highest ratio. Sections vary wildly in height (e.g. "How
+        // each section works" is very tall), and a ratio-based pick lets a
+        // short neighbor win even when the tall section is the one at the top.
+        const topmost = entries
           .filter((entry) => entry.isIntersecting)
-          .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
 
-        if (visible?.target?.id) {
-          setActiveSection(visible.target.id);
+        if (topmost?.target?.id) {
+          setActiveSection(topmost.target.id);
         }
       },
       {
-        rootMargin: "-18% 0px -58% 0px",
-        threshold: [0.1, 0.25, 0.5, 0.75],
+        rootMargin: "-96px 0px -65% 0px",
+        threshold: 0,
       }
     );
 
@@ -433,6 +468,8 @@ export function DocsPageView() {
   function scrollToSection(sectionId: string) {
     const target = document.getElementById(sectionId);
     if (!target) return;
+    // Don't set active here. The highlight should follow the scroll, driven by
+    // the scrollspy, so it turns blue as the section reaches the top.
     target.scrollIntoView({ behavior: "smooth", block: "start" });
     window.history.replaceState(null, "", `#${sectionId}`);
   }
