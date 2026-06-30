@@ -30,7 +30,7 @@ import {
   PlusSquare,
   Strikethrough,
   Tag,
-} from "lucide-react";
+} from "@/components/ui/phosphor-icons";
 import { InlineTagMark } from "@/components/creed/extensions/inline-tag";
 import {
   Dialog,

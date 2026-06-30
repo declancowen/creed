@@ -19,7 +19,7 @@ export const CREED_PROMPTS = [
 // is built per-user from their seed draft: they paste it into any AI, which
 // returns a polished markdown Creed they paste back into Creed. No MCP, so it
 // works on any device with any assistant.
-export function buildComposePrompt(sections: CreedSection[]): string {
+function buildComposePrompt(sections: CreedSection[]): string {
   const headings = sections.map((section) => `## ${section.name}`).join("\n");
   const draft = sections.map((section) => sectionToMarkdown(section)).join("\n");
   return [

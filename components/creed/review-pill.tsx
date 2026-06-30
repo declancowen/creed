@@ -2,8 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, ChevronDown, X } from "lucide-react";
-import { ChevronDownIcon as AnimatedChevronDown } from "@/components/ui/chevron-down";
+import { Check, ChevronDown, X } from "@/components/ui/phosphor-icons";
 import type { Proposal } from "@/lib/creed-data";
 import { getProposalPreviewText } from "@/lib/creed-data";
 import { DiffBadge, computeDiffParts, summarizeDiff } from "@/components/creed/inline-proposal-diff";
@@ -142,12 +141,11 @@ export function ReviewPill({
                 {proposals.length === 1 ? "1 proposal" : `${proposals.length} proposals`}
               </span>
             </span>
-            <AnimatedChevronDown
-              size={14}
+            <ChevronDown
               // Tertiary by default, flips to primary text colour when the
               // trigger row is hovered or the dropdown is open - matches
               // the chevron behaviour on the profile and colour dropdowns.
-              className="-rotate-90 text-[var(--creed-text-tertiary)] transition-all duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover/trigger:text-[var(--creed-text-primary)] group-data-[state=open]/trigger:rotate-0 group-data-[state=open]/trigger:text-[var(--creed-text-primary)]"
+              className="h-3.5 w-3.5 -rotate-90 text-[var(--creed-text-tertiary)] transition-all duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover/trigger:text-[var(--creed-text-primary)] group-data-[state=open]/trigger:rotate-0 group-data-[state=open]/trigger:text-[var(--creed-text-primary)]"
             />
           </button>
         </DropdownMenuTrigger>
@@ -216,12 +214,11 @@ export function ReviewPill({
                       <DiffBadge tone="added" count={stats.added} size="md" />
                       <DiffBadge tone="removed" count={stats.removed} size="md" />
                     </span>
-                    <AnimatedChevronDown
-                      size={14}
+                    <ChevronDown
                       // Sub-row chevron: muted tertiary by default, swaps
                       // to primary on row hover / open so the affordance
                       // matches the parent dropdown's trigger chevron.
-                      className="rotate-90 transition-all duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover/sub:-rotate-90 group-data-[state=open]/sub:-rotate-90 [&_svg]:h-[14px]! [&_svg]:w-[14px]! [&_svg]:stroke-[var(--creed-text-tertiary)]! group-hover/sub:[&_svg]:stroke-[var(--creed-text-primary)]! group-data-[state=open]/sub:[&_svg]:stroke-[var(--creed-text-primary)]!"
+                      className="h-3.5 w-3.5 rotate-90 text-[var(--creed-text-tertiary)] transition-all duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover/sub:-rotate-90 group-hover/sub:text-[var(--creed-text-primary)] group-data-[state=open]/sub:-rotate-90 group-data-[state=open]/sub:text-[var(--creed-text-primary)]"
                     />
                   </div>
                 </DropdownMenuSubTrigger>

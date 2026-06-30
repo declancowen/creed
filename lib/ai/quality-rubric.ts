@@ -10,7 +10,7 @@ export const CREED_QUALITY_RUBRIC_VERSION = "2026-06-10-personal-profile-v5";
 // final number is pinned to the visible evidence (tags + gap) in
 // `lib/ai/quality.ts`; these ranges are what the model aims for, and they line
 // up with that evidence ladder.
-export const QUALITY_SCORE_BANDS = [
+const QUALITY_SCORE_BANDS = [
   { key: "exceptional", min: 90, max: 100 },
   { key: "strong", min: 78, max: 89 },
   { key: "useful", min: 62, max: 77 },

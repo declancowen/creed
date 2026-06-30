@@ -17,6 +17,24 @@ Creed is **not** a notes app, journal, chat memory store, or generic AI
 wrapper. If a change would make it feel like one of those, it's the
 wrong change.
 
+Creed also has a shared Markdown document workspace for invited users. For
+that workspace, **Supabase is the live source of truth**. GitHub is the
+published/version-control output, not the live collaboration layer.
+
+Agents working through MCP must:
+- list/read shared documents through the Creed MCP document tools;
+- read current comments before changing a document when review context matters;
+- update document content with `expectedRevision` and re-read on conflicts;
+- use document metadata tools for status/type/stage/lifecycle/priority/size;
+- add comments for questions, uncertainty, review notes, and suggested changes
+  that should not be applied silently;
+- mention a user only when their attention is actually needed;
+- publish/sync to GitHub only through Creed's publish flow.
+
+Do not edit the GitHub roadmap repository directly as a way to collaborate on
+live documents. If direct GitHub edits happen outside Creed, Creed must detect
+and reconcile them before publishing.
+
 ---
 
 ## Stack
@@ -33,22 +51,21 @@ Supabase (Postgres + RLS + auth)   OpenRouter (BYOK)
 
 ```
 app/                Next routes
-├── (creed-app)/    signed-in product: /file, /connections, /settings
+├── (creed-app)/    signed-in product: /dashboard, /documents, /file, /connections, /settings
 ├── api/app/        session-authed APIs (requireApiAuth)
 ├── api/creed/*     token-authed agent APIs (hash compare)
 ├── auth/callback/  OAuth callback
 ├── mcp/route.ts    MCP protocol endpoint
-├── home/           public landing (/home)
-├── docs|pricing|privacy|terms|stack/   marketing
-├── onboarding/     7-step BYOK onboarding
-├── layout.tsx      root layout — skips loadCreedState for marketing
+├── accept-invite/  invite completion
+├── login|reset-password/   auth screens
+├── layout.tsx      root layout — no user state
 └── proxy.ts        sets x-request-id + x-pathname
 
 components/
 ├── creed/          product UI (editor, sidebars, settings)
-├── marketing/      public site
-├── auth/           sign-in / landing-hero
-└── ui/             shadcn primitives + animated icons
+├── marketing/      shared auth visual helpers
+├── auth/           sign-in / invite / password screens
+└── ui/             shadcn primitives + Phosphor icon adapter
 
 lib/
 ├── creed-data.ts             types, section IDs, accent maps, agent contract
@@ -58,7 +75,6 @@ lib/
 ├── ai/quality{,-runner,-rubric}.ts   quality analysis
 ├── ai/openrouter.ts          BYOK call helper
 ├── ai/model-catalog.ts       OpenRouter model list + tier scoring
-├── onboarding/{compile,refine,validate}.ts   synthesizer pipeline
 ├── supabase/{server,browser,admin}.ts        per-runtime clients
 ├── secret-crypto.ts          AES-256-GCM token storage
 ├── audit-log.ts              creed_audit_events writer
@@ -146,10 +162,8 @@ These are non-negotiable. Don't cross them without asking.
 - Default Next/Image quality (75) is fine for backgrounds. Don't use
   `quality={100}` without confirming `next.config.ts:images.qualities`
   allowlists it AND restarting the dev server.
-- Marketing page MediaSlots show a clean placeholder card when an
-  image file is missing — see the comment block at the top of
-  `MediaSlot` in `components/marketing/below-hero-sections.tsx` for
-  the canonical naming convention.
+- Auth scenery images live under `public/assets/landing/scenery/` and render
+  through `components/marketing/scenery-image.tsx`.
 
 ---
 

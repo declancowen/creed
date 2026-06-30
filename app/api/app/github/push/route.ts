@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireApiAuth } from "@/lib/api-auth";
 import { loadCreedState, persistCreedState } from "@/lib/creed-backend";
 import { getGitHubFileSnapshot, pushGitHubFile } from "@/lib/github";
 import { getConfiguredRepo, withAuthenticatedGitHubAccess } from "@/lib/github-version-control";
@@ -11,6 +12,9 @@ type PushBody = {
 
 export async function POST(request: Request) {
   try {
+    const auth = await requireApiAuth();
+    if (auth instanceof NextResponse) return auth;
+
     const body = (await request.json()) as PushBody;
     const markdown = body.markdown?.trim();
     const localHash = body.localHash?.trim();
@@ -80,7 +84,7 @@ export async function POST(request: Request) {
         remoteMessage: pushResult.message,
         remoteCommittedAt: pushResult.committedAt,
       };
-    });
+    }, auth);
 
     return NextResponse.json(payload);
   } catch (error) {

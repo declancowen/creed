@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireApiAuth } from "@/lib/api-auth";
 import { parseCreedMarkdown } from "@/lib/creed-markdown";
 import { getGitHubFileSnapshot } from "@/lib/github";
 import {
@@ -9,6 +10,9 @@ import {
 
 export async function POST(request: Request) {
   try {
+    const auth = await requireApiAuth();
+    if (auth instanceof NextResponse) return auth;
+
     const body = (await request.json()) as { localHash?: string };
     const payload = await withAuthenticatedGitHubAccess(async ({
       integration,
@@ -52,7 +56,7 @@ export async function POST(request: Request) {
         warnings: parsed.warnings,
         sections: parsed.sections,
       };
-    });
+    }, auth);
 
     return NextResponse.json(payload);
   } catch (error) {

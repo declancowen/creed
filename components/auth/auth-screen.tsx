@@ -1,18 +1,13 @@
 "use client";
 
-// Split-screen sign-in / create-account surface shared by /login and /signup,
-// rendered inside <AuthShell>.
+// Split-screen sign-in surface for /login, rendered inside <AuthShell>.
 //
 // Google and X go through Supabase OAuth (useOAuthSignIn). Email/password uses
-// Supabase signInWithPassword / signUp directly. Signup transparently handles
-// both project configs: with email confirmation on we show a "check your inbox"
-// state, otherwise the new session lands the user in the app. "Forgot password?"
-// sends a reset link via resetPasswordForEmail (the /reset-password page
-// finishes the flow).
+// Supabase signInWithPassword directly. "Forgot password?" sends a reset link
+// via resetPasswordForEmail (the /reset-password page finishes the flow).
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import Link from "next/link";
-import { LoaderCircle, MailCheck } from "lucide-react";
+import { LoaderCircle, MailCheck } from "@/components/ui/phosphor-icons";
 import { toast } from "sonner";
 import { AnimatedPageTitle } from "@/components/marketing/animated-page-title";
 import { AuthShell } from "@/components/auth/auth-shell";
@@ -20,41 +15,15 @@ import { AuthCheckbox, AuthField, AuthSubmitButton, PasswordField } from "@/comp
 import { readLastAuthProvider, useOAuthSignIn, type OAuthProvider } from "@/components/auth/use-oauth-sign-in";
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
 
-type AuthMode = "login" | "signup";
-
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-const copy: Record<AuthMode, {
-  heading: string;
-  submit: string;
-  switchPrompt: string;
-  switchAction: string;
-  switchHref: string;
-  topAction: string;
-  topHref: string;
-}> = {
-  login: {
-    heading: "Welcome back",
-    submit: "Sign in",
-    switchPrompt: "New to Creed?",
-    switchAction: "Create an account",
-    switchHref: "/signup",
-    topAction: "Sign up",
-    topHref: "/signup",
-  },
-  signup: {
-    heading: "Create your account",
-    submit: "Create account",
-    switchPrompt: "Already have an account?",
-    switchAction: "Sign in",
-    switchHref: "/login",
-    topAction: "Sign in",
-    topHref: "/login",
-  },
+const copy = {
+  heading: "Welcome back",
+  submit: "Sign in",
 };
 
 // Map Supabase auth errors to one clean, user-meaningful sentence.
-function authErrorMessage(message: string, mode: AuthMode) {
+function authErrorMessage(message: string) {
   const m = message.toLowerCase();
   if (m.includes("invalid login credentials")) {
     return "That email or password is incorrect.";
@@ -68,34 +37,35 @@ function authErrorMessage(message: string, mode: AuthMode) {
   if (m.includes("rate limit") || m.includes("too many")) {
     return "Too many attempts. Wait a moment and try again.";
   }
-  if (mode === "signup" && m.includes("password")) {
-    return "Choose a stronger password.";
-  }
   return message || "Something went wrong. Try again.";
 }
 
-type Confirmation = { email: string; kind: "signup" | "reset" };
+type Confirmation = { email: string; kind: "reset" };
 
 export function AuthScreen({
-  mode,
   configured = true,
-  nextPath = "/",
+  nextPath = "/dashboard",
+  authError,
 }: {
-  mode: AuthMode;
   configured?: boolean;
   // Where to land after a successful auth (e.g. back to /authorize for an MCP
   // connect). Defaults to the root router.
   nextPath?: string;
+  authError?: "oauth_email_mismatch";
 }) {
-  const t = copy[mode];
-  const isSignup = mode === "signup";
+  const t = copy;
+
+  // Google is part of the invite-only auth surface. X remains behind an
+  // explicit flag because it is not part of the current sign-in contract.
+  const googleEnabled = true;
+  const xEnabled = process.env.NEXT_PUBLIC_ENABLE_X_AUTH === "1";
+  const anyOAuth = googleEnabled || xEnabled;
 
   const { signIn: oauthSignIn, pendingProvider } = useOAuthSignIn(configured, nextPath);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(true);
-  const [agreeTerms, setAgreeTerms] = useState(false);
   const [errors, setErrors] = useState<{ email?: string; password?: string }>({});
   const [submitting, setSubmitting] = useState(false);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
@@ -115,34 +85,16 @@ export function AuthScreen({
     };
   }, []);
 
+  useEffect(() => {
+    if (authError === "oauth_email_mismatch") {
+      toast.error("Use the account with the same email as your Creed invite.");
+    }
+  }, [authError]);
+
   // Read after mount to avoid a hydration mismatch (localStorage is client-only).
   useEffect(() => {
     setLastProvider(readLastAuthProvider());
   }, []);
-
-  // While the signup "check your inbox" screen is up, watch for the session to
-  // appear (the user confirms in another tab in the same browser) and log this
-  // tab in automatically.
-  useEffect(() => {
-    if (confirmation?.kind !== "signup") return;
-    const supabase = getSupabaseBrowserClient();
-    let active = true;
-    const checkSession = async () => {
-      const { data } = await supabase.auth.getSession();
-      if (active && data.session) window.location.assign(nextPath);
-    };
-    const intervalId = window.setInterval(() => void checkSession(), 3000);
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event: unknown, session: unknown) => {
-      if (active && session) window.location.assign(nextPath);
-    });
-    return () => {
-      active = false;
-      window.clearInterval(intervalId);
-      subscription.unsubscribe();
-    };
-  }, [confirmation, nextPath]);
 
   const busy = submitting || pendingProvider !== null;
 
@@ -155,8 +107,6 @@ export function AuthScreen({
     }
     if (!password) {
       next.password = "Enter your password.";
-    } else if (isSignup && password.length < 8) {
-      next.password = "Use at least 8 characters.";
     }
     return next;
   }
@@ -181,45 +131,16 @@ export function AuthScreen({
     setSubmitting(true);
 
     try {
-      if (mode === "login") {
-        const { error } = await supabase.auth.signInWithPassword({
-          email: trimmedEmail,
-          password,
-        });
-        if (error) {
-          toast.error(authErrorMessage(error.message, mode));
-          return;
-        }
-        // Full navigation so server components pick up the new session.
-        window.location.assign(nextPath);
-        return;
-      }
-
-      const { data, error } = await supabase.auth.signUp({
+      const { error } = await supabase.auth.signInWithPassword({
         email: trimmedEmail,
         password,
-        options: {
-          emailRedirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(nextPath)}`,
-        },
       });
       if (error) {
-        toast.error(authErrorMessage(error.message, mode));
+        toast.error(authErrorMessage(error.message));
         return;
       }
-      // Confirmation off -> we get a session straight away.
-      if (data.session) {
-        window.location.assign(nextPath);
-        return;
-      }
-      // Supabase returns a user with no identities for an already-registered
-      // email (anti-enumeration), so surface it as a normal field error.
-      if (data.user && (data.user.identities?.length ?? 0) === 0) {
-        setErrors({ email: "An account with this email already exists." });
-        emailRef.current?.focus();
-        return;
-      }
-      // Confirmation on -> swap to the check-your-inbox state.
-      setConfirmation({ email: trimmedEmail, kind: "signup" });
+      // Full navigation so server components pick up the new session.
+      window.location.assign(nextPath);
     } finally {
       if (mounted.current) setSubmitting(false);
     }
@@ -253,16 +174,7 @@ export function AuthScreen({
   }
 
   return (
-    <AuthShell
-      topRight={
-        <Link
-          href={t.topHref}
-          className="text-[14px] font-medium text-[var(--creed-text-primary)] transition-colors hover:text-[#2563EB]"
-        >
-          {t.topAction}
-        </Link>
-      }
-    >
+    <AuthShell>
       {confirmation ? (
         <ConfirmationNotice
           email={confirmation.email}
@@ -279,45 +191,55 @@ export function AuthScreen({
             className="text-[30px] font-medium leading-tight tracking-[-0.02em] md:text-[34px]"
           />
 
-          <div className="mt-8 flex flex-col gap-3">
-            <ProviderButton
-              onClick={() => void oauthSignIn("google")}
-              disabled={busy || !configured}
-              lastUsed={lastProvider === "google"}
-              icon={<GoogleIcon />}
-            >
-              {pendingProvider === "google" ? (
-                <>
-                  Redirecting
-                  <LoaderCircle className="h-4 w-4 animate-spin" />
-                </>
-              ) : (
-                <>Sign in with Google</>
-              )}
-            </ProviderButton>
+          {anyOAuth ? (
+            <>
+              <div className="mt-8 flex flex-col gap-3">
+                {googleEnabled ? (
+                  <ProviderButton
+                    onClick={() => void oauthSignIn("google")}
+                    disabled={busy || !configured}
+                    lastUsed={lastProvider === "google"}
+                    icon={<GoogleIcon />}
+                  >
+                    {pendingProvider === "google" ? (
+                      <>
+                        Redirecting
+                        <LoaderCircle className="h-4 w-4 animate-spin" />
+                      </>
+                    ) : (
+                      <>Sign in with Google</>
+                    )}
+                  </ProviderButton>
+                ) : null}
 
-            <ProviderButton
-              onClick={() => void oauthSignIn("x")}
-              disabled={busy || !configured}
-              lastUsed={lastProvider === "x"}
-              icon={<XIcon />}
-            >
-              {pendingProvider === "x" ? (
-                <>
-                  Redirecting
-                  <LoaderCircle className="h-4 w-4 animate-spin" />
-                </>
-              ) : (
-                <>Sign in with X</>
-              )}
-            </ProviderButton>
-          </div>
+                {xEnabled ? (
+                  <ProviderButton
+                    onClick={() => void oauthSignIn("x")}
+                    disabled={busy || !configured}
+                    lastUsed={lastProvider === "x"}
+                    icon={<XIcon />}
+                  >
+                    {pendingProvider === "x" ? (
+                      <>
+                        Redirecting
+                        <LoaderCircle className="h-4 w-4 animate-spin" />
+                      </>
+                    ) : (
+                      <>Sign in with X</>
+                    )}
+                  </ProviderButton>
+                ) : null}
+              </div>
 
-          <div className="my-5 flex items-center gap-3" aria-hidden="true">
-            <span className="h-px flex-1 bg-[var(--creed-border)]" />
-            <span className="text-[13px] text-[var(--creed-text-tertiary)]">or</span>
-            <span className="h-px flex-1 bg-[var(--creed-border)]" />
-          </div>
+              <div className="my-5 flex items-center gap-3" aria-hidden="true">
+                <span className="h-px flex-1 bg-[var(--creed-border)]" />
+                <span className="text-[13px] text-[var(--creed-text-tertiary)]">or</span>
+                <span className="h-px flex-1 bg-[var(--creed-border)]" />
+              </div>
+            </>
+          ) : (
+            <div className="mt-8" />
+          )}
 
           <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-3">
             <AuthField
@@ -337,7 +259,7 @@ export function AuthScreen({
             <PasswordField
               inputRef={passwordRef}
               label="Password"
-              autoComplete={isSignup ? "new-password" : "current-password"}
+              autoComplete="current-password"
               value={password}
               disabled={busy}
               error={errors.password}
@@ -347,54 +269,27 @@ export function AuthScreen({
               }}
             />
 
-            {isSignup ? (
-              <label className="mt-1 flex cursor-pointer select-none items-start gap-2.5 text-[13px] leading-snug text-[var(--creed-text-secondary)]">
-                <AuthCheckbox checked={agreeTerms} onChange={() => setAgreeTerms((v) => !v)} />
-                <span>
-                  I agree to the{" "}
-                  <Link href="/terms" className="text-[var(--creed-text-primary)] transition-colors hover:text-[#2563EB]">
-                    Terms
-                  </Link>{" "}
-                  and{" "}
-                  <Link href="/privacy" className="text-[var(--creed-text-primary)] transition-colors hover:text-[#2563EB]">
-                    Privacy Policy
-                  </Link>
-                  .
-                </span>
+            <div className="flex items-center justify-between">
+              <label className="flex cursor-pointer select-none items-center gap-2.5 text-[14px] text-[var(--creed-text-secondary)]">
+                <AuthCheckbox checked={remember} onChange={() => setRemember((v) => !v)} />
+                Remember me
               </label>
-            ) : (
-              <div className="flex items-center justify-between">
-                <label className="flex cursor-pointer select-none items-center gap-2.5 text-[14px] text-[var(--creed-text-secondary)]">
-                  <AuthCheckbox checked={remember} onChange={() => setRemember((v) => !v)} />
-                  Remember me
-                </label>
-                <button
-                  type="button"
-                  onClick={() => void handleForgotPassword()}
-                  disabled={busy}
-                  className="text-[14px] text-[var(--creed-text-secondary)] transition-colors hover:text-[#2563EB] disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  Forgot password?
-                </button>
-              </div>
-            )}
+              <button
+                type="button"
+                onClick={() => void handleForgotPassword()}
+                disabled={busy}
+                className="text-[14px] text-[var(--creed-text-secondary)] transition-colors hover:text-[#2563EB] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Forgot password?
+              </button>
+            </div>
 
             <AuthSubmitButton
               label={t.submit}
               loading={submitting}
-              disabled={busy || !configured || (isSignup && !agreeTerms)}
+              disabled={busy || !configured}
             />
           </form>
-
-          <p className="mt-7 text-center text-[14px] text-[var(--creed-text-tertiary)]">
-            {t.switchPrompt}{" "}
-            <Link
-              href={t.switchHref}
-              className="font-medium text-[var(--creed-text-primary)] transition-colors hover:text-[#2563EB]"
-            >
-              {t.switchAction}
-            </Link>
-          </p>
         </>
       )}
     </AuthShell>
@@ -403,18 +298,14 @@ export function AuthScreen({
 
 function ConfirmationNotice({
   email,
-  kind,
   onBack,
 }: {
   email: string;
-  kind: "signup" | "reset";
+  kind: "reset";
   onBack: () => void;
 }) {
-  const body =
-    kind === "signup"
-      ? "Click it to finish creating your account."
-      : "Click it to choose a new password.";
-  const lead = kind === "signup" ? "We sent a confirmation link to" : "We sent a password reset link to";
+  const body = "Click it to choose a new password.";
+  const lead = "We sent a password reset link to";
 
   return (
     <div className="flex flex-col items-center text-center">

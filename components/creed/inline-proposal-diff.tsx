@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { diffWords } from "diff";
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, ChevronDown, X } from "lucide-react";
+import { Check, ChevronDown, X } from "@/components/ui/phosphor-icons";
 import type { Proposal } from "@/lib/creed-data";
 import { accentColorMap, getProposalPreviewText } from "@/lib/creed-data";
 import { AgentIconStack } from "@/components/creed/agent-icon-stack";

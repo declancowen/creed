@@ -5,7 +5,6 @@ import { getAgentIconKind } from "@/lib/agent-icon";
 import type { AgentIconKind, McpClient } from "@/lib/creed-data";
 import { cn } from "@/lib/utils";
 
-export { getAgentIconKind };
 
 type AgentLike = string | Pick<McpClient, "name" | "icon"> | { agentName?: string; icon?: AgentIconKind };
 

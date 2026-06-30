@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import {
   useCallback,
   useEffect,
@@ -9,39 +10,47 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { useRouter } from "next/navigation";
 import { AnimatePresence, Reorder, motion, useDragControls } from "framer-motion";
 import {
   AlertTriangle,
+  ArrowLeft,
+  Archive,
   Check,
   ChevronDown,
   ChevronLeft,
+  CircleDashed,
+  Clock3,
+  CloudDownload,
+  CloudUpload,
+  Copy,
+  Delete,
+  Download,
   Ellipsis,
+  FileStack,
+  Flag,
+  FolderUp,
+  GripVertical,
+  History,
+  LayoutGrid,
   LoaderCircle,
+  Lock,
+  LockOpen,
+  MessageSquare,
   Plus,
+  RotateCcw,
+  Save,
+  Send,
+  SquarePen,
+  Stamp,
+  Tag,
+  TShirt,
   X,
-} from "lucide-react";
+} from "@/components/ui/phosphor-icons";
 import { toast } from "sonner";
 import { fireConfetti } from "@/lib/confetti";
 import { AnimatedCheckmark } from "@/components/ui/animated-checkmark";
-import { ArchiveIcon } from "@/components/ui/archive";
 import { Button } from "@/components/ui/button";
-import { CloudDownloadIcon } from "@/components/ui/cloud-download";
-import { CloudUploadIcon } from "@/components/ui/cloud-upload";
-import { ClockIcon } from "@/components/ui/clock";
-import { CopyIcon } from "@/components/ui/copy";
-import { DeleteIcon } from "@/components/ui/delete";
-import { DownloadIcon } from "@/components/ui/download";
-import { FolderUpIcon } from "@/components/ui/folder-up";
-import { GripVerticalIcon } from "@/components/ui/grip-vertical";
-import { HistoryIcon } from "@/components/ui/history";
-import { LockIcon, type LockIconHandle } from "@/components/ui/lock";
-import { LockOpenIcon, type LockOpenIconHandle } from "@/components/ui/lock-open";
-import { SquarePenIcon } from "@/components/ui/square-pen";
-import { StampIcon, type StampIconHandle } from "@/components/ui/stamp";
-import { FileStackIcon } from "@/components/ui/file-stack";
 import { AnimatedMenuIconItem } from "@/components/creed/animated-icon-action";
-import { useAnimatedIconControls } from "@/components/creed/animated-icon-controls";
 import {
   Dialog,
   DialogContent,
@@ -53,7 +62,10 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuLabel,
   DropdownMenuPortal,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
@@ -61,6 +73,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { AgentIconStack } from "@/components/creed/agent-icon-stack";
 import {
@@ -90,7 +103,11 @@ import {
   summarizeDiff,
 } from "@/components/creed/inline-proposal-diff";
 import { ReviewPill } from "@/components/creed/review-pill";
-import { useCreedShellFileActions, useCreedShellActiveSection } from "@/components/creed/shell";
+import {
+  useCreedShellFileActions,
+  useCreedShellActiveSection,
+  useCreedShellLiveSections,
+} from "@/components/creed/shell";
 import { useCreed } from "@/components/creed/creed-provider";
 import { parseCreedMarkdown } from "@/lib/creed-markdown";
 import {
@@ -98,6 +115,7 @@ import {
   accentLabelMap,
   accentTintMap,
   VISIBLE_ACCENT_KEYS,
+  buildVisibleCreedMarkdown,
   getProposalPreviewText,
   normalizeLegacyProposalDraft,
   normalizeProposalForSection,
@@ -108,6 +126,30 @@ import {
   type CreedSection,
   type Proposal,
 } from "@/lib/creed-data";
+import {
+  DOCUMENT_LIFECYCLE_OPTIONS,
+  DOCUMENT_PRIORITY_OPTIONS,
+  DOCUMENT_SIZE_OPTIONS,
+  DOCUMENT_STAGE_OPTIONS,
+  DOCUMENT_STATUS_OPTIONS,
+  DOCUMENT_TONE_STYLE,
+  DOCUMENT_TYPE_OPTIONS,
+  documentPropertyTone,
+  labelDocumentProperty,
+  type DocumentLifecycle,
+  type DocumentPriority,
+  type DocumentPropertyKey,
+  type DocumentSize,
+  type DocumentStage,
+  type DocumentStatus,
+  type DocumentType,
+} from "@/lib/document-properties";
+import type {
+  DocumentActivityEvent,
+  DocumentComment,
+  WorkspaceUser,
+} from "@/lib/document-collaboration";
+import type { SharedDocument } from "@/lib/shared-documents";
 import { cn } from "@/lib/utils";
 
 const activityStatuses: Array<{ label: string; value: "all" | ActivityStatus }> = [
@@ -133,6 +175,9 @@ const QUALITY_FINGERPRINT_IGNORED_KEYS = new Set([
   "lastEditedType",
   "revision",
 ]);
+
+const documentHeaderIconButtonClass =
+  "h-8 w-8 min-h-8 min-w-8 rounded-full border-0 bg-transparent p-0 text-[var(--creed-text-secondary)] hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)]";
 
 function qualityFingerprint(value: unknown) {
   return JSON.stringify(value, (key, nestedValue) =>
@@ -616,8 +661,93 @@ type GitHubPullPreview = {
   sections: CreedSection[];
 };
 
-// The header save indicator. Owns the animated clock so its 60s relative-label
-// ticker re-renders only this line, not the whole editor.
+type SharedDocumentFilePayload = {
+  document: SharedDocument;
+  comments: DocumentComment[];
+  activity: DocumentActivityEvent[];
+  users: WorkspaceUser[];
+  activeCommentId: string | null;
+};
+
+type DocumentPropertyName = DocumentPropertyKey;
+
+type DocumentPropertyValueMap = {
+  documentType: DocumentType;
+  status: DocumentStatus;
+  stage: DocumentStage;
+  lifecycle: DocumentLifecycle;
+  priority: DocumentPriority;
+  size: DocumentSize;
+};
+
+const DOCUMENT_PROPERTY_LABELS: Record<DocumentPropertyName, string> = {
+  documentType: "Type",
+  status: "Status",
+  stage: "Stage",
+  lifecycle: "Lifecycle",
+  priority: "Priority",
+  size: "T-shirt size",
+};
+
+function DocumentPropertyTypeIcon({ property }: { property: DocumentPropertyName }) {
+  const className = "h-3 w-3 shrink-0";
+
+  if (property === "status") return <CircleDashed className={className} />;
+  if (property === "documentType") return <Tag className={className} />;
+  if (property === "stage") return <LayoutGrid className={className} />;
+  if (property === "lifecycle") return <RotateCcw className={className} />;
+  if (property === "priority") return <Flag className={className} />;
+  return <TShirt className={className} />;
+}
+
+function parseDocumentSections(markdown: string, title: string): CreedSection[] {
+  const normalized = markdown.replace(/\r\n/g, "\n").trim();
+  const titleHeading = title.trim().toLowerCase();
+  const withoutDocumentTitle = normalized.replace(/^#\s+(.+)\n?/i, (match, heading: string) =>
+    heading.trim().toLowerCase() === titleHeading ? "" : match
+  );
+  const parsed = parseCreedMarkdown(withoutDocumentTitle.trim());
+  if (parsed.sections.length > 0) {
+    return parsed.sections;
+  }
+
+  return [
+    {
+      id: "document",
+      kind: "rich-text",
+      template: "freeform",
+      name: "Overview",
+      accent: "identity",
+      content: "Start shaping this document.",
+      agentWritable: true,
+      agentPermission: "propose",
+      lastEditedBy: "Creed",
+      lastEditedType: "user",
+      lastEditedLabel: "just now",
+    },
+  ];
+}
+
+function documentSectionsToMarkdown(sections: CreedSection[], title?: string) {
+  const body = buildVisibleCreedMarkdown(sections).trim();
+  const heading = title?.trim();
+  if (!heading) {
+    return body ? `${body}\n` : "";
+  }
+  return body ? `# ${heading}\n\n${body}\n` : `# ${heading}\n`;
+}
+
+function formatDocumentTimestamp(value: string) {
+  return formatRelativeTime(value);
+}
+
+async function readError(response: Response, fallback: string) {
+  const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+  return payload?.error || fallback;
+}
+
+// The header save indicator owns the 60s relative-label ticker so it
+// re-renders only this line, not the whole editor.
 function SaveStatus({
   saving,
   lastSavedAt,
@@ -625,18 +755,6 @@ function SaveStatus({
   saving: boolean;
   lastSavedAt: number | null;
 }) {
-  // Same icon + animation as the activity button (HistoryIcon driven by
-  // useAnimatedIconControls), but fired by a save starting instead of a hover.
-  // start() plays the full animation once and the hook auto-settles it.
-  const { iconRef: saveIconRef, start: startSaveIcon } = useAnimatedIconControls();
-  const wasSavingRef = useRef(saving);
-  useEffect(() => {
-    if (saving && !wasSavingRef.current) {
-      startSaveIcon();
-    }
-    wasSavingRef.current = saving;
-  }, [saving, startSaveIcon]);
-
   // Re-render once a minute so "Saved Xm ago" ages while the user is idle.
   // Nothing to age while saving, or before the first save (static "Saved").
   const [, setTick] = useState(0);
@@ -654,14 +772,125 @@ function SaveStatus({
 
   return (
     <div className="mt-2 flex items-center gap-2 text-sm text-[var(--creed-text-secondary)]">
-      <ClockIcon ref={saveIconRef} size={14} className="h-3.5 w-3.5 shrink-0" />
+      <Clock3 className="h-3.5 w-3.5 shrink-0" />
       {label}
     </div>
   );
 }
 
-export function FileScreen() {
-  const router = useRouter();
+function DocumentPropertySelect<K extends DocumentPropertyName>({
+  property,
+  value,
+  options,
+  disabled,
+  onChange,
+}: {
+  property: K;
+  value: DocumentPropertyValueMap[K];
+  options: ReadonlyArray<{ value: DocumentPropertyValueMap[K]; label: string }>;
+  disabled?: boolean;
+  onChange: (property: K, value: DocumentPropertyValueMap[K]) => void;
+}) {
+  const current = options.find((option) => option.value === value)?.label ?? labelDocumentProperty(property, value);
+  const tone = documentPropertyTone(property, value);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          disabled={disabled}
+          aria-label={property}
+          style={DOCUMENT_TONE_STYLE[tone]}
+          className={cn(
+            "inline-flex h-6 w-fit max-w-full items-center gap-1.5 rounded-[6px] px-2 text-[12px] font-medium transition hover:brightness-[0.97] disabled:cursor-not-allowed disabled:opacity-50"
+          )}
+        >
+          <DocumentPropertyTypeIcon property={property} />
+          <span className="min-w-0 truncate">{current}</span>
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-[180px] border-[var(--creed-border)] bg-[var(--creed-surface)]">
+        <DropdownMenuLabel>{DOCUMENT_PROPERTY_LABELS[property]}</DropdownMenuLabel>
+        <DropdownMenuRadioGroup
+          value={value}
+          onValueChange={(next) => onChange(property, next as DocumentPropertyValueMap[K])}
+        >
+          {options.map((option) => (
+            <DropdownMenuRadioItem key={option.value} value={option.value}>
+              {option.label}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function DocumentPropertyBar({
+  document,
+  disabledProperty,
+  onChange,
+}: {
+  document: SharedDocument;
+  disabledProperty: DocumentPropertyName | null;
+  onChange: <K extends DocumentPropertyName>(
+    property: K,
+    value: DocumentPropertyValueMap[K]
+  ) => void;
+}) {
+  return (
+    <div className="mt-4 flex flex-wrap gap-1.5">
+      <DocumentPropertySelect
+        property="documentType"
+        value={document.documentType}
+        options={DOCUMENT_TYPE_OPTIONS}
+        disabled={Boolean(disabledProperty)}
+        onChange={onChange}
+      />
+      <DocumentPropertySelect
+        property="status"
+        value={document.status}
+        options={DOCUMENT_STATUS_OPTIONS}
+        disabled={Boolean(disabledProperty)}
+        onChange={onChange}
+      />
+      <DocumentPropertySelect
+        property="stage"
+        value={document.stage}
+        options={DOCUMENT_STAGE_OPTIONS}
+        disabled={Boolean(disabledProperty)}
+        onChange={onChange}
+      />
+      <DocumentPropertySelect
+        property="lifecycle"
+        value={document.lifecycle}
+        options={DOCUMENT_LIFECYCLE_OPTIONS}
+        disabled={Boolean(disabledProperty)}
+        onChange={onChange}
+      />
+      <DocumentPropertySelect
+        property="priority"
+        value={document.priority}
+        options={DOCUMENT_PRIORITY_OPTIONS}
+        disabled={Boolean(disabledProperty)}
+        onChange={onChange}
+      />
+      <DocumentPropertySelect
+        property="size"
+        value={document.size}
+        options={DOCUMENT_SIZE_OPTIONS}
+        disabled={Boolean(disabledProperty)}
+        onChange={onChange}
+      />
+    </div>
+  );
+}
+
+export function FileScreen({
+  sharedDocument = null,
+}: {
+  sharedDocument?: SharedDocumentFilePayload | null;
+} = {}) {
   const {
     state,
     toggleLock,
@@ -684,15 +913,107 @@ export function FileScreen() {
     exportMarkdown,
     refreshState,
   } = useCreed();
+  const documentMode = Boolean(sharedDocument);
+  const [currentDocument, setCurrentDocument] = useState<SharedDocument | null>(
+    sharedDocument?.document ?? null
+  );
+  const [documentSections, setDocumentSections] = useState<CreedSection[]>(() =>
+    sharedDocument
+      ? parseDocumentSections(sharedDocument.document.content, sharedDocument.document.title)
+      : []
+  );
+  const [savedDocumentMarkdown, setSavedDocumentMarkdown] = useState(() =>
+    sharedDocument
+      ? documentSectionsToMarkdown(
+          parseDocumentSections(sharedDocument.document.content, sharedDocument.document.title),
+          sharedDocument.document.title
+        )
+      : ""
+  );
+  const [documentComments, setDocumentComments] = useState<DocumentComment[]>(
+    sharedDocument?.comments ?? []
+  );
+  const [documentActivity, setDocumentActivity] = useState<DocumentActivityEvent[]>(
+    sharedDocument?.activity ?? []
+  );
+  const [activeDocumentPanel, setActiveDocumentPanel] = useState<"comments" | "activity" | null>(
+    sharedDocument?.activeCommentId ? "comments" : null
+  );
+  const [activeDocumentCommentId, setActiveDocumentCommentId] = useState<string | null>(
+    sharedDocument?.activeCommentId ?? null
+  );
+  const [commentBody, setCommentBody] = useState("");
+  const [commentReferenceQuote, setCommentReferenceQuote] = useState("");
+  const [mentionedUserIds, setMentionedUserIds] = useState<string[]>([]);
+  const [replyingTo, setReplyingTo] = useState<string | null>(null);
+  const [replyBody, setReplyBody] = useState("");
+  const [savingComment, setSavingComment] = useState(false);
+  const [savingReply, setSavingReply] = useState(false);
+  const [documentLocked, setDocumentLocked] = useState(false);
+  const [documentSaving, setDocumentSaving] = useState(false);
+  const [documentPublishing, setDocumentPublishing] = useState(false);
+  const [savingDocumentProperty, setSavingDocumentProperty] = useState<DocumentPropertyName | null>(null);
+  const documentUsers = sharedDocument?.users ?? [];
+
+  useEffect(() => {
+    if (!sharedDocument) {
+      setCurrentDocument(null);
+      setDocumentSections([]);
+      setSavedDocumentMarkdown("");
+      setDocumentComments([]);
+      setDocumentActivity([]);
+      setActiveDocumentPanel(null);
+      setActiveDocumentCommentId(null);
+      return;
+    }
+
+    const parsed = parseDocumentSections(sharedDocument.document.content, sharedDocument.document.title);
+    setCurrentDocument(sharedDocument.document);
+    setDocumentSections(parsed);
+    setSavedDocumentMarkdown(documentSectionsToMarkdown(parsed, sharedDocument.document.title));
+    setDocumentComments(sharedDocument.comments);
+    setDocumentActivity(sharedDocument.activity);
+    setActiveDocumentPanel(sharedDocument.activeCommentId ? "comments" : null);
+    setActiveDocumentCommentId(sharedDocument.activeCommentId ?? null);
+    setCommentBody("");
+    setCommentReferenceQuote("");
+    setMentionedUserIds([]);
+    setReplyingTo(null);
+    setReplyBody("");
+  }, [sharedDocument]);
+
+  const documentMarkdown = useMemo(
+    () => (documentMode ? documentSectionsToMarkdown(documentSections, currentDocument?.title) : ""),
+    [currentDocument?.title, documentMode, documentSections]
+  );
+  const documentDirty = documentMode && documentMarkdown !== savedDocumentMarkdown;
+  const editorSections = documentMode ? documentSections : state.sections;
+  const rootDocumentComments = useMemo(
+    () => documentComments.filter((comment) => !comment.parentId),
+    [documentComments]
+  );
+  const openDocumentCommentCount = useMemo(
+    () => rootDocumentComments.filter((comment) => comment.status === "open").length,
+    [rootDocumentComments]
+  );
+  const documentRepliesByParent = useMemo(() => {
+    const replies = new Map<string, DocumentComment[]>();
+    for (const comment of documentComments) {
+      if (!comment.parentId) continue;
+      replies.set(comment.parentId, [...(replies.get(comment.parentId) ?? []), comment]);
+    }
+    return replies;
+  }, [documentComments]);
   // Archived sections stay in state (so they persist) but are hidden from the
   // editor; the section list renders from this live set.
   const visibleSections = useMemo(
-    () => state.sections.filter((section) => !section.archived),
-    [state.sections]
+    () => editorSections.filter((section) => !section.archived),
+    [editorSections]
   );
+  useCreedShellLiveSections(documentMode ? visibleSections : null);
   const pendingProposals = useMemo(
-    () => state.proposals.filter((proposal) => proposal.status === "pending"),
-    [state.proposals]
+    () => (documentMode ? [] : state.proposals.filter((proposal) => proposal.status === "pending")),
+    [documentMode, state.proposals]
   );
   const normalizedPendingProposals = useMemo(
     () =>
@@ -702,10 +1023,10 @@ export function FileScreen() {
             ...proposal,
             draft: normalizeLegacyProposalDraft(proposal.draft),
           },
-          state.sections.find((section) => section.id === proposal.sectionId)
+          editorSections.find((section) => section.id === proposal.sectionId)
         )
       ),
-    [pendingProposals, state.sections]
+    [editorSections, pendingProposals]
   );
   const [activityOpen, setActivityOpen] = useState(false);
 
@@ -793,57 +1114,65 @@ export function FileScreen() {
   const qualityBaselineLoadedRef = useRef(false);
   const currentFullFingerprintRef = useRef<string | null>(null);
   const sectionFingerprintByIdRef = useRef<Map<string, string>>(new Map());
-  const versionIcon = useAnimatedIconControls();
-  const activityIcon = useAnimatedIconControls();
   // `exportMarkdown` is re-created by the provider whenever state changes,
   // so depending on it alone is sufficient - listing `state.sections`
   // separately would be redundant.
-  const localMarkdown = useMemo(() => exportMarkdown(), [exportMarkdown]);
+  const localMarkdown = useMemo(
+    () => (documentMode ? documentMarkdown : exportMarkdown()),
+    [documentMarkdown, documentMode, exportMarkdown]
+  );
   const sectionQualityById = useMemo(
     () => new Map((qualityReport?.sections ?? []).map((section) => [section.sectionId, section])),
     [qualityReport]
   );
   const currentFullFingerprint = useMemo(
-    () => qualityFingerprint(state.sections),
-    [state.sections]
+    () => qualityFingerprint(editorSections),
+    [editorSections]
   );
   const sectionFingerprintById = useMemo(
     () =>
       new Map(
-        state.sections.map((section) => [section.id, qualityFingerprint(section)] as const)
+        editorSections.map((section) => [section.id, qualityFingerprint(section)] as const)
       ),
-    [state.sections]
+    [editorSections]
   );
   const qualityHasReport = Boolean(qualityReport);
   const fullQualityDirty =
     qualityEnabled &&
-    state.sections.length > 0 &&
+    editorSections.length > 0 &&
     qualityHasReport &&
     (!analyzedFullFingerprint || analyzedFullFingerprint !== currentFullFingerprint);
-  const qualityCanRunInitialAnalysis = qualityEnabled && state.sections.length > 0 && !qualityHasReport;
+  const qualityCanRunInitialAnalysis = qualityEnabled && editorSections.length > 0 && !qualityHasReport;
 
   useEffect(() => {
     currentFullFingerprintRef.current = currentFullFingerprint;
     sectionFingerprintByIdRef.current = sectionFingerprintById;
   }, [currentFullFingerprint, sectionFingerprintById]);
-  const githubConfigured =
-    state.settings.integrations.github.status === "connected" &&
-    Boolean(state.settings.versionControl.repoOwner) &&
-    Boolean(state.settings.versionControl.repoName) &&
-    Boolean(state.settings.versionControl.branch);
+  const githubConfigured = documentMode
+    ? state.settings.integrations.github.status === "connected" &&
+      Boolean(currentDocument?.githubRepoOwner) &&
+      Boolean(currentDocument?.githubRepoName) &&
+      Boolean(currentDocument?.githubBranch) &&
+      Boolean(currentDocument?.githubPath)
+    : state.settings.integrations.github.status === "connected" &&
+      Boolean(state.settings.versionControl.repoOwner) &&
+      Boolean(state.settings.versionControl.repoName) &&
+      Boolean(state.settings.versionControl.branch);
 
   const pushDisabled =
-    !githubConfigured ||
-    versionStatusBusy ||
-    versionStatus?.syncStatus === "up-to-date" ||
-    versionStatus?.syncStatus === "remote-ahead";
+    documentMode
+      ? !githubConfigured || documentSaving || documentPublishing
+      : !githubConfigured ||
+        versionStatusBusy ||
+        versionStatus?.syncStatus === "up-to-date" ||
+        versionStatus?.syncStatus === "remote-ahead";
   // Pull is allowed any time GitHub is configured - including when the
   // local file is "local-ahead." That way, as soon as you make a local
   // edit, you can still click Pull to refresh against the latest remote
   // commit. The pull-preview API always fetches fresh from the GitHub
   // contents endpoint (no caching - see `githubRequest` in lib/github.ts)
   // so the dialog shows the true current state of the remote.
-  const pullDisabled = !githubConfigured || versionStatusBusy;
+  const pullDisabled = documentMode ? true : !githubConfigured || versionStatusBusy;
   const primaryVersionAction =
     versionStatus?.syncStatus === "remote-ahead" || versionStatus?.syncStatus === "diverged"
       ? "pull"
@@ -865,6 +1194,15 @@ export function FileScreen() {
     let cancelled = false;
 
     async function loadVersionStatus() {
+      if (documentMode) {
+        setVersionStatus({
+          connected: state.settings.integrations.github.status === "connected",
+          configured: githubConfigured,
+          syncStatus: (currentDocument?.syncStatus as GitHubVersionStatus["syncStatus"] | undefined) ?? "unknown",
+        });
+        return;
+      }
+
       if (state.settings.integrations.github.status !== "connected") {
         setVersionStatus({
           connected: false,
@@ -912,6 +1250,9 @@ export function FileScreen() {
       cancelled = true;
     };
   }, [
+    currentDocument?.syncStatus,
+    documentMode,
+    githubConfigured,
     localMarkdown,
     state.settings.integrations.github.status,
     state.settings.versionControl.repoOwner,
@@ -924,6 +1265,12 @@ export function FileScreen() {
     let cancelled = false;
 
     async function loadAiReadiness() {
+      if (documentMode) {
+        setQualityEnabled(false);
+        setQualityNotice(null);
+        return;
+      }
+
       try {
         const response = await fetch("/api/app/ai/settings", {
           method: "GET",
@@ -967,10 +1314,10 @@ export function FileScreen() {
       window.removeEventListener("focus", onWindowFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, []);
+  }, [documentMode]);
 
   useEffect(() => {
-    if (!qualityEnabled || state.sections.length === 0 || qualityBaselineLoadedRef.current) {
+    if (documentMode || !qualityEnabled || editorSections.length === 0 || qualityBaselineLoadedRef.current) {
       return;
     }
 
@@ -988,7 +1335,7 @@ export function FileScreen() {
     }
 
     let cancelled = false;
-    const sectionsSnapshot = state.sections;
+    const sectionsSnapshot = editorSections;
     const fingerprintSnapshot = currentFullFingerprint;
 
     async function loadQualityBaseline() {
@@ -1058,16 +1405,16 @@ export function FileScreen() {
     return () => {
       cancelled = true;
     };
-  }, [currentFullFingerprint, qualityEnabled, qualityReport, state.sections]);
+  }, [currentFullFingerprint, documentMode, editorSections, qualityEnabled, qualityReport]);
 
   async function refreshFullQuality() {
-    if (!qualityEnabled || qualityLoading || state.sections.length === 0) {
+    if (documentMode || !qualityEnabled || qualityLoading || editorSections.length === 0) {
       return;
     }
 
     setQualityNotice(null);
     const sectionFingerprints = Object.fromEntries(
-      state.sections.map((section) => [section.id, qualityFingerprint(section)])
+      editorSections.map((section) => [section.id, qualityFingerprint(section)])
     );
 
     try {
@@ -1077,7 +1424,7 @@ export function FileScreen() {
       // stale-section fan-out did, without the redundant per-section requests.
       const fingerprint = currentFullFingerprintRef.current ?? currentFullFingerprint;
       const payload = await runFullQuality({
-        sections: state.sections,
+        sections: editorSections,
         fingerprint: `full:${fingerprint}`,
         force: true,
       });
@@ -1086,7 +1433,7 @@ export function FileScreen() {
         setAnalyzedFullFingerprint(fingerprint);
         setAnalyzedSectionFingerprints(
           Object.fromEntries(
-            state.sections.map((section) => [
+            editorSections.map((section) => [
               section.id,
               sectionFingerprintByIdRef.current.get(section.id) ?? sectionFingerprints[section.id],
             ])
@@ -1101,7 +1448,7 @@ export function FileScreen() {
   }
 
   async function refreshSectionQuality(section: CreedSection) {
-    if (!qualityEnabled || qualitySectionLoading === section.id) {
+    if (documentMode || !qualityEnabled || qualitySectionLoading === section.id) {
       return;
     }
 
@@ -1110,7 +1457,7 @@ export function FileScreen() {
       const sectionFingerprint =
         sectionFingerprintByIdRef.current.get(section.id) ?? qualityFingerprint(section);
       const nextSectionReport = await runSectionQuality({
-        sections: state.sections,
+        sections: editorSections,
         section,
         fingerprint: sectionFingerprint,
       });
@@ -1161,12 +1508,80 @@ export function FileScreen() {
     [openComposer, scrollComposerIntoView]
   );
 
+  function createDocumentSection(name: string, starter?: string): CreedSection {
+    const slug = name
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    const baseId = slug || "section";
+    const existingIds = new Set(documentSections.map((section) => section.id));
+    let id = baseId;
+    let index = 2;
+    while (existingIds.has(id)) {
+      id = `${baseId}-${index}`;
+      index += 1;
+    }
+
+    return {
+      id,
+      kind: "rich-text",
+      template: "freeform",
+      name: name.trim(),
+      accent: "identity",
+      content: starter ?? "Start shaping this section.",
+      agentWritable: true,
+      agentPermission: "propose",
+      lastEditedBy: "Creed",
+      lastEditedType: "user",
+      lastEditedLabel: "just now",
+    };
+  }
+
+  function addDocumentSection(name: string, starter?: string, afterSectionId?: string | null) {
+    setDocumentSections((current) => {
+      const nextSection = createDocumentSection(name, starter);
+      if (!afterSectionId) {
+        return [...current, nextSection];
+      }
+      const index = current.findIndex((section) => section.id === afterSectionId);
+      if (index === -1) {
+        return [...current, nextSection];
+      }
+      return [
+        ...current.slice(0, index + 1),
+        nextSection,
+        ...current.slice(index + 1),
+      ];
+    });
+  }
+
+  function updateDocumentSection(sectionId: string, patch: Partial<CreedSection>) {
+    setDocumentSections((current) =>
+      current.map((section) => section.id === sectionId ? { ...section, ...patch } : section)
+    );
+  }
+
+  function reorderDocumentSections(ids: string[]) {
+    setDocumentSections((current) => {
+      const byId = new Map(current.map((section) => [section.id, section]));
+      const ordered = ids.flatMap((id) => {
+        const section = byId.get(id);
+        return section ? [section] : [];
+      });
+      const missing = current.filter((section) => !ids.includes(section.id));
+      return [...ordered, ...missing];
+    });
+  }
+
   function submitComposer() {
     if (!composerName.trim()) {
       return;
     }
 
-    if (insertAfterId) {
+    if (documentMode) {
+      addDocumentSection(composerName, composerStarter, insertAfterId);
+    } else if (insertAfterId) {
       addSectionAfter(insertAfterId, composerName, composerStarter);
     } else {
       addSection(composerName, composerStarter);
@@ -1212,7 +1627,11 @@ export function FileScreen() {
         throw new Error(parsed.warnings[0] ?? "Could not import this markdown file");
       }
 
-      await importSections(parsed.sections);
+      if (documentMode) {
+        setDocumentSections(parsed.sections);
+      } else {
+        await importSections(parsed.sections);
+      }
       if (parsed.warnings.length > 0) {
         toast.warning(`Imported ${file.name} with warnings`);
       } else {
@@ -1231,7 +1650,196 @@ export function FileScreen() {
     }
   }
 
+  async function reloadDocumentActivity(documentId: string) {
+    const response = await fetch(`/api/app/documents/${encodeURIComponent(documentId)}/activity`, {
+      cache: "no-store",
+    });
+    if (!response.ok) return;
+    const payload = (await response.json()) as { activity?: DocumentActivityEvent[] };
+    if (payload.activity) {
+      setDocumentActivity(payload.activity);
+    }
+  }
+
+  async function handleSaveDocument() {
+    if (!currentDocument || documentSaving || !documentDirty) {
+      return;
+    }
+
+    try {
+      setDocumentSaving(true);
+      const response = await fetch(`/api/app/documents/${encodeURIComponent(currentDocument.id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: documentMarkdown,
+          expectedRevision: currentDocument.revision,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await readError(response, "Could not save document."));
+      }
+      const payload = (await response.json()) as { document?: SharedDocument };
+      if (payload.document) {
+        setCurrentDocument(payload.document);
+        const parsed = parseDocumentSections(payload.document.content, payload.document.title);
+        setDocumentSections(parsed);
+        setSavedDocumentMarkdown(documentSectionsToMarkdown(parsed, payload.document.title));
+        await reloadDocumentActivity(payload.document.id);
+      }
+      toast.success("Document saved");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not save document.");
+    } finally {
+      setDocumentSaving(false);
+    }
+  }
+
+  async function handlePublishDocument() {
+    if (!currentDocument || documentPublishing) {
+      return;
+    }
+
+    try {
+      if (documentDirty) {
+        await handleSaveDocument();
+      }
+
+      setDocumentPublishing(true);
+      const response = await fetch(`/api/app/documents/${encodeURIComponent(currentDocument.id)}/github/push`, {
+        method: "POST",
+      });
+      if (!response.ok) {
+        throw new Error(await readError(response, "Could not publish document."));
+      }
+      const payload = (await response.json()) as { document?: SharedDocument };
+      if (payload.document) {
+        setCurrentDocument(payload.document);
+        setSavedDocumentMarkdown(documentSectionsToMarkdown(documentSections, payload.document.title));
+        await reloadDocumentActivity(payload.document.id);
+      }
+      toast.success("Published to GitHub");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not publish document.");
+    } finally {
+      setDocumentPublishing(false);
+    }
+  }
+
+  async function updateDocumentProperty<K extends DocumentPropertyName>(
+    property: K,
+    value: DocumentPropertyValueMap[K]
+  ) {
+    if (!currentDocument || savingDocumentProperty) {
+      return;
+    }
+
+    try {
+      setSavingDocumentProperty(property);
+      const response = await fetch(`/api/app/documents/${encodeURIComponent(currentDocument.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          [property]: value,
+          expectedRevision: currentDocument.revision,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await readError(response, "Could not update document properties."));
+      }
+      const payload = (await response.json()) as { document?: SharedDocument };
+      if (payload.document) {
+        setCurrentDocument(payload.document);
+        await reloadDocumentActivity(payload.document.id);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not update document properties.");
+    } finally {
+      setSavingDocumentProperty(null);
+    }
+  }
+
+  async function createDocumentComment(parentId?: string) {
+    if (!currentDocument) {
+      return;
+    }
+    const body = parentId ? replyBody : commentBody;
+    if (!body.trim()) {
+      return;
+    }
+
+    try {
+      if (parentId) setSavingReply(true);
+      else setSavingComment(true);
+      const response = await fetch(`/api/app/documents/${encodeURIComponent(currentDocument.id)}/comments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          body,
+          parentId: parentId ?? null,
+          referenceQuote: parentId ? null : commentReferenceQuote || null,
+          mentionedUserIds: parentId ? [] : mentionedUserIds,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await readError(response, "Could not add comment."));
+      }
+      const payload = (await response.json()) as { comment?: DocumentComment };
+      if (payload.comment) {
+        setDocumentComments((rows) => [...rows, payload.comment!]);
+        setActiveDocumentPanel("comments");
+        setActiveDocumentCommentId(payload.comment.id);
+      }
+      if (parentId) {
+        setReplyBody("");
+        setReplyingTo(null);
+      } else {
+        setCommentBody("");
+        setCommentReferenceQuote("");
+        setMentionedUserIds([]);
+      }
+      await reloadDocumentActivity(currentDocument.id);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not add comment.");
+    } finally {
+      setSavingReply(false);
+      setSavingComment(false);
+    }
+  }
+
+  async function updateDocumentCommentStatus(commentId: string, status: "open" | "resolved") {
+    const response = await fetch(`/api/app/comments/${encodeURIComponent(commentId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    if (!response.ok) {
+      toast.error(await readError(response, "Could not update comment."));
+      return;
+    }
+    const payload = (await response.json()) as { comment?: DocumentComment };
+    if (payload.comment) {
+      setDocumentComments((rows) =>
+        rows.map((comment) => comment.id === commentId ? payload.comment! : comment)
+      );
+    }
+    if (currentDocument) {
+      await reloadDocumentActivity(currentDocument.id);
+    }
+  }
+
+  function toggleMention(userId: string) {
+    setMentionedUserIds((current) =>
+      current.includes(userId) ? current.filter((id) => id !== userId) : [...current, userId]
+    );
+  }
+
   async function handleOpenPushReview() {
+    if (documentMode) {
+      await handlePublishDocument();
+      return;
+    }
+
     setSelectedVersionAction("push");
     setPushMessage("Update Creed");
     setPushPreview(null);
@@ -1314,6 +1922,10 @@ export function FileScreen() {
   }
 
   async function handleOpenPullReview() {
+    if (documentMode) {
+      return;
+    }
+
     try {
       setSelectedVersionAction("pull");
       setPullBusy(true);
@@ -1519,13 +2131,7 @@ export function FileScreen() {
       window.removeEventListener("resize", update);
       setActiveShellSection(null);
     };
-  }, [setActiveShellSection, state.sections.length, pendingNewSectionProposalCount]);
-
-  useEffect(() => {
-    if (state.sections.length === 0) {
-      router.replace("/onboarding");
-    }
-  }, [router, state.sections.length]);
+  }, [editorSections.length, pendingNewSectionProposalCount, setActiveShellSection]);
 
   useEffect(() => {
     if (!pullDialogOpen || !pullPreview) {
@@ -1670,15 +2276,43 @@ export function FileScreen() {
                 data-file-sticky-header
                 className="sticky top-0 z-20 mb-8 -mx-4 bg-[color:var(--creed-surface)]/95 px-4 pb-5 pt-2 backdrop-blur-sm md:-mx-12 md:mb-12 md:px-12 md:pb-7 xl:-mx-16 xl:px-16"
               >
-                <div className="flex flex-col gap-6 md:flex-row md:items-start md:justify-between">
-                  <div>
-                    <div className="font-heading text-[1.22rem] font-medium tracking-[-0.03em] text-[var(--creed-text-primary)] md:text-[1.45rem]">
-                      {state.user.name} / Creed
+                <div
+                  className={cn(
+                    "flex gap-3",
+                    documentMode
+                      ? "flex-row items-start justify-between"
+                      : "flex-col md:flex-row md:items-start md:justify-between"
+                  )}
+                >
+                  <div className="flex min-w-0 items-start gap-2">
+                    {documentMode ? (
+                      <Link
+                        href="/dashboard"
+                        aria-label="Back to dashboard"
+                        className={cn("mt-0.5 inline-flex shrink-0 items-center justify-center transition-colors duration-150", documentHeaderIconButtonClass)}
+                      >
+                        <ArrowLeft className="h-4 w-4" strokeWidth={1.8} />
+                      </Link>
+                    ) : null}
+                    <div className="min-w-0">
+                      <div className="truncate font-heading text-[1.22rem] font-medium tracking-[-0.03em] text-[var(--creed-text-primary)] md:text-[1.45rem]">
+                        {documentMode ? currentDocument?.title ?? "Document" : `${state.user.name} / Creed`}
+                      </div>
+                      <SaveStatus
+                        saving={documentMode ? documentSaving : state.saving}
+                        lastSavedAt={
+                          documentMode
+                            ? currentDocument?.updatedAt
+                              ? new Date(currentDocument.updatedAt).getTime()
+                              : null
+                            : state.lastSavedAt
+                        }
+                      />
                     </div>
-                    <SaveStatus saving={state.saving} lastSavedAt={state.lastSavedAt} />
                   </div>
 
-                  <div className="flex items-center gap-2 self-start">
+                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 self-start">
+                    {!documentMode ? (
                     <div className="inline-flex h-7 items-center gap-1">
                       <AnimatePresence initial={false}>
                         {fullQualityDirty || qualityCanRunInitialAnalysis ? (
@@ -1702,7 +2336,7 @@ export function FileScreen() {
                         report={qualityReport}
                         loading={qualityLoading}
                         notice={qualityNotice}
-                        canRefresh={qualityEnabled && state.sections.length > 0}
+                        canRefresh={qualityEnabled && editorSections.length > 0}
                         onRefresh={() => void refreshFullQuality()}
                       >
                         <button
@@ -1718,6 +2352,7 @@ export function FileScreen() {
                         </button>
                       </OverallQualityPopover>
                     </div>
+                    ) : null}
                     <input
                       ref={importInputRef}
                       type="file"
@@ -1732,8 +2367,25 @@ export function FileScreen() {
                         void handleImportFile(file);
                       }}
                     />
+                    {documentMode ? (
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label="Save document"
+                        title="Save document"
+                        className={documentHeaderIconButtonClass}
+                        disabled={documentSaving || !documentDirty}
+                        onClick={() => void handleSaveDocument()}
+                      >
+                        {documentSaving ? (
+                          <LoaderCircle className="inline-flex h-3.5 w-3.5 shrink-0 animate-spin" />
+                        ) : (
+                          <Save className="inline-flex h-3.5 w-3.5 shrink-0" />
+                        )}
+                      </Button>
+                    ) : null}
                     <div
-                      className="flex items-center"
+                      className={documentMode ? "contents" : "flex items-center"}
                       title={
                         githubConfigured
                           ? undefined
@@ -1741,20 +2393,27 @@ export function FileScreen() {
                       }
                     >
                       <Button
-                        variant="outline"
-                        size="sm"
-                        style={{ borderTopLeftRadius: 13, borderBottomLeftRadius: 13, borderTopRightRadius: 0, borderBottomRightRadius: 0, height: 32, minHeight: 32 }}
+                        variant={documentMode ? "ghost" : "outline"}
+                        size={documentMode ? "icon-sm" : "sm"}
+                        aria-label={documentMode ? "Publish document" : undefined}
+                        title={documentMode ? "Publish document" : undefined}
+                        style={
+                          documentMode
+                            ? undefined
+                            : { borderTopLeftRadius: 13, borderBottomLeftRadius: 13, borderTopRightRadius: 0, borderBottomRightRadius: 0, height: 32, minHeight: 32 }
+                        }
                         className={cn(
                           // Neutral outline pill - this button only OPENS the
                           // push/pull dialog. The brand-blue CTA lives on the
                           // dialog's final confirm button (Push Creed / Import
                           // remote Creed), so we keep the trigger here calm to
                           // avoid two competing CTAs on screen.
-                          "border-r-0 border-[var(--creed-border)] bg-[var(--creed-surface)] px-3 text-[12px] md:px-3.5 md:text-sm",
+                          "border-[var(--creed-border)] bg-[var(--creed-surface)] px-3 text-[12px] md:px-3.5 md:text-sm",
+                          documentMode && documentHeaderIconButtonClass,
+                          documentMode && "px-0 md:px-0",
+                          !documentMode && "border-r-0",
                           !githubConfigured && "text-[var(--creed-text-tertiary)]"
                         )}
-                        onMouseEnter={versionIcon.start}
-                        onMouseLeave={versionIcon.settle}
                         onClick={() => {
                           if (selectedVersionAction === "pull") {
                             if (!pullDisabled) {
@@ -1770,13 +2429,14 @@ export function FileScreen() {
                         disabled={selectedVersionAction === "pull" ? pullDisabled : pushDisabled}
                       >
                         {selectedVersionAction === "pull" ? (
-                          <CloudDownloadIcon ref={versionIcon.iconRef} size={14} className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none" />
+                          <CloudDownload className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none" />
                         ) : (
-                          <CloudUploadIcon ref={versionIcon.iconRef} size={14} className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none" />
+                          <CloudUpload className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none" />
                         )}
-                        {selectedVersionAction === "pull" ? "Pull" : "Push"}
+                        {documentMode ? null : selectedVersionAction === "pull" ? "Pull" : "Push"}
                       </Button>
 
+                      {!documentMode ? (
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button
@@ -1794,7 +2454,7 @@ export function FileScreen() {
                           className="border-[var(--creed-border)] bg-[var(--creed-surface)]"
                         >
                           <AnimatedMenuIconItem
-                            icon={CloudUploadIcon}
+                            icon={CloudUpload}
                             className="text-sm"
                             disabled={pushDisabled}
                             onSelect={(event) => {
@@ -1805,7 +2465,7 @@ export function FileScreen() {
                             Push
                           </AnimatedMenuIconItem>
                           <AnimatedMenuIconItem
-                            icon={CloudDownloadIcon}
+                            icon={CloudDownload}
                             className="text-sm"
                             disabled={pullDisabled}
                             onSelect={(event) => {
@@ -1818,62 +2478,102 @@ export function FileScreen() {
                           </AnimatedMenuIconItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
+                      ) : null}
                     </div>
 
-                    {/* Desktop: labelled pill. Mobile: icon-only circle that
-                        matches the Lock button next to it. */}
-                    <Button
-                      variant="outline"
-                      size="icon-sm"
-                      aria-label="Activity"
-                      style={{ borderRadius: 13, height: 32, width: 32, minHeight: 32, minWidth: 32 }}
-                      className={cn(
-                        "border-[var(--creed-border)] bg-[var(--creed-surface)] md:hidden",
-                        activityOpen && "bg-[var(--creed-surface-raised)]"
-                      )}
-                      onMouseEnter={activityIcon.start}
-                      onMouseLeave={activityIcon.settle}
-                      onClick={() => {
-                        setActivityOpen((current) => !current);
-                      }}
-                    >
-                      <HistoryIcon
-                        ref={activityIcon.iconRef}
-                        size={14}
-                        className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none"
-                      />
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      style={{ borderRadius: 13, height: 32, minHeight: 32 }}
-                      className={cn(
-                        "hidden border-[var(--creed-border)] bg-[var(--creed-surface)] px-3 text-[12px] md:inline-flex md:px-3.5 md:text-sm",
-                        activityOpen && "bg-[var(--creed-surface-raised)]"
-                      )}
-                      onMouseEnter={activityIcon.start}
-                      onMouseLeave={activityIcon.settle}
-                      onClick={() => {
-                        setActivityOpen((current) => !current);
-                      }}
-                    >
-                      <HistoryIcon
-                        ref={activityIcon.iconRef}
-                        size={14}
-                        className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none"
-                      />
-                      Activity
-                    </Button>
+                    {documentMode ? (
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`Comments${openDocumentCommentCount > 0 ? `, ${openDocumentCommentCount} open` : ""}`}
+                        title="Comments"
+                        className={cn(
+                          "relative",
+                          documentHeaderIconButtonClass,
+                          activeDocumentPanel === "comments" && "bg-[var(--creed-surface-raised)]"
+                        )}
+                        onClick={() => {
+                          setActiveDocumentPanel((current) => current === "comments" ? null : "comments");
+                        }}
+                      >
+                        <MessageSquare className="inline-flex h-3.5 w-3.5 shrink-0" />
+                        {openDocumentCommentCount > 0 ? (
+                          <span className="absolute -right-1 -top-1 h-4 min-w-4 rounded-full bg-[#F59E0B] px-1 text-[9px] font-semibold leading-4 text-white">
+                            {openDocumentCommentCount}
+                          </span>
+                        ) : null}
+                      </Button>
+                    ) : null}
 
-                    <HeaderLockButton locked={state.locked} onToggle={toggleLock} />
+                    {documentMode ? (
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label="Activity"
+                        title="Activity"
+                        className={cn(
+                          documentHeaderIconButtonClass,
+                          activeDocumentPanel === "activity" && "bg-[var(--creed-surface-raised)]"
+                        )}
+                        onClick={() => {
+                          setActiveDocumentPanel((current) => current === "activity" ? null : "activity");
+                        }}
+                      >
+                        <History className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none" />
+                      </Button>
+                    ) : (
+                      <>
+                        <Button
+                          variant="outline"
+                          size="icon-sm"
+                          aria-label="Activity"
+                          style={{ borderRadius: 13, height: 32, width: 32, minHeight: 32, minWidth: 32 }}
+                          className={cn(
+                            "border-[var(--creed-border)] bg-[var(--creed-surface)] md:hidden",
+                            activityOpen && "bg-[var(--creed-surface-raised)]"
+                          )}
+                          onClick={() => {
+                            setActivityOpen((current) => !current);
+                          }}
+                        >
+                          <History className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none" />
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          style={{ borderRadius: 13, height: 32, minHeight: 32 }}
+                          className={cn(
+                            "hidden border-[var(--creed-border)] bg-[var(--creed-surface)] px-3 text-[12px] md:inline-flex md:px-3.5 md:text-sm",
+                            activityOpen && "bg-[var(--creed-surface-raised)]"
+                          )}
+                          onClick={() => {
+                            setActivityOpen((current) => !current);
+                          }}
+                        >
+                          <History className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none" />
+                          Activity
+                        </Button>
+                      </>
+                    )}
+
+                    <HeaderLockButton
+                      locked={documentMode ? documentLocked : state.locked}
+                      onToggle={documentMode ? () => setDocumentLocked((current) => !current) : toggleLock}
+                      iconOnly={documentMode}
+                    />
 
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button
-                          variant="outline"
+                          variant={documentMode ? "ghost" : "outline"}
                           size="icon-sm"
-                          style={{ borderRadius: 13, height: 32, width: 32, minHeight: 32, minWidth: 32 }}
-                          className="border-[var(--creed-border)] bg-[var(--creed-surface)] data-[state=open]:bg-[var(--creed-surface-raised)]"
+                          style={documentMode ? undefined : { borderRadius: 13, height: 32, width: 32, minHeight: 32, minWidth: 32 }}
+                          className={cn(
+                            documentMode
+                              ? documentHeaderIconButtonClass
+                              : "border-[var(--creed-border)] bg-[var(--creed-surface)]",
+                            "data-[state=open]:bg-[var(--creed-surface-raised)]"
+                          )}
                         >
                           <Ellipsis className="h-3.5 w-3.5" />
                         </Button>
@@ -1883,7 +2583,7 @@ export function FileScreen() {
                         className="border-[var(--creed-border)] bg-[var(--creed-surface)]"
                       >
                         <AnimatedMenuIconItem
-                          icon={FolderUpIcon}
+                          icon={FolderUp}
                           showIcon={!importBusy && copiedAction !== "import"}
                           className="text-sm"
                           disabled={importBusy}
@@ -1904,12 +2604,12 @@ export function FileScreen() {
                           ) : null}
                         </AnimatedMenuIconItem>
                         <AnimatedMenuIconItem
-                          icon={CopyIcon}
+                          icon={Copy}
                           showIcon={copiedAction !== "copy"}
                           className="min-w-[82px] text-sm"
                           onSelect={(event) => {
                             event.preventDefault();
-                            void copyValue("copy", exportMarkdown());
+                            void copyValue("copy", localMarkdown);
                           }}
                         >
                           {copiedAction === "copy" ? (
@@ -1918,14 +2618,14 @@ export function FileScreen() {
                           {copiedAction === "copy" ? "Copied" : "Copy"}
                         </AnimatedMenuIconItem>
                         <AnimatedMenuIconItem
-                          icon={DownloadIcon}
+                          icon={Download}
                           showIcon={copiedAction !== "download"}
                           className="text-sm"
                           onSelect={(event) => {
                             event.preventDefault();
                             downloadFile(
-                              "creed.md",
-                              exportMarkdown(),
+                              documentMode && currentDocument ? currentDocument.path : "creed.md",
+                              localMarkdown,
                               "text/markdown;charset=utf-8"
                             );
                           }}
@@ -1935,32 +2635,44 @@ export function FileScreen() {
                           ) : null}
                           {copiedAction === "download" ? "Downloaded" : "Download"}
                         </AnimatedMenuIconItem>
-                        <DropdownMenuSeparator />
-                        <AnimatedMenuIconItem
-                          icon={ArchiveIcon}
-                          className="text-sm"
-                          onSelect={() => {
-                            window.setTimeout(() => setArchiveAllOpen(true), 0);
-                          }}
-                        >
-                          Archive
-                        </AnimatedMenuIconItem>
-                        <AnimatedMenuIconItem
-                          icon={DeleteIcon}
-                          className="mt-1 bg-[#DC2626] text-sm text-white hover:bg-[#B91C1C] hover:text-white focus:bg-[#B91C1C] focus:text-white data-[highlighted]:bg-[#B91C1C] data-[highlighted]:text-white not-data-[variant=destructive]:focus:**:text-white"
-                          onSelect={() => {
-                            // Let the menu close first, then open the dialog on
-                            // the next tick so its enter animation plays (two
-                            // Radix overlays in the same tick skips it).
-                            window.setTimeout(() => setDeleteFileOpen(true), 0);
-                          }}
-                        >
-                          Delete
-                        </AnimatedMenuIconItem>
+                        {!documentMode ? (
+                          <>
+                            <DropdownMenuSeparator />
+                            <AnimatedMenuIconItem
+                              icon={Archive}
+                              className="text-sm"
+                              onSelect={() => {
+                                window.setTimeout(() => setArchiveAllOpen(true), 0);
+                              }}
+                            >
+                              Archive
+                            </AnimatedMenuIconItem>
+                            <AnimatedMenuIconItem
+                              icon={Delete}
+                              className="mt-1 bg-[#DC2626] text-sm text-white hover:bg-[#B91C1C] hover:text-white focus:bg-[#B91C1C] focus:text-white data-[highlighted]:bg-[#B91C1C] data-[highlighted]:text-white not-data-[variant=destructive]:focus:**:text-white"
+                              onSelect={() => {
+                                // Let the menu close first, then open the dialog on
+                                // the next tick so its enter animation plays (two
+                                // Radix overlays in the same tick skips it).
+                                window.setTimeout(() => setDeleteFileOpen(true), 0);
+                              }}
+                            >
+                              Delete
+                            </AnimatedMenuIconItem>
+                          </>
+                        ) : null}
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </div>
                 </div>
+
+                {documentMode && currentDocument ? (
+                  <DocumentPropertyBar
+                    document={currentDocument}
+                    disabledProperty={savingDocumentProperty}
+                    onChange={(property, value) => void updateDocumentProperty(property, value)}
+                  />
+                ) : null}
 
                 {/* Review pill lives inside the sticky header block so both
                     pin to the top of the scroll viewport together. Visually
@@ -2013,7 +2725,7 @@ export function FileScreen() {
               <Reorder.Group
                 axis="y"
                 values={visibleSections.map((section) => section.id)}
-                onReorder={reorderSections}
+                onReorder={documentMode ? reorderDocumentSections : reorderSections}
                 className="space-y-10 md:space-y-16"
               >
                 {visibleSections.map((section) => {
@@ -2021,15 +2733,21 @@ export function FileScreen() {
                   const analyzedFingerprint = analyzedSectionFingerprints[section.id];
                   const currentFingerprint = sectionFingerprintById.get(section.id);
 
-                  const isOverridden = state.sectionLockOverrides.includes(section.id);
-                  const sectionLocked = isOverridden ? !state.locked : state.locked;
+                  const isOverridden = !documentMode && state.sectionLockOverrides.includes(section.id);
+                  const sectionLocked = documentMode
+                    ? documentLocked
+                    : isOverridden ? !state.locked : state.locked;
                   return (
                     <SectionCard
                       key={section.id}
                       section={section}
                       locked={sectionLocked}
-                      globalLocked={state.locked}
-                      onToggleLock={() => toggleSectionLock(section.id)}
+                      globalLocked={documentMode ? documentLocked : state.locked}
+                      onToggleLock={
+                        documentMode
+                          ? () => setDocumentLocked((current) => !current)
+                          : () => toggleSectionLock(section.id)
+                      }
                       quality={quality}
                       qualityLoading={qualitySectionLoading === section.id}
                       qualityDirty={
@@ -2046,7 +2764,11 @@ export function FileScreen() {
                         rejectProposal(id);
                       }}
                       onChangeRichText={(content) => {
-                        updateRichTextSection(section.id, content);
+                        if (documentMode) {
+                          updateDocumentSection(section.id, { content });
+                        } else {
+                          updateRichTextSection(section.id, content);
+                        }
                       }}
                       onRename={() =>
                         setRenameSectionState({
@@ -2054,8 +2776,30 @@ export function FileScreen() {
                           name: section.name,
                         })
                       }
-                      onDuplicate={() => duplicateSection(section.id)}
-                      onSetAccent={(accent) => setSectionAccent(section.id, accent)}
+                      onDuplicate={() => {
+                        if (documentMode) {
+                          setDocumentSections((current) => {
+                            const index = current.findIndex((item) => item.id === section.id);
+                            if (index === -1) return current;
+                            const copy = createDocumentSection(`${section.name} copy`, section.content);
+                            copy.accent = section.accent;
+                            return [
+                              ...current.slice(0, index + 1),
+                              copy,
+                              ...current.slice(index + 1),
+                            ];
+                          });
+                        } else {
+                          duplicateSection(section.id);
+                        }
+                      }}
+                      onSetAccent={(accent) => {
+                        if (documentMode) {
+                          updateDocumentSection(section.id, { accent });
+                        } else {
+                          setSectionAccent(section.id, accent);
+                        }
+                      }}
                       onDelete={() =>
                         // Defer so the section menu closes before the dialog
                         // opens, letting the dialog play its enter animation.
@@ -2069,10 +2813,24 @@ export function FileScreen() {
                         )
                       }
                       onArchive={() => {
-                        archiveSection(section.id);
-                        toast.success(`Archived "${section.name}"`);
+                        if (documentMode) {
+                          updateDocumentSection(section.id, { archived: true });
+                        } else {
+                          archiveSection(section.id);
+                          toast.success(`Archived "${section.name}"`);
+                        }
                       }}
                       onAddSectionAfter={() => openComposerAndReveal(section.id)}
+                      comments={documentMode ? rootDocumentComments : []}
+                      activeCommentId={activeDocumentCommentId}
+                      onSelectComment={
+                        documentMode
+                          ? (commentId) => {
+                              setActiveDocumentPanel("comments");
+                              setActiveDocumentCommentId(commentId);
+                            }
+                          : undefined
+                      }
                     />
                   );
                 })}
@@ -2160,7 +2918,9 @@ export function FileScreen() {
                           onClick={() => {
                             setComposerName(suggestion.name);
                             setComposerStarter(suggestion.starter);
-                            if (!insertAfterId) {
+                            if (documentMode) {
+                              addDocumentSection(suggestion.name, suggestion.starter, insertAfterId);
+                            } else if (!insertAfterId) {
                               addSection(suggestion.name, suggestion.starter);
                             } else {
                               addSectionAfter(insertAfterId, suggestion.name, suggestion.starter);
@@ -2206,13 +2966,41 @@ export function FileScreen() {
           </div>
         </div>
 
-        <ActivityRail
-          activity={state.activity}
-          proposals={state.proposals}
-          sections={state.sections}
-          open={activityOpen}
-          onClose={() => setActivityOpen(false)}
-        />
+        {documentMode ? (
+          <DocumentCollaborationRail
+            panel={activeDocumentPanel}
+            comments={rootDocumentComments}
+            repliesByParent={documentRepliesByParent}
+            activity={documentActivity}
+            users={documentUsers}
+            activeCommentId={activeDocumentCommentId}
+            commentBody={commentBody}
+            commentReferenceQuote={commentReferenceQuote}
+            mentionedUserIds={mentionedUserIds}
+            replyingTo={replyingTo}
+            replyBody={replyBody}
+            savingComment={savingComment}
+            savingReply={savingReply}
+            onCommentBodyChange={setCommentBody}
+            onReferenceQuoteChange={setCommentReferenceQuote}
+            onToggleMention={toggleMention}
+            onReplyingToChange={setReplyingTo}
+            onReplyBodyChange={setReplyBody}
+            onCreateComment={() => void createDocumentComment()}
+            onCreateReply={(commentId) => void createDocumentComment(commentId)}
+            onUpdateCommentStatus={(commentId, status) => void updateDocumentCommentStatus(commentId, status)}
+            onActiveCommentChange={setActiveDocumentCommentId}
+            onClose={() => setActiveDocumentPanel(null)}
+          />
+        ) : (
+          <ActivityRail
+            activity={state.activity}
+            proposals={state.proposals}
+            sections={state.sections}
+            open={activityOpen}
+            onClose={() => setActivityOpen(false)}
+          />
+        )}
 
       </div>
 
@@ -2478,6 +3266,9 @@ function SectionCard({
   onDelete,
   onArchive,
   onAddSectionAfter,
+  comments = [],
+  activeCommentId = null,
+  onSelectComment,
 }: {
   section: CreedSection;
   locked: boolean;
@@ -2497,12 +3288,24 @@ function SectionCard({
   onDelete: () => void;
   onArchive: () => void;
   onAddSectionAfter: () => void;
+  comments?: DocumentComment[];
+  activeCommentId?: string | null;
+  onSelectComment?: (commentId: string) => void;
 }) {
   const dragControls = useDragControls();
   const accent = accentColorMap[section.accent];
-  // Ref so the Colour sub-trigger row can drive the stamp animation when
-  // the row itself is hovered (not just the icon's own hit-target).
-  const stampIconRef = useRef<StampIconHandle | null>(null);
+  const sectionText = useMemo(() => htmlToText(section.content).toLocaleLowerCase(), [section.content]);
+  const liveCommentMarkers = useMemo(
+    () =>
+      comments
+        .filter((comment) => {
+          if (comment.status !== "open") return false;
+          const quote = comment.referenceQuote.trim();
+          return quote.length > 0 && sectionText.includes(quote.toLocaleLowerCase());
+        })
+        .slice(0, 4),
+    [comments, sectionText]
+  );
 
   return (
     <Reorder.Item
@@ -2519,7 +3322,7 @@ function SectionCard({
           onPointerDown={(event) => dragControls.start(event)}
           className="group/drag absolute -left-7 top-1 hidden rounded-full p-1 text-[var(--creed-text-secondary)] transition-colors duration-150 hover:text-[var(--creed-text-primary)] xl:flex"
         >
-          <GripVerticalIcon className="h-4 w-4" size={16} />
+          <GripVertical className="h-4 w-4" />
         </button>
 
         <div className="mb-6 flex items-start justify-between gap-4">
@@ -2593,7 +3396,7 @@ function SectionCard({
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="border-[var(--creed-border)] bg-[var(--creed-surface)]">
               <AnimatedMenuIconItem
-                icon={SquarePenIcon}
+                icon={SquarePen}
                 className="text-sm"
                 onSelect={onRename}
               >
@@ -2607,15 +3410,9 @@ function SectionCard({
               */}
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger
-                  onMouseEnter={() => stampIconRef.current?.startAnimation()}
-                  onMouseLeave={() => stampIconRef.current?.stopAnimation()}
                   className="group/colour rounded-[var(--radius-md)] gap-1.5 px-2.5 py-2 text-sm [&>svg:last-of-type]:hidden"
                 >
-                  <StampIcon
-                    ref={stampIconRef}
-                    size={14}
-                    className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none"
-                  />
+                  <Stamp className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none" />
                   <span className="flex-1 text-left">Colour</span>
                   <ChevronLeft
                     className={cn(
@@ -2678,19 +3475,19 @@ function SectionCard({
                 </DropdownMenuPortal>
               </DropdownMenuSub>
               <AnimatedMenuIconItem
-                icon={FileStackIcon}
+                icon={FileStack}
                 className="text-sm"
                 onSelect={onDuplicate}
               >
                 Duplicate
               </AnimatedMenuIconItem>
               <DropdownMenuSeparator />
-              <AnimatedMenuIconItem icon={ArchiveIcon} className="text-sm" onSelect={onArchive}>
+              <AnimatedMenuIconItem icon={Archive} className="text-sm" onSelect={onArchive}>
                 Archive
               </AnimatedMenuIconItem>
               {/* Solid red, matching the file menu's Delete. */}
               <AnimatedMenuIconItem
-                icon={DeleteIcon}
+                icon={Delete}
                 className="mt-1 bg-[#DC2626] text-sm text-white hover:bg-[#B91C1C] hover:text-white focus:bg-[#B91C1C] focus:text-white data-[highlighted]:bg-[#B91C1C] data-[highlighted]:text-white not-data-[variant=destructive]:focus:**:text-white"
                 onSelect={onDelete}
               >
@@ -2735,6 +3532,31 @@ function SectionCard({
           </div>
         ) : null}
 
+        {liveCommentMarkers.length > 0 ? (
+          <div className="mb-3 flex flex-wrap gap-2">
+            {liveCommentMarkers.map((comment) => {
+              const active = activeCommentId === comment.id;
+              return (
+                <button
+                  key={comment.id}
+                  type="button"
+                  onClick={() => onSelectComment?.(comment.id)}
+                  className={cn(
+                    "inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
+                    active
+                      ? "border-[#7C2D12] bg-[#FFEDD5] text-[#7C2D12]"
+                      : "border-[#FDBA74] bg-[#FFF7ED] text-[#9A3412] hover:bg-[#FFEDD5]"
+                  )}
+                  title={comment.referenceQuote}
+                >
+                  <MessageSquare className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">{comment.referenceQuote}</span>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+
         <div>
           <RichTextEditor
             sectionId={section.id}
@@ -2750,10 +3572,7 @@ function SectionCard({
   );
 }
 
-// Animated Lock / LockOpen button shared by the header (master) and per-section.
-// The lucide-animated icons fire `startAnimation()` on demand - the button
-// triggers the animation on click, *not* hover, so the user sees the latch
-// move in response to the new state. Same chrome as `QualityRefreshButton`.
+// Lock / unlock button shared by the header and per-section controls.
 function AnimatedLockButton({
   locked,
   title,
@@ -2765,12 +3584,9 @@ function AnimatedLockButton({
   onToggle: () => void;
   size?: "sm" | "header";
 }) {
-  const lockRef = useRef<LockIconHandle | null>(null);
-  const openRef = useRef<LockOpenIconHandle | null>(null);
   const dimensions = size === "header"
     ? "h-8 w-8"
     : "h-7 w-7";
-  const iconSize = size === "header" ? 14 : 16;
 
   return (
     <button
@@ -2778,108 +3594,72 @@ function AnimatedLockButton({
       aria-label={title}
       title={title}
       aria-pressed={locked}
-      onClick={() => {
-        // Play the *target* state's icon animation so the click reads as
-        // "this is what just happened". After the toggle the matching ref
-        // will be the rendered one in the next frame.
-        const next = !locked;
-        onToggle();
-        // Defer to next tick so the new icon has mounted before we trigger.
-        window.requestAnimationFrame(() => {
-          if (next) {
-            lockRef.current?.startAnimation();
-          } else {
-            openRef.current?.startAnimation();
-          }
-        });
-      }}
+      onClick={onToggle}
       className={cn(
         "inline-flex shrink-0 items-center justify-center rounded-full text-[var(--creed-text-secondary)] transition-colors duration-150 hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)]",
         dimensions
       )}
     >
       {locked ? (
-        <LockIcon ref={lockRef} size={iconSize} className="h-4 w-4" />
+        <Lock className="h-4 w-4" />
       ) : (
-        <LockOpenIcon ref={openRef} size={iconSize} className="h-4 w-4" />
+        <LockOpen className="h-4 w-4" />
       )}
     </button>
   );
 }
 
-function HeaderLockButton({ locked, onToggle }: { locked: boolean; onToggle: () => void }) {
+function HeaderLockButton({
+  locked,
+  onToggle,
+  iconOnly = false,
+}: {
+  locked: boolean;
+  onToggle: () => void;
+  iconOnly?: boolean;
+}) {
   // Two-button pattern, identical to the Activity button:
   // mobile renders an icon-only `size="icon-sm"` circle, desktop renders a
   // labelled `size="sm"` pill with the SAME className the Activity pill uses.
-  const mobileLockRef = useRef<LockIconHandle | null>(null);
-  const mobileOpenRef = useRef<LockOpenIconHandle | null>(null);
-  const desktopLockRef = useRef<LockIconHandle | null>(null);
-  const desktopOpenRef = useRef<LockOpenIconHandle | null>(null);
   const title = locked ? "Locked" : "Unlocked";
-
-  function trigger(refs: {
-    lock: typeof mobileLockRef;
-    open: typeof mobileOpenRef;
-  }) {
-    const next = !locked;
-    onToggle();
-    window.requestAnimationFrame(() => {
-      if (next) refs.lock.current?.startAnimation();
-      else refs.open.current?.startAnimation();
-    });
-  }
 
   return (
     <>
       <Button
-        variant="outline"
+        variant={iconOnly ? "ghost" : "outline"}
         size="icon-sm"
         aria-label={title}
         aria-pressed={locked}
-        style={{ borderRadius: 13, height: 32, width: 32, minHeight: 32, minWidth: 32 }}
+        style={iconOnly ? undefined : { borderRadius: 13, height: 32, width: 32, minHeight: 32, minWidth: 32 }}
         className={cn(
-          "border-[var(--creed-border)] bg-[var(--creed-surface)] md:hidden",
+          iconOnly ? documentHeaderIconButtonClass : "border-[var(--creed-border)] bg-[var(--creed-surface)] md:hidden",
           locked && "bg-[var(--creed-surface-raised)]"
         )}
-        onClick={() => trigger({ lock: mobileLockRef, open: mobileOpenRef })}
+        onClick={onToggle}
       >
         {locked ? (
-          <LockIcon
-            ref={mobileLockRef}
-            size={14}
-            className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none"
-          />
+          <Lock className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none" />
         ) : (
-          <LockOpenIcon
-            ref={mobileOpenRef}
-            size={14}
-            className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none"
-          />
+          <LockOpen className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none" />
         )}
       </Button>
+      {iconOnly ? null : (
       <Button
         variant="outline"
         size="sm"
         aria-pressed={locked}
         style={{ borderRadius: 13, height: 32, minHeight: 32 }}
         className="hidden border-[var(--creed-border)] bg-[var(--creed-surface)] px-3 text-[12px] md:inline-flex md:px-3.5 md:text-sm"
-        onClick={() => trigger({ lock: desktopLockRef, open: desktopOpenRef })}
+        onClick={onToggle}
       >
         {locked ? (
-          <LockIcon
-            ref={desktopLockRef}
-            size={14}
-            className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none"
-          />
+          <Lock className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none" />
         ) : (
-          <LockOpenIcon
-            ref={desktopOpenRef}
-            size={14}
-            className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none"
-          />
+          <LockOpen className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none" />
         )}
         {title}
       </Button>
+      )}
     </>
   );
 }
@@ -2894,6 +3674,358 @@ function SectionLockButton({
   onToggle: () => void;
 }) {
   return <AnimatedLockButton locked={locked} onToggle={onToggle} title={title} size="sm" />;
+}
+
+function DocumentCollaborationRail({
+  panel,
+  comments,
+  repliesByParent,
+  activity,
+  users,
+  activeCommentId,
+  commentBody,
+  commentReferenceQuote,
+  mentionedUserIds,
+  replyingTo,
+  replyBody,
+  savingComment,
+  savingReply,
+  onCommentBodyChange,
+  onReferenceQuoteChange,
+  onToggleMention,
+  onReplyingToChange,
+  onReplyBodyChange,
+  onCreateComment,
+  onCreateReply,
+  onUpdateCommentStatus,
+  onActiveCommentChange,
+  onClose,
+}: {
+  panel: "comments" | "activity" | null;
+  comments: DocumentComment[];
+  repliesByParent: Map<string, DocumentComment[]>;
+  activity: DocumentActivityEvent[];
+  users: WorkspaceUser[];
+  activeCommentId: string | null;
+  commentBody: string;
+  commentReferenceQuote: string;
+  mentionedUserIds: string[];
+  replyingTo: string | null;
+  replyBody: string;
+  savingComment: boolean;
+  savingReply: boolean;
+  onCommentBodyChange: (value: string) => void;
+  onReferenceQuoteChange: (value: string) => void;
+  onToggleMention: (userId: string) => void;
+  onReplyingToChange: (commentId: string | null) => void;
+  onReplyBodyChange: (value: string) => void;
+  onCreateComment: () => void;
+  onCreateReply: (commentId: string) => void;
+  onUpdateCommentStatus: (commentId: string, status: "open" | "resolved") => void;
+  onActiveCommentChange: (commentId: string | null) => void;
+  onClose: () => void;
+}) {
+  const open = panel !== null;
+  const title = panel === "activity" ? "Activity" : "Comments";
+  const subtitle =
+    panel === "activity"
+      ? "Document changes from users and agents."
+      : "Questions, mentions, and review notes.";
+
+  return (
+    <motion.aside
+      initial={false}
+      animate={{
+        width: open ? 380 : 0,
+        opacity: open ? 1 : 0,
+        x: open ? 0 : 18,
+      }}
+      transition={{
+        duration: 0.34,
+        ease: [0.22, 1, 0.36, 1],
+      }}
+      className={cn(
+        "absolute inset-y-0 right-0 z-30 h-full overflow-hidden border-l border-[var(--creed-border)] bg-[var(--creed-surface)] shadow-[-18px_0_50px_rgba(28,28,26,0.12)] lg:static lg:h-full lg:shrink-0 lg:shadow-none",
+        open ? "pointer-events-auto" : "pointer-events-none"
+      )}
+      style={{ maxWidth: "min(86vw, 380px)" }}
+    >
+      <div className="flex h-full w-full flex-col p-5 lg:w-[380px]">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-[15px] font-medium text-[var(--creed-text-primary)]">
+              {title}
+            </div>
+            <div className="mt-1 text-[12px] text-[var(--creed-text-tertiary)]">
+              {subtitle}
+            </div>
+          </div>
+          <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="Close panel">
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+
+        {panel === "comments" ? (
+          <>
+            <div className="mt-5 space-y-3 rounded-[14px] border border-[var(--creed-border)] bg-[var(--creed-surface-raised)] p-3">
+              <Textarea
+                value={commentBody}
+                onChange={(event) => onCommentBodyChange(event.target.value)}
+                placeholder="Add a comment"
+                className="min-h-24 resize-none bg-[var(--creed-surface)] text-sm"
+              />
+              <Input
+                value={commentReferenceQuote}
+                onChange={(event) => onReferenceQuoteChange(event.target.value)}
+                placeholder="Reference text"
+                className="h-9 bg-[var(--creed-surface)] text-sm"
+              />
+              {users.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5">
+                  {users.map((user) => {
+                    const selected = mentionedUserIds.includes(user.id);
+                    return (
+                      <button
+                        key={user.id}
+                        type="button"
+                        onClick={() => onToggleMention(user.id)}
+                        className={cn(
+                          "rounded-full px-2 py-1 text-[11px] font-medium transition-colors",
+                          selected
+                            ? "bg-[#DBEAFE] text-[#1E40AF]"
+                            : "bg-[var(--creed-surface)] text-[var(--creed-text-secondary)] hover:text-[var(--creed-text-primary)]"
+                        )}
+                      >
+                        @{user.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+              <Button
+                size="sm"
+                onClick={onCreateComment}
+                disabled={savingComment || !commentBody.trim()}
+                className="w-full"
+              >
+                {savingComment ? (
+                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Send className="h-3.5 w-3.5" />
+                )}
+                Add comment
+              </Button>
+            </div>
+
+            <ScrollArea className="mt-5 min-h-0 flex-1">
+              <div className="space-y-3 pr-4">
+                {comments.length ? (
+                  comments.map((comment) => (
+                    <DocumentCommentCard
+                      key={comment.id}
+                      comment={comment}
+                      replies={repliesByParent.get(comment.id) ?? []}
+                      active={activeCommentId === comment.id}
+                      replying={replyingTo === comment.id}
+                      replyBody={replyBody}
+                      savingReply={savingReply}
+                      onActive={() => onActiveCommentChange(comment.id)}
+                      onReplyingToChange={onReplyingToChange}
+                      onReplyBodyChange={onReplyBodyChange}
+                      onCreateReply={onCreateReply}
+                      onUpdateCommentStatus={onUpdateCommentStatus}
+                    />
+                  ))
+                ) : (
+                  <div className="rounded-[14px] border border-dashed border-[var(--creed-border)] px-4 py-8 text-center text-sm text-[var(--creed-text-secondary)]">
+                    No comments yet.
+                  </div>
+                )}
+              </div>
+            </ScrollArea>
+          </>
+        ) : (
+          <ScrollArea className="mt-5 min-h-0 flex-1">
+            <div className="space-y-3 pr-4">
+              {activity.length ? (
+                activity.map((event) => (
+                  <div
+                    key={event.id}
+                    className="rounded-[14px] border border-[var(--creed-border)] bg-[var(--creed-surface-raised)] p-3"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium text-[var(--creed-text-primary)]">
+                          {event.actorLabel}
+                        </div>
+                        <div className="mt-1 text-sm leading-5 text-[var(--creed-text-secondary)]">
+                          {event.summary || event.action}
+                        </div>
+                      </div>
+                      <div className="shrink-0 text-[11px] text-[var(--creed-text-tertiary)]">
+                        {formatDocumentTimestamp(event.createdAt)}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-[14px] border border-dashed border-[var(--creed-border)] px-4 py-8 text-center text-sm text-[var(--creed-text-secondary)]">
+                  No activity yet.
+                </div>
+              )}
+            </div>
+          </ScrollArea>
+        )}
+      </div>
+    </motion.aside>
+  );
+}
+
+function DocumentCommentCard({
+  comment,
+  replies,
+  active,
+  replying,
+  replyBody,
+  savingReply,
+  onActive,
+  onReplyingToChange,
+  onReplyBodyChange,
+  onCreateReply,
+  onUpdateCommentStatus,
+}: {
+  comment: DocumentComment;
+  replies: DocumentComment[];
+  active: boolean;
+  replying: boolean;
+  replyBody: string;
+  savingReply: boolean;
+  onActive: () => void;
+  onReplyingToChange: (commentId: string | null) => void;
+  onReplyBodyChange: (value: string) => void;
+  onCreateReply: (commentId: string) => void;
+  onUpdateCommentStatus: (commentId: string, status: "open" | "resolved") => void;
+}) {
+  const resolved = comment.status === "resolved";
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onActive}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onActive();
+        }
+      }}
+      className={cn(
+        "block w-full rounded-[14px] border p-3 text-left transition-colors",
+        active
+          ? "border-[#93C5FD] bg-[#EFF6FF]"
+          : "border-[var(--creed-border)] bg-[var(--creed-surface-raised)] hover:border-[var(--creed-border-strong)]"
+      )}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-medium text-[var(--creed-text-primary)]">
+            {comment.authorLabel}
+          </div>
+          <div className="mt-0.5 text-[11px] text-[var(--creed-text-tertiary)]">
+            {formatDocumentTimestamp(comment.createdAt)}
+          </div>
+        </div>
+        <span
+          className={cn(
+            "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold",
+            resolved ? "bg-[#F1F5F9] text-[#475569]" : "bg-[#FEF3C7] text-[#92400E]"
+          )}
+        >
+          {resolved ? "Resolved" : "Open"}
+        </span>
+      </div>
+      {comment.referenceQuote ? (
+        <div className="mt-3 border-l-2 border-[#93C5FD] pl-3 text-[12px] leading-5 text-[var(--creed-text-secondary)]">
+          {comment.referenceQuote}
+        </div>
+      ) : null}
+      <div className="mt-3 whitespace-pre-wrap text-sm leading-5 text-[var(--creed-text-primary)]">
+        {comment.body}
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 px-2 text-[12px]"
+          onClick={(event) => {
+            event.stopPropagation();
+            onReplyingToChange(replying ? null : comment.id);
+          }}
+        >
+          Reply
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 px-2 text-[12px]"
+          onClick={(event) => {
+            event.stopPropagation();
+            onUpdateCommentStatus(comment.id, resolved ? "open" : "resolved");
+          }}
+        >
+          {resolved ? "Reopen" : "Resolve"}
+        </Button>
+      </div>
+      {replying ? (
+        <div
+          className="mt-3 space-y-2"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <Textarea
+            value={replyBody}
+            onChange={(event) => onReplyBodyChange(event.target.value)}
+            placeholder="Write a reply"
+            className="min-h-20 resize-none bg-[var(--creed-surface)] text-sm"
+          />
+          <Button
+            type="button"
+            size="sm"
+            className="w-full"
+            disabled={savingReply || !replyBody.trim()}
+            onClick={() => onCreateReply(comment.id)}
+          >
+            {savingReply ? (
+              <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Send className="h-3.5 w-3.5" />
+            )}
+            Send reply
+          </Button>
+        </div>
+      ) : null}
+      {replies.length ? (
+        <div className="mt-3 space-y-2 border-l border-[var(--creed-border)] pl-3">
+          {replies.map((reply) => (
+            <div key={reply.id} className="rounded-[10px] bg-[var(--creed-surface)] p-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="truncate text-[12px] font-medium text-[var(--creed-text-primary)]">
+                  {reply.authorLabel}
+                </div>
+                <div className="shrink-0 text-[10px] text-[var(--creed-text-tertiary)]">
+                  {formatDocumentTimestamp(reply.createdAt)}
+                </div>
+              </div>
+              <div className="mt-1 whitespace-pre-wrap text-[12px] leading-5 text-[var(--creed-text-secondary)]">
+                {reply.body}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function ActivityRail({
@@ -3066,7 +4198,7 @@ function ActivityRail({
             </div>
           ) : (
             <div className="flex flex-col items-center justify-center gap-2 px-4 py-10 text-center text-[13px] text-[var(--creed-text-tertiary)]">
-              <HistoryIcon size={20} className="opacity-60" />
+              <History className="h-5 w-5 opacity-60" />
               <span className="font-medium opacity-60">Nothing here yet</span>
             </div>
           )}

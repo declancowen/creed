@@ -1,11 +1,16 @@
 import { NextResponse } from "next/server";
+import { requireApiAuth } from "@/lib/api-auth";
 import { listGitHubRepos } from "@/lib/github";
 import { withAuthenticatedGitHubAccess } from "@/lib/github-version-control";
 
 export async function GET() {
   try {
-    const repos = await withAuthenticatedGitHubAccess(async ({ integration }) =>
-      listGitHubRepos(integration.access_token!)
+    const auth = await requireApiAuth();
+    if (auth instanceof NextResponse) return auth;
+
+    const repos = await withAuthenticatedGitHubAccess(
+      async ({ integration }) => listGitHubRepos(integration.access_token!),
+      auth
     );
 
     return NextResponse.json({

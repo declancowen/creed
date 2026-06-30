@@ -7,6 +7,11 @@ export type AuthContext = {
   user: User;
 };
 
+export type JsonAuthContext = {
+  auth: AuthContext;
+  input: Record<string, unknown>;
+};
+
 export async function requireApiAuth(): Promise<AuthContext | NextResponse> {
   const supabase = await createSupabaseServerClient();
   const {
@@ -18,4 +23,26 @@ export async function requireApiAuth(): Promise<AuthContext | NextResponse> {
   }
 
   return { supabase, user };
+}
+
+export async function requireApiJson(request: Request): Promise<JsonAuthContext | NextResponse> {
+  const auth = await requireApiAuth();
+  if (auth instanceof NextResponse) return auth;
+
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+
+  const input = body && typeof body === "object" ? body as Record<string, unknown> : {};
+  return { auth, input };
+}
+
+export function apiResultErrorResponse(error: string, code?: string) {
+  return NextResponse.json(
+    { error },
+    { status: code === "conflict" ? 409 : code === "not-found" ? 404 : 400 }
+  );
 }

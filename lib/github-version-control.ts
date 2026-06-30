@@ -1,4 +1,5 @@
 import type { User } from "@supabase/supabase-js";
+import type { AuthContext } from "@/lib/api-auth";
 import type { GitHubSyncStatus } from "@/lib/creed-data";
 import {
   readGitHubIntegration,
@@ -106,16 +107,24 @@ async function refreshGitHubIntegrationIfPossible(
   };
 }
 
-export async function requireAuthenticatedGitHubAccess() {
-  const supabase = await createSupabaseServerClient();
+async function resolveAuthenticatedUser(auth?: AuthContext) {
+  const supabase = auth?.supabase ?? await createSupabaseServerClient();
+  const userResult = auth
+    ? { data: { user: auth.user } }
+    : await supabase.auth.getUser();
   const {
     data: { user },
-  } = await supabase.auth.getUser();
+  } = userResult;
 
   if (!user) {
     throw new Error("Unauthorized");
   }
 
+  return { supabase, user };
+}
+
+async function requireAuthenticatedGitHubAccess(auth?: AuthContext) {
+  const { supabase, user } = await resolveAuthenticatedUser(auth);
   const enrichedUser = await enrichAuthenticatedUser(user);
   let integration = await readGitHubIntegration(supabase, user.id);
   if (integration) {
@@ -148,9 +157,10 @@ export async function requireAuthenticatedGitHubAccess() {
 export async function withAuthenticatedGitHubAccess<T>(
   operation: (
     context: Awaited<ReturnType<typeof requireAuthenticatedGitHubAccess>>
-  ) => Promise<T>
+  ) => Promise<T>,
+  auth?: AuthContext
 ) {
-  let context = await requireAuthenticatedGitHubAccess();
+  let context = await requireAuthenticatedGitHubAccess(auth);
 
   try {
     return await operation(context);
@@ -175,16 +185,8 @@ export async function withAuthenticatedGitHubAccess<T>(
   }
 }
 
-export async function requireAuthenticatedUser() {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    throw new Error("Unauthorized");
-  }
-
+export async function requireAuthenticatedUser(auth?: AuthContext) {
+  const { supabase, user } = await resolveAuthenticatedUser(auth);
   const enrichedUser = await enrichAuthenticatedUser(user);
 
   return { supabase, user: enrichedUser };

@@ -6,30 +6,23 @@ import {
   useState,
   type ComponentType,
   type ReactNode,
-  type Ref,
 } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import type { UserIdentity } from "@supabase/supabase-js";
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts";
 import {
-  AlertTriangle,
   Check,
   ChevronDown,
   ChevronRight,
+  Download,
+  Eye,
+  EyeOff,
   LoaderCircle,
+  PenTool,
   Plug,
+  ShieldCheck,
   Unplug,
-} from "lucide-react";
-import { DownloadIcon } from "@/components/ui/download";
-import { EyeIcon } from "@/components/ui/eye";
-import { EyeOffIcon } from "@/components/ui/eye-off";
-import { PenToolIcon } from "@/components/ui/pen-tool";
-import { ShieldCheckIcon } from "@/components/ui/shield-check";
-import {
-  useAnimatedIconControls,
-  type AnimatedIconHandle,
-} from "@/components/creed/animated-icon-controls";
-import { useRouter } from "next/navigation";
+} from "@/components/ui/phosphor-icons";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -60,30 +53,23 @@ import { toast } from "sonner";
 import { SearchableSelect } from "@/components/creed/searchable-select";
 import { useCreed } from "@/components/creed/creed-provider";
 import {
-  clearSettingsCreditsCache,
   clearSettingsRepoCache,
   clearSettingsUsageCache,
   hashSettingsMarkdown,
   loadSettingsAiSettings,
   loadSettingsAiModels,
   loadSettingsBranches,
-  loadSettingsCredits,
   loadSettingsRepos,
   loadSettingsUsage,
   loadSettingsVersionStatus,
   setCachedSettingsAiSettings,
-  type AiMode,
   type AiUsageRange,
   type AiUsageSummary,
   type BranchOption,
-  type CreditsState,
   type PublicAiSettings,
   type RepoOption,
   type VersionControlStatus,
 } from "@/components/creed/settings-preload";
-import { AddCreditsDialog } from "@/components/creed/add-credits-dialog";
-import { CreditsHistoryDialog } from "@/components/creed/credits-history-dialog";
-import { CREDIT_MARKUP } from "@/lib/ai/credit-config";
 import {
   AI_MODEL_CATALOG,
   AI_MODEL_QUALITY_META,
@@ -102,6 +88,10 @@ import { cn } from "@/lib/utils";
 import { RichTextEditor } from "@/components/creed/rich-text-editor";
 
 const GITHUB_CONNECTED_EVENT = "creed:github-connected";
+
+function forceByokSettings(settings: PublicAiSettings): PublicAiSettings {
+  return { ...settings, aiMode: "byok" };
+}
 
 function looksLikeApiKey(value: string) {
   const trimmed = value.trim();
@@ -173,8 +163,17 @@ function identityAccountLabel(identity: UserIdentity | null): string | undefined
   return undefined;
 }
 
+function normalizeIdentityEmail(value?: string | null) {
+  return value?.trim().toLowerCase() ?? "";
+}
+
+function identityEmail(identity: UserIdentity | null): string | undefined {
+  const data = (identity?.identity_data ?? {}) as Record<string, unknown>;
+  const value = data.email;
+  return typeof value === "string" ? value : undefined;
+}
+
 export function SettingsScreen() {
-  const router = useRouter();
   const {
     state,
     setDisplayName,
@@ -185,12 +184,10 @@ export function SettingsScreen() {
     exportActivityJson,
     exportAllDataJson,
     refreshState,
-    deleteAccount,
     restoreSection,
     deleteSection,
   } = useCreed();
   const [nameDraft, setNameDraft] = useState(state.user.name);
-  const [deleteOpen, setDeleteOpen] = useState(false);
   const [archivedDeleteTarget, setArchivedDeleteTarget] = useState<{
     id: string;
     name: string;
@@ -198,7 +195,6 @@ export function SettingsScreen() {
   const [expandedArchived, setExpandedArchived] = useState<string | null>(null);
   const archivedSections = state.sections.filter((section) => section.archived);
   const [permsOpen, setPermsOpen] = useState(false);
-  const [deleting, setDeleting] = useState(false);
   const [connectingGitHub, setConnectingGitHub] = useState(false);
   const [disconnectingGitHub, setDisconnectingGitHub] = useState(false);
   // Login identities (Google + X) shown in Integrations, loaded live from
@@ -216,7 +212,7 @@ export function SettingsScreen() {
     provider: "openrouter",
     selectedModelId: DEFAULT_AI_MODEL_ID,
     keyStatus: "missing",
-    aiMode: "credits",
+    aiMode: "byok",
   });
   const [aiKeyDraft, setAiKeyDraft] = useState("");
   const [aiSaving, setAiSaving] = useState(false);
@@ -225,9 +221,6 @@ export function SettingsScreen() {
   const [usageRange, setUsageRange] = useState<AiUsageRange>("7d");
   const [usage, setUsage] = useState<AiUsageSummary | null>(null);
   const [aiModels, setAiModels] = useState<AiModelCatalogItem[]>(AI_MODEL_CATALOG);
-  const [credits, setCredits] = useState<CreditsState | null>(null);
-  const [addCreditsOpen, setAddCreditsOpen] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
   const canSaveAiKey = looksLikeApiKey(aiKeyDraft) && !aiSaving;
 
   // The global control reflects the shared level of all non-hidden sections,
@@ -247,12 +240,6 @@ export function SettingsScreen() {
     const wordCount = exportMarkdown().trim().split(/\s+/).filter(Boolean).length;
     return { sectionCount, wordCount };
   }, [state.sections, exportMarkdown]);
-
-  useEffect(() => {
-    if (state.sections.length === 0) {
-      router.replace("/onboarding");
-    }
-  }, [router, state.sections.length]);
 
   const githubStatus = state.settings.integrations.github.status;
   const githubConnected = githubStatus === "connected";
@@ -379,7 +366,7 @@ export function SettingsScreen() {
           loadSettingsAiModels(),
         ]);
         if (!cancelled && settings) {
-          setAiSettings(settings);
+          setAiSettings(forceByokSettings(settings));
         }
         if (!cancelled && models.length) {
           setAiModels(models);
@@ -401,7 +388,7 @@ export function SettingsScreen() {
 
     async function loadUsage() {
       try {
-        const loadedUsage = await loadSettingsUsage(usageRange, aiSettings.aiMode);
+        const loadedUsage = await loadSettingsUsage(usageRange, "byok");
         if (!cancelled) {
           setUsage(loadedUsage);
         }
@@ -415,28 +402,7 @@ export function SettingsScreen() {
     return () => {
       cancelled = true;
     };
-  }, [usageRange, aiSettings.aiMode, aiSettings.keyStatus]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadCredits() {
-      try {
-        const next = await loadSettingsCredits();
-        if (!cancelled) {
-          setCredits(next);
-        }
-      } catch {
-        return;
-      }
-    }
-
-    void loadCredits();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  }, [usageRange, aiSettings.keyStatus]);
 
   useEffect(() => {
     let cancelled = false;
@@ -490,15 +456,6 @@ export function SettingsScreen() {
     URL.revokeObjectURL(url);
   }
 
-  async function handleDeleteAccount() {
-    try {
-      setDeleting(true);
-      await deleteAccount();
-    } finally {
-      setDeleting(false);
-    }
-  }
-
   // Load the user's linked identities so the Google / X rows reflect the real
   // account state, and refresh whenever auth changes (e.g. after a link).
   useEffect(() => {
@@ -506,9 +463,25 @@ export function SettingsScreen() {
     let active = true;
 
     async function load() {
-      const { data, error } = await supabase.auth.getUserIdentities();
+      const [{ data: userData }, { data, error }] = await Promise.all([
+        supabase.auth.getUser(),
+        supabase.auth.getUserIdentities(),
+      ]);
       if (!active) return;
-      setIdentities(error ? [] : data.identities ?? []);
+
+      const nextIdentities = (error ? [] : data.identities ?? []) as UserIdentity[];
+      const userEmail = normalizeIdentityEmail(userData.user?.email);
+      const google = nextIdentities.find((identity) => identity.provider === "google") ?? null;
+      const googleEmail = normalizeIdentityEmail(identityEmail(google));
+      if (google && userEmail && googleEmail && userEmail !== googleEmail) {
+        await supabase.auth.unlinkIdentity(google);
+        if (!active) return;
+        toast.error("Google account email must match your Creed email.");
+        setIdentities(nextIdentities.filter((identity) => identity.id !== google.id));
+        return;
+      }
+
+      setIdentities(nextIdentities);
     }
 
     void load();
@@ -534,6 +507,22 @@ export function SettingsScreen() {
     try {
       setLinkingProvider(provider);
       const supabase = getSupabaseBrowserClient();
+      if (provider === "google") {
+        const { data } = await supabase.auth.getUser();
+        const callbackUrl = new URL("/auth/callback", window.location.origin);
+        callbackUrl.searchParams.set("next", "/settings");
+        if (data.user?.email) {
+          callbackUrl.searchParams.set("expected_email", data.user.email);
+        }
+
+        const { error } = await supabase.auth.signInWithOAuth({
+          provider: "google",
+          options: { redirectTo: callbackUrl.toString() },
+        });
+        if (error) throw error;
+        return;
+      }
+
       const { error } = await supabase.auth.linkIdentity({
         provider,
         options: { redirectTo: `${window.location.origin}/auth/callback?next=/settings` },
@@ -575,11 +564,18 @@ export function SettingsScreen() {
     try {
       setConnectingGitHub(true);
       const supabase = getSupabaseBrowserClient();
-      const redirectTo = `${window.location.origin}/auth/callback?next=/settings&integration=github`;
-      const { error } = await supabase.auth.linkIdentity({
+      const { data } = await supabase.auth.getUser();
+      const callbackUrl = new URL("/auth/callback", window.location.origin);
+      callbackUrl.searchParams.set("next", "/settings");
+      callbackUrl.searchParams.set("integration", "github");
+      if (data.user?.email) {
+        callbackUrl.searchParams.set("expected_email", data.user.email);
+      }
+
+      const { error } = await supabase.auth.signInWithOAuth({
         provider: "github",
         options: {
-          redirectTo,
+          redirectTo: callbackUrl.toString(),
           scopes: "repo read:user",
         },
       });
@@ -688,6 +684,7 @@ export function SettingsScreen() {
         body: JSON.stringify({
           apiKey: aiKeyDraft.trim() || undefined,
           modelId: aiSettings.selectedModelId,
+          aiMode: "byok",
         }),
       });
       const payload = (await response.json()) as {
@@ -700,8 +697,9 @@ export function SettingsScreen() {
       }
 
       if (payload.settings) {
-        setAiSettings(payload.settings);
-        setCachedSettingsAiSettings(payload.settings);
+        const settings = forceByokSettings(payload.settings);
+        setAiSettings(settings);
+        setCachedSettingsAiSettings(settings);
         clearSettingsUsageCache();
       }
       setAiKeyDraft("");
@@ -722,6 +720,7 @@ export function SettingsScreen() {
         body: JSON.stringify({
           clearApiKey: true,
           modelId: aiSettings.selectedModelId,
+          aiMode: "byok",
         }),
       });
       const payload = (await response.json()) as {
@@ -732,8 +731,9 @@ export function SettingsScreen() {
         throw new Error(payload.error || "Could not clear API key.");
       }
       if (payload.settings) {
-        setAiSettings(payload.settings);
-        setCachedSettingsAiSettings(payload.settings);
+        const settings = forceByokSettings(payload.settings);
+        setAiSettings(settings);
+        setCachedSettingsAiSettings(settings);
         clearSettingsUsageCache();
       }
       setAiKeyDraft("");
@@ -751,9 +751,7 @@ export function SettingsScreen() {
       selectedModelId: modelId,
     }));
 
-    // Persist when there's a usable key (BYOK) or when on credits, where the
-    // platform key runs the selected model. Skip only for BYOK with no key.
-    if (aiSettings.keyStatus !== "valid" && aiSettings.aiMode !== "credits") {
+    if (aiSettings.keyStatus !== "valid") {
       return;
     }
 
@@ -765,6 +763,7 @@ export function SettingsScreen() {
         },
         body: JSON.stringify({
           modelId,
+          aiMode: "byok",
         }),
       });
       const payload = (await response.json()) as {
@@ -777,49 +776,12 @@ export function SettingsScreen() {
       }
 
       if (payload.settings) {
-        setAiSettings(payload.settings);
-        setCachedSettingsAiSettings(payload.settings);
+        const settings = forceByokSettings(payload.settings);
+        setAiSettings(settings);
+        setCachedSettingsAiSettings(settings);
       }
     } catch {
       toast.error("Couldn't save model");
-    }
-  }
-
-  async function handleModeChange(mode: AiMode) {
-    if (aiSettings.aiMode === mode) {
-      return;
-    }
-    const previous = aiSettings.aiMode;
-    setAiSettings((current) => ({ ...current, aiMode: mode }));
-    try {
-      const response = await fetch("/api/app/ai/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ modelId: aiSettings.selectedModelId, aiMode: mode }),
-      });
-      const payload = (await response.json()) as {
-        settings?: PublicAiSettings;
-        error?: string;
-      };
-      if (!response.ok) {
-        throw new Error(payload.error || "Could not switch mode.");
-      }
-      if (payload.settings) {
-        setAiSettings(payload.settings);
-        setCachedSettingsAiSettings(payload.settings);
-      }
-    } catch {
-      setAiSettings((current) => ({ ...current, aiMode: previous }));
-      toast.error("Couldn't switch mode");
-    }
-  }
-
-  async function refreshCredits() {
-    clearSettingsCreditsCache();
-    try {
-      setCredits(await loadSettingsCredits());
-    } catch {
-      // Keep the current balance on a transient failure.
     }
   }
 
@@ -1033,72 +995,30 @@ export function SettingsScreen() {
           <section>
             <div className="flex items-center justify-between gap-4">
               <h2 className="text-[16px] font-medium text-[var(--creed-text-primary)]">
-                Credits and models
+                Models
               </h2>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    type="button"
-                    className="inline-flex h-8 items-center gap-2 rounded-md border border-[var(--creed-border)] bg-[var(--creed-surface)] px-3 text-sm text-[var(--creed-text-primary)] transition-colors duration-150 hover:bg-[var(--creed-surface-raised)]"
-                  >
-                    {aiSettings.aiMode === "credits" ? "Credits" : "BYOK"}
-                    <ChevronDown className="h-3.5 w-3.5 text-[var(--creed-text-secondary)]" />
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  align="end"
-                  className="min-w-32 space-y-1 border-[var(--creed-border)] bg-[var(--creed-surface)] p-1.5"
-                >
-                  {(["credits", "byok"] as AiMode[]).map((mode) => (
-                    <DropdownMenuItem
-                      key={mode}
-                      onSelect={() => void handleModeChange(mode)}
-                      className={cn(
-                        "flex items-center justify-between gap-5 rounded-lg px-3 py-2 text-sm",
-                        aiSettings.aiMode === mode && "bg-[var(--creed-surface-selected)] font-medium"
-                      )}
-                    >
-                      <span>{mode === "credits" ? "Credits" : "BYOK"}</span>
-                      {aiSettings.aiMode === mode ? (
-                        <Check className="h-3.5 w-3.5 shrink-0 text-[var(--creed-text-primary)]" />
-                      ) : null}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
             </div>
             <div className="mt-4 rounded-[var(--radius-xl)] border border-[var(--creed-border)] bg-[var(--creed-surface)] p-5">
               <div className="grid gap-5 md:grid-cols-[1.1fr_0.9fr] md:items-stretch">
                 <div className="flex flex-col gap-4">
-                  {aiSettings.aiMode === "credits" ? (
-                    <div className="rounded-[var(--radius-lg)] border border-[var(--creed-border)] px-4 py-3">
-                      <div className="text-[13px] font-medium text-[var(--creed-text-secondary)]">
-                        Credit balance
-                      </div>
-                      <div className="mt-0.5 text-[30px] font-medium tracking-[-0.03em] text-[var(--creed-text-primary)]">
-                        ${(credits?.balanceUsd ?? 0).toFixed(2)}
-                      </div>
-                    </div>
-                  ) : (
-                    <div>
-                      <label className="mb-2 block text-[13px] font-medium text-[var(--creed-text-secondary)]">
-                        OpenRouter API key
-                      </label>
-                      <Input
-                        type="password"
-                        value={aiKeyDraft}
-                        onChange={(event) => {
-                          setAiKeyDraft(event.target.value);
-                        }}
-                        placeholder={
-                          aiSettings.keyLastFour
-                            ? `Saved key ending in ${aiSettings.keyLastFour}`
-                            : "sk-or-..."
-                        }
-                        className="h-11 rounded-xl border-[var(--creed-border)] bg-[var(--creed-surface)] px-4 text-[14px]"
-                      />
-                    </div>
-                  )}
+                  <div>
+                    <label className="mb-2 block text-[13px] font-medium text-[var(--creed-text-secondary)]">
+                      OpenRouter API key
+                    </label>
+                    <Input
+                      type="password"
+                      value={aiKeyDraft}
+                      onChange={(event) => {
+                        setAiKeyDraft(event.target.value);
+                      }}
+                      placeholder={
+                        aiSettings.keyLastFour
+                          ? `Saved key ending in ${aiSettings.keyLastFour}`
+                          : "sk-or-..."
+                      }
+                      className="h-11 rounded-xl border-[var(--creed-border)] bg-[var(--creed-surface)] px-4 text-[14px]"
+                    />
+                  </div>
 
                   <div>
                     <label className="mb-2 block text-[13px] font-medium text-[var(--creed-text-secondary)]">
@@ -1108,69 +1028,38 @@ export function SettingsScreen() {
                       value={aiSettings.selectedModelId}
                       onChange={(modelId) => void handleModelChange(modelId)}
                       models={aiModels}
-                      aiMode={aiSettings.aiMode}
                     />
                   </div>
 
-                  {aiSettings.aiMode === "credits" ? (
-                    <div className="mt-auto flex items-center justify-between gap-2 pt-1">
-                      <Button
-                        variant="ghost"
-                        className="rounded-md px-3 text-[var(--creed-text-secondary)] hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)]"
-                        onClick={() => setHistoryOpen(true)}
-                      >
-                        View history
-                      </Button>
-                      <Button
-                        className="rounded-md bg-[var(--creed-text-primary)] px-4 text-[var(--creed-button-primary-fg)] hover:bg-[var(--creed-button-primary-hover)]"
-                        onClick={() => setAddCreditsOpen(true)}
-                      >
-                        Add credits
-                      </Button>
-                    </div>
-                  ) : (
-                    <div className="mt-auto flex items-center justify-between gap-2 pt-1">
-                      <Button
-                        variant="ghost"
-                        className="rounded-md px-3 text-[var(--creed-text-secondary)] hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)]"
-                        onClick={() => {
-                          if (aiSettings.keyLastFour) {
-                            void handleClearAiKey();
-                          } else {
-                            setAiKeyDraft("");
-                          }
-                        }}
-                        disabled={aiSaving || (!aiKeyDraft && !aiSettings.keyLastFour)}
-                      >
-                        Clear
-                      </Button>
-                      <Button
-                        className="rounded-md bg-[var(--creed-text-primary)] px-4 text-[var(--creed-button-primary-fg)] hover:bg-[var(--creed-button-primary-hover)]"
-                        onClick={() => void handleSaveAiSettings()}
-                        disabled={!canSaveAiKey}
-                      >
-                        Save API key
-                        {aiSaving ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
-                      </Button>
-                    </div>
-                  )}
+                  <div className="mt-auto flex items-center justify-between gap-2 pt-1">
+                    <Button
+                      variant="ghost"
+                      className="rounded-md px-3 text-[var(--creed-text-secondary)] hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)]"
+                      onClick={() => {
+                        if (aiSettings.keyLastFour) {
+                          void handleClearAiKey();
+                        } else {
+                          setAiKeyDraft("");
+                        }
+                      }}
+                      disabled={aiSaving || (!aiKeyDraft && !aiSettings.keyLastFour)}
+                    >
+                      Clear
+                    </Button>
+                    <Button
+                      className="rounded-md bg-[var(--creed-text-primary)] px-4 text-[var(--creed-button-primary-fg)] hover:bg-[var(--creed-button-primary-hover)]"
+                      onClick={() => void handleSaveAiSettings()}
+                      disabled={!canSaveAiKey}
+                    >
+                      Save API key
+                      {aiSaving ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
+                    </Button>
+                  </div>
                 </div>
 
                 <UsageCard usage={usage} range={usageRange} onRangeChange={setUsageRange} />
               </div>
             </div>
-
-            <AddCreditsDialog
-              open={addCreditsOpen}
-              onOpenChange={setAddCreditsOpen}
-              currentBalanceUsd={credits?.balanceUsd ?? 0}
-              onToppedUp={() => void refreshCredits()}
-            />
-            <CreditsHistoryDialog
-              open={historyOpen}
-              onOpenChange={setHistoryOpen}
-              transactions={credits?.transactions ?? []}
-            />
           </section>
 
           <Separator className="my-10 bg-[var(--creed-border)]" />
@@ -1417,7 +1306,7 @@ export function SettingsScreen() {
               </p>
               <div className="mt-4 flex flex-wrap gap-3">
                 <AnimatedIconButton
-                  icon={DownloadIcon}
+                  icon={Download}
                   variant="outline"
                   className="rounded-md border-[var(--creed-border)]"
                   onClick={() =>
@@ -1427,7 +1316,7 @@ export function SettingsScreen() {
                   Export Creed as markdown
                 </AnimatedIconButton>
                 <AnimatedIconButton
-                  icon={DownloadIcon}
+                  icon={Download}
                   variant="outline"
                   className="rounded-md border-[var(--creed-border)]"
                   onClick={() =>
@@ -1441,7 +1330,7 @@ export function SettingsScreen() {
                   Export activity log
                 </AnimatedIconButton>
                 <AnimatedIconButton
-                  icon={DownloadIcon}
+                  icon={Download}
                   variant="outline"
                   className="rounded-md border-[var(--creed-border)]"
                   onClick={() =>
@@ -1458,64 +1347,8 @@ export function SettingsScreen() {
             </div>
           </section>
 
-          <Separator className="my-10 bg-[var(--creed-border)]" />
-
-          <section>
-            <h2 className="text-[16px] font-medium text-[var(--creed-text-primary)]">
-              Danger zone
-            </h2>
-            <div className="mt-4 rounded-[var(--radius-xl)] border border-[#FECACA] bg-[#FEF2F2] p-5 dark:border-[#7F1D1D]/40 dark:bg-[#3F1212]/30">
-              <div className="flex items-center justify-between gap-5">
-                <div className="min-w-0">
-                  <div className="text-[15px] font-medium text-[#DC2626] dark:text-[#DC2626]">Account Deletion</div>
-                  <div className="mt-2 hidden text-[14px] leading-7 text-[#DC2626] dark:text-[#DC2626] md:block">
-                    This permanently deletes your Creed, tokens, proposals, activity, and account.
-                  </div>
-                </div>
-                <Button
-                  className="rounded-md bg-[#DC2626] px-4 text-white hover:bg-[#B91C1C] hover:text-white"
-                  onClick={() => setDeleteOpen(true)}
-                >
-                  Delete
-                </Button>
-              </div>
-            </div>
-          </section>
         </div>
       </div>
-
-      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
-        <DialogContent className="rounded-[var(--radius-xl)] border-[var(--creed-border)] bg-[var(--creed-surface)]">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-3 text-[18px] font-medium">
-              <AlertTriangle className="h-5 w-5 text-[#B91C1C]" />
-              Delete account
-            </DialogTitle>
-          </DialogHeader>
-          <p className="text-[14px] leading-7 text-[var(--creed-text-secondary)]">
-            This deletes your account and everything linked to it. This cannot be undone.
-          </p>
-          <div className="mt-2 flex items-center justify-between gap-3">
-            <Button variant="ghost" className="rounded-md" onClick={() => setDeleteOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              className="rounded-md bg-[#DC2626] text-white hover:bg-[#B91C1C]"
-              onClick={() => void handleDeleteAccount()}
-              disabled={deleting}
-            >
-              {deleting ? (
-                <>
-                  Deleting
-                  <LoaderCircle className="h-4 w-4 animate-spin" />
-                </>
-              ) : (
-                "Confirm delete"
-              )}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       <Dialog
         open={archivedDeleteTarget !== null}
@@ -1697,16 +1530,11 @@ function ModelSelect({
   value,
   onChange,
   models,
-  aiMode,
 }: {
   value: string;
   onChange: (value: string) => void;
   models: AiModelCatalogItem[];
-  aiMode: AiMode;
 }) {
-  // Credits run on the platform key at a markup, so the dropdown shows the
-  // effective (marked-up) price. BYOK is at-cost, so it shows the raw list price.
-  const multiplier = aiMode === "credits" ? CREDIT_MARKUP : 1;
   return (
     <SearchableSelect
       value={value}
@@ -1717,7 +1545,7 @@ function ModelSelect({
         key: model.id,
         value: model.id,
         label: model.name,
-        description: `${model.provider} · ${AI_MODEL_QUALITY_META[model.quality].label} · ${formatModelCost(model, multiplier)}`,
+        description: `${model.provider} · ${AI_MODEL_QUALITY_META[model.quality].label} · ${formatModelCost(model, 1)}`,
         search: `${model.name} ${model.provider} ${model.id} ${AI_MODEL_QUALITY_META[model.quality].label}`,
       }))}
       renderOption={(option) => {
@@ -1736,7 +1564,7 @@ function ModelSelect({
                 <span>·</span>
                 <span>{quality.label}</span>
                 <span>·</span>
-                <span>{formatModelCost(model, multiplier)}</span>
+                <span>{formatModelCost(model, 1)}</span>
               </div>
             </div>
           </div>
@@ -1940,7 +1768,6 @@ function GitHubMark({ className }: { className?: string }) {
 }
 
 type AnimatedIconComponent = ComponentType<{
-  ref?: Ref<AnimatedIconHandle>;
   size?: number;
   className?: string;
 }>;
@@ -1951,17 +1778,16 @@ const PERMISSION_OPTIONS: Array<{
   icon: AnimatedIconComponent;
   color: string;
 }> = [
-  { value: "hidden", label: "Hidden from agent", icon: EyeOffIcon, color: "#DC2626" },
-  { value: "read-only", label: "Read-only", icon: EyeIcon, color: "#EAB308" },
-  { value: "propose", label: "Propose (needs approval)", icon: ShieldCheckIcon, color: "#16A34A" },
-  { value: "direct", label: "Direct edit", icon: PenToolIcon, color: "#2563EB" },
+  { value: "hidden", label: "Hidden from agent", icon: EyeOff, color: "#DC2626" },
+  { value: "read-only", label: "Read-only", icon: Eye, color: "#EAB308" },
+  { value: "propose", label: "Propose (needs approval)", icon: ShieldCheck, color: "#16A34A" },
+  { value: "direct", label: "Direct edit", icon: PenTool, color: "#2563EB" },
 ];
 
 // The global control reuses the same control without the "hidden" option.
 const GLOBAL_PERMISSION_OPTIONS = PERMISSION_OPTIONS.filter((option) => option.value !== "hidden");
 
-// One segment. Hover plays the icon's animation through the shared controls
-// hook, exactly like AnimatedIconButton elsewhere on the site.
+// One compact segment in the permission control.
 function PermissionSegment({
   option,
   selected,
@@ -1975,7 +1801,6 @@ function PermissionSegment({
   muted?: boolean;
   onSelect: () => void;
 }) {
-  const { iconRef, start, settle } = useAnimatedIconControls();
   const Icon = option.icon;
   return (
     <SimpleTooltip label={option.label}>
@@ -1984,10 +1809,6 @@ function PermissionSegment({
         aria-label={option.label}
         aria-pressed={selected}
         onClick={onSelect}
-        // When the control is greyed (mixed state) skip the hover animation so
-        // the icons read as inactive.
-        onMouseEnter={muted ? undefined : start}
-        onMouseLeave={muted ? undefined : settle}
         className="group relative inline-flex h-7 w-7 items-center justify-center rounded-[7px] transition-colors duration-150"
       >
         {selected ? (
@@ -1999,7 +1820,6 @@ function PermissionSegment({
           />
         ) : null}
         <Icon
-          ref={iconRef}
           size={14}
           // pointer-events-none so the whole button is the click/hover target,
           // not just the 14px glyph. The icon brightens on hover via group-hover
@@ -2056,4 +1876,3 @@ function SectionPermissionControl({
     </div>
   );
 }
-

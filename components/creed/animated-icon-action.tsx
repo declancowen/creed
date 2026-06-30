@@ -4,17 +4,11 @@ import {
   type ComponentProps,
   type ComponentType,
   type ReactNode,
-  type Ref,
 } from "react";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
-import {
-  useAnimatedIconControls,
-  type AnimatedIconHandle,
-} from "@/components/creed/animated-icon-controls";
 
 type AnimatedIconComponent = ComponentType<{
-  ref?: Ref<AnimatedIconHandle>;
   size?: number;
   className?: string;
 }>;
@@ -33,21 +27,9 @@ export function AnimatedIconButton({
   showIcon?: boolean;
   children: ReactNode;
 }) {
-  const { iconRef, start, settle } = useAnimatedIconControls();
-
   return (
-    <Button
-      {...props}
-      onMouseEnter={(event) => {
-        start();
-        props.onMouseEnter?.(event);
-      }}
-      onMouseLeave={(event) => {
-        settle();
-        props.onMouseLeave?.(event);
-      }}
-    >
-      {showIcon ? <Icon ref={iconRef} size={iconSize} className={iconClassName} /> : null}
+    <Button {...props}>
+      {showIcon ? <Icon size={iconSize} className={iconClassName} /> : null}
       {children}
     </Button>
   );
@@ -67,21 +49,9 @@ export function AnimatedMenuIconItem({
   showIcon?: boolean;
   children: ReactNode;
 }) {
-  const { iconRef, start, settle } = useAnimatedIconControls();
-
   return (
-    <DropdownMenuItem
-      {...props}
-      onMouseEnter={(event) => {
-        start();
-        props.onMouseEnter?.(event);
-      }}
-      onMouseLeave={(event) => {
-        settle();
-        props.onMouseLeave?.(event);
-      }}
-    >
-      {showIcon ? <Icon ref={iconRef} size={iconSize} className={iconClassName} /> : null}
+    <DropdownMenuItem {...props}>
+      {showIcon ? <Icon size={iconSize} className={iconClassName} /> : null}
       {children}
     </DropdownMenuItem>
   );

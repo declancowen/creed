@@ -7,7 +7,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { LoaderCircle } from "lucide-react";
+import { LoaderCircle } from "@/components/ui/phosphor-icons";
 import { toast } from "sonner";
 import { AnimatedPageTitle } from "@/components/marketing/animated-page-title";
 import { AuthShell } from "@/components/auth/auth-shell";

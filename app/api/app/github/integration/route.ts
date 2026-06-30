@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireApiAuth } from "@/lib/api-auth";
 import { clearGitHubIntegration, upsertGitHubIntegration } from "@/lib/creed-backend";
 import { getGitHubViewer } from "@/lib/github";
 import { requireAuthenticatedUser } from "@/lib/github-version-control";
@@ -12,7 +13,10 @@ type PersistBody = {
 
 export async function POST(request: Request) {
   try {
-    const { supabase, user } = await requireAuthenticatedUser();
+    const auth = await requireApiAuth();
+    if (auth instanceof NextResponse) return auth;
+
+    const { supabase, user } = await requireAuthenticatedUser(auth);
     const body = (await request.json()) as PersistBody;
     const providerToken = body.providerToken?.trim();
 
@@ -54,7 +58,10 @@ export async function POST(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
-    const { supabase, user } = await requireAuthenticatedUser();
+    const auth = await requireApiAuth();
+    if (auth instanceof NextResponse) return auth;
+
+    const { supabase, user } = await requireAuthenticatedUser(auth);
     await clearGitHubIntegration(supabase, user.id);
     void recordAuditEvent({
       userId: user.id,

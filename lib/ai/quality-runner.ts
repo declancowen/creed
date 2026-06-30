@@ -22,17 +22,15 @@
 
 import type { CreedQualityReport } from "@/components/creed/file-quality-ui";
 import type { CreedSection } from "@/lib/creed-data";
-import { LOW_BALANCE_USD } from "@/lib/ai/credit-config";
 
 type Listener = () => void;
 
 // One completion of a user-initiated full analysis. `id` bumps each time so a
 // shell-level subscriber can fire exactly one toast per completion.
-export type QualityOutcome = {
+type QualityOutcome = {
   id: number;
   ok: boolean;
   message: string | null;
-  lowCredits: boolean;
 };
 
 type RunnerSnapshot = {
@@ -49,7 +47,6 @@ type FullRunResult = {
   storedContentHash?: string | null;
   storedSectionHashes?: Record<string, string>;
   current?: boolean;
-  creditBalanceUsd?: number | null;
 };
 
 const listeners = new Set<Listener>();
@@ -119,7 +116,7 @@ export function setBaselineReport(next: CreedQualityReport | null) {
   emit();
 }
 
-export function clearQualityRunnerError() {
+function clearQualityRunnerError() {
   if (error === null) return;
   error = null;
   emit();
@@ -129,7 +126,7 @@ export function getInFlightFull(fingerprint: string) {
   return inFlightFull.get(fingerprint) ?? null;
 }
 
-export function getInFlightSection(sectionFingerprint: string) {
+function getInFlightSection(sectionFingerprint: string) {
   return inFlightSection.get(sectionFingerprint) ?? null;
 }
 
@@ -167,11 +164,9 @@ export function runFullQuality(args: FullRunArgs): Promise<FullRunResult> {
       }
       // Only user-initiated analyses (not the silent baseline read) toast.
       if (!args.readOnly) {
-        const balance = payload.creditBalanceUsd;
         recordOutcome({
           ok: true,
           message: null,
-          lowCredits: typeof balance === "number" && balance < LOW_BALANCE_USD,
         });
       }
       return payload;
@@ -179,7 +174,7 @@ export function runFullQuality(args: FullRunArgs): Promise<FullRunResult> {
       const message = cause instanceof Error ? cause.message : "Could not analyze Creed quality.";
       error = message;
       if (!args.readOnly) {
-        recordOutcome({ ok: false, message, lowCredits: false });
+        recordOutcome({ ok: false, message });
       }
       throw cause;
     } finally {
@@ -222,11 +217,7 @@ export function runSectionQuality(
           targetSectionIds: [args.section.id],
         }),
       });
-      const payload = (await response.json()) as {
-        report?: CreedQualityReport;
-        creditBalanceUsd?: number | null;
-        error?: string;
-      };
+      const payload = (await response.json()) as { report?: CreedQualityReport; error?: string };
 
       if (!response.ok) {
         throw new Error(payload.error || "Could not analyze this section.");
@@ -239,18 +230,14 @@ export function runSectionQuality(
         report = payload.report;
         error = null;
       }
-      // Report the outcome so the shell toasts on success / low credits, the
-      // same as a full analysis.
-      recordOutcome({
-        ok: true,
-        message: null,
-        lowCredits: typeof payload.creditBalanceUsd === "number" && payload.creditBalanceUsd < LOW_BALANCE_USD,
-      });
+      // Report the outcome so the shell toasts on success, the same as a full
+      // analysis.
+      recordOutcome({ ok: true, message: null });
       return payload.report?.sections.find((entry) => entry.sectionId === args.section.id) ?? null;
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "Could not analyze this section.";
       error = message;
-      recordOutcome({ ok: false, message, lowCredits: false });
+      recordOutcome({ ok: false, message });
       throw cause;
     } finally {
       sectionRunning.delete(args.section.id);

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireApiAuth } from "@/lib/api-auth";
 import { getGitHubFileSnapshot } from "@/lib/github";
 import {
   getConfiguredRepo,
@@ -11,9 +12,12 @@ import { readGitHubIntegration, readVersionControlConfig } from "@/lib/creed-bac
 
 export async function GET(request: Request) {
   try {
+    const auth = await requireApiAuth();
+    if (auth instanceof NextResponse) return auth;
+
     const { searchParams } = new URL(request.url);
     const localHash = searchParams.get("localHash")?.trim() ?? "";
-    const { supabase, user } = await requireAuthenticatedUser();
+    const { supabase, user } = await requireAuthenticatedUser(auth);
     const integration = await readGitHubIntegration(supabase, user.id);
     const versionControl = await readVersionControlConfig(supabase, user.id);
     const configuredRepo = getConfiguredRepo(versionControl);
@@ -56,7 +60,7 @@ export async function GET(request: Request) {
         remoteCommittedAt: remoteFile?.committedAt ?? null,
         remoteContentHash: remoteFile?.contentHash ?? null,
       };
-    });
+    }, auth);
 
     return NextResponse.json(payload);
   } catch (error) {

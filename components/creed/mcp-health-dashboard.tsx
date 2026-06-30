@@ -7,7 +7,7 @@
 // hero chart can switch metric (reads / directs / proposals / all activity).
 import { useEffect, useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, XAxis, YAxis } from "recharts";
-import { Check, ChevronDown } from "lucide-react";
+import { Check, ChevronDown } from "@/components/ui/phosphor-icons";
 import { useCreed } from "@/components/creed/creed-provider";
 import { IntegrationGlyph } from "@/components/creed/brand";
 import { StackTopBar } from "@/components/creed/rounded-bar";

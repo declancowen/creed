@@ -6,7 +6,7 @@
 
 Your personal context, written once and kept polished by your agents — so every AI you talk to knows you instantly.
 
-[Website](https://creed.md) · [Docs](https://creed.md/docs) · [Privacy](https://creed.md/privacy) · [Stack](https://creed.md/stack)
+[Website](https://creed.md)
 
 </div>
 
@@ -30,7 +30,7 @@ There's a small set of tools every AI-native person re-invents for themselves: a
 
 The file is plain Markdown. The app exists to:
 
-- help you write the first draft (4-vibe onboarding tuned to who you are)
+- support invite-only sign-in and shared Markdown workspaces
 - score quality and surface gaps (BYOK OpenRouter — never our tab)
 - let agents read and propose updates without you copy-pasting
 - keep one canonical version across every tool you use
@@ -43,8 +43,8 @@ If you've ever maintained a personal `creed.md` by hand, this is that, with the 
 
 ```
 ┌──────────────────────┐         ┌────────────────────┐
-│  You — onboarding    │ ──────► │  Your Creed file   │
-│  (one short pass)    │         │  10 sections, MD   │
+│  You — invited login │ ──────► │  Your Creed file   │
+│  or shared document  │         │  and Markdown docs  │
 └──────────────────────┘         └─────────┬──────────┘
                                            │
                               ┌────────────┴────────────┐
@@ -71,7 +71,7 @@ Every section is agent-writable. Every change goes through the review (or direct
 
 ## Status
 
-Creed is in active development. Free while pricing is shaped around real user feedback. The likely paid tier later wraps heavy AI use (synthesis, quality, model spend) — but Creed will stay BYOK on AI, so you control the cost.
+Creed is in active development. This fork is invite-only, BYOK-only for AI, and does not expose public billing or signup.
 
 ---
 
@@ -81,7 +81,7 @@ You'll need:
 
 - **Node.js 20+**
 - **a Supabase project** (free tier is fine)
-- **an OpenRouter API key** (only needed for the AI-powered features — onboarding synthesis, quality analysis, refinement)
+- **an OpenRouter API key** (only needed for AI-powered quality analysis and refinement)
 
 ### 1. Clone and install
 
@@ -111,7 +111,7 @@ CREED_ENCRYPTION_SECRET=<base64-encoded-32-byte-secret>
 
 Generate the encryption secret with `openssl rand -base64 32`.
 
-Optional (branding shown in the public chrome, payments, GitHub integration, feedback widget) are all documented inline in `.env.example` — copy whichever ones you want to enable.
+Optional branding, GitHub integration, Resend notifications, and feedback variables are documented inline in `.env.example` — copy whichever ones you want to enable.
 
 ### 3. Run database migrations
 
@@ -121,34 +121,22 @@ supabase link --project-ref <your-project-ref>
 supabase db push
 ```
 
-This creates every table Creed needs (sections, proposals, activity, tokens, MCP, GitHub, AI usage, audit log, rate limits, Stripe entitlements) plus the row-level-security policies that make sure users only ever see their own data.
+This creates every table Creed needs (sections, proposals, activity, tokens, MCP, shared documents, comments, notifications, GitHub, AI usage, audit log, rate limits, and legacy entitlement tables) plus the row-level-security policies that make sure users only ever see their own data.
 
-### 4. (Optional) Wire up Stripe
-
-The hosted Creed gates `/file` and `/onboarding` behind a one-time $49 entitlement. For local development you can either:
-
-- **Skip it** — leave `STRIPE_*` env vars unset. The app still boots; signed-in users without an entitlement row are redirected to `/pricing` by the layout guard. Useful when you only want to work on marketing pages or non-paid flows.
-- **Run the full flow** — add the four `STRIPE_*` variables from `.env.example` using your sandbox/test keys, then in a second terminal run:
-  ```bash
-  stripe listen --forward-to localhost:3000/api/stripe/webhook
-  ```
-  Copy the `whsec_…` it prints into `STRIPE_WEBHOOK_SECRET`. The webhook auto-grants entitlements when test payments complete.
-
-### 5. Start the dev server
+### 4. Start the dev server
 
 ```bash
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). Sign in with Google and you'll land on `/pricing` (or `/onboarding` if you've granted yourself an entitlement row manually for development).
+Open [http://localhost:3000](http://localhost:3000). Signed-out users land on `/login`; signed-in users land on `/dashboard`.
 
 ### Deploying your own
 
 If you're standing up a separate hosted Creed (not contributing back to this repo):
 
-- Set `NEXT_PUBLIC_SITE_URL` to your deployed origin so OAuth callback and Stripe redirect URLs resolve correctly.
+- Set `NEXT_PUBLIC_SITE_URL` to your deployed origin so OAuth callback and agent URLs resolve correctly.
 - Set `CREED_CSP_ENFORCE=1` in production once you've watched one deploy cycle in Report-Only mode.
-- The Stripe webhook signing secret in production differs from your local `whsec_…` — create a webhook endpoint in the live Stripe dashboard pointing at `https://<your-domain>/api/stripe/webhook` and use that secret.
 - The dormant example agent prompts in `lib/creed-data.ts` reference `https://creed.md` purely as illustration; real users see URLs derived from your `NEXT_PUBLIC_SITE_URL` at request time.
 
 ---
@@ -179,32 +167,31 @@ MCP uses OAuth 2.1: Creed is its own authorization server (`/authorize`, `/token
 - **Supabase** for auth, Postgres, RLS, realtime
 - **OpenRouter** for BYOK AI
 
-A complete tour of the public stack lives at [creed.md/stack](https://creed.md/stack).
+The stack is intentionally boring and self-hostable.
 
 ---
 
 ## Repository tour
 
 ```
-app/                    Next.js routes (marketing, app, API)
-├── (creed-app)/        signed-in product (/file, /connections, /settings)
+app/                    Next.js routes (auth, app, API)
+├── (creed-app)/        signed-in product (/dashboard, /file, /connections, /settings)
 ├── api/                session-authed and token-authed APIs
 ├── auth/callback/      OAuth callback
-├── home/               public landing
-├── onboarding/         7-step onboarding flow
+├── accept-invite/      invite completion
+├── login/              auth front door
 └── proxy.ts            request-id + path-aware request forwarding
 
 components/
 ├── creed/              the product UI
-├── marketing/          the public site
-├── auth/               sign-in / hero
-└── ui/                 shadcn primitives + animated icons
+├── marketing/          shared auth visual helpers
+├── auth/               sign-in / invite / password screens
+└── ui/                 shadcn primitives + Phosphor icon adapter
 
 lib/
 ├── creed-data.ts       types, section IDs, agent contract
 ├── creed-backend.ts    Supabase reads/writes
 ├── ai/                 OpenRouter, model catalog, quality
-├── onboarding/         the synthesizer pipeline
 └── supabase/           browser + server clients
 
 supabase/migrations/    canonical schema

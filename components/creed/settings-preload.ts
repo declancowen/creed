@@ -64,22 +64,6 @@ export type AiUsageSummary = {
   }>;
 };
 
-export type CreditTransaction = {
-  id: string;
-  type: "topup" | "debit";
-  amountUsd: number;
-  balanceAfterUsd: number;
-  feature: string | null;
-  modelId: string | null;
-  createdAt: string;
-};
-
-export type CreditsState = {
-  balanceMicroUsd: number;
-  balanceUsd: number;
-  transactions: CreditTransaction[];
-};
-
 type CacheEntry<T> = {
   value: T | null;
   promise: Promise<T> | null;
@@ -90,7 +74,6 @@ const branchesCache = new Map<string, CacheEntry<BranchOption[]>>();
 const aiSettingsCache: CacheEntry<PublicAiSettings | null> = { value: null, promise: null };
 const aiModelsCache: CacheEntry<AiModelCatalogItem[]> = { value: null, promise: null };
 const usageCache = new Map<string, CacheEntry<AiUsageSummary | null>>();
-const creditsCache: CacheEntry<CreditsState | null> = { value: null, promise: null };
 const versionStatusCache = new Map<string, CacheEntry<VersionControlStatus | null>>();
 let activeCacheScope = "";
 
@@ -103,12 +86,10 @@ function clearAllSettingsCaches() {
   aiModelsCache.promise = null;
   branchesCache.clear();
   usageCache.clear();
-  creditsCache.value = null;
-  creditsCache.promise = null;
   versionStatusCache.clear();
 }
 
-export function setSettingsCacheScope(scope: string) {
+function setSettingsCacheScope(scope: string) {
   const nextScope = scope.trim();
   if (activeCacheScope === nextScope) {
     return;
@@ -247,28 +228,6 @@ export function clearSettingsUsageCache() {
   usageCache.clear();
 }
 
-// Balance is volatile (top-ups, per-call debits), so this refetches on every
-// call unless a request is already in flight - same shape as loadSettingsUsage.
-export function loadSettingsCredits() {
-  if (!creditsCache.promise) {
-    creditsCache.promise = readJson<{ credits?: CreditsState }>("/api/app/credits")
-      .then((payload) => {
-        creditsCache.value = payload.credits ?? null;
-        return creditsCache.value;
-      })
-      .finally(() => {
-        creditsCache.promise = null;
-      });
-  }
-
-  return creditsCache.promise;
-}
-
-export function clearSettingsCreditsCache() {
-  creditsCache.value = null;
-  creditsCache.promise = null;
-}
-
 export function loadSettingsVersionStatus(localHash: string) {
   const cached = versionStatusCache.get(localHash) ?? { value: null, promise: null };
   versionStatusCache.set(localHash, cached);
@@ -316,8 +275,7 @@ export function preloadSettingsData({
   }
 
   void loadSettingsAiSettings().catch(() => null);
-  void loadSettingsUsage("7d", "credits").catch(() => null);
-  void loadSettingsCredits().catch(() => null);
+  void loadSettingsUsage("7d", "byok").catch(() => null);
 
   if (!githubConnected) {
     return;

@@ -12,20 +12,19 @@ import {
   type ReactNode,
 } from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
-import { Plus } from "lucide-react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import {
+  Contrast,
+  FileText,
+  Link2,
+  Logout,
+  Plug,
+  Plus,
+  Settings,
+} from "@/components/ui/phosphor-icons";
 import { AnimatedMenuIconItem } from "@/components/creed/animated-icon-action";
 import { FeedbackMenuItem } from "@/components/creed/feedback-menu";
-import { BookTextIcon } from "@/components/ui/book-text";
-import { ConnectIcon } from "@/components/ui/connect";
-import { ContrastIcon, type ContrastIconHandle } from "@/components/ui/contrast";
-import { CreditCardIcon } from "@/components/ui/credit-card";
-import { BillingDialog } from "@/components/creed/billing-dialog";
-import { FileTextIcon } from "@/components/ui/file-text";
-import { LinkIcon } from "@/components/ui/link";
-import { LogoutIcon } from "@/components/ui/logout";
-import { SettingsIcon } from "@/components/ui/settings";
-import { useAnimatedIconControls } from "@/components/creed/animated-icon-controls";
+import { NotificationMenu } from "@/components/creed/notification-menu";
 import { useTheme } from "@/components/creed/theme-provider";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -63,14 +62,15 @@ type ShellFileActions = {
 type ShellActionsContextValue = {
   registerFileActions: (actions: ShellFileActions) => () => void;
   setActiveSectionId: (sectionId: string | null) => void;
+  setLiveSections: (sections: CreedSection[] | null) => void;
 };
 
 const ShellActionsContext = createContext<ShellActionsContextValue | null>(null);
 
 const navItems = [
-  { href: "/file", label: "File", icon: FileTextIcon },
-  { href: "/connections", label: "Connections", icon: ConnectIcon },
-  { href: "/settings", label: "Settings", icon: SettingsIcon },
+  { href: "/dashboard", label: "Dashboard", icon: FileText },
+  { href: "/connections", label: "Connections", icon: Plug },
+  { href: "/settings", label: "Settings", icon: Settings },
 ];
 
 function ShellNavLink({
@@ -82,7 +82,6 @@ function ShellNavLink({
 }) {
   const Icon = item.icon;
   const router = useRouter();
-  const { iconRef, start, settle, initialState } = useAnimatedIconControls(120);
 
   return (
     <Link
@@ -99,16 +98,9 @@ function ShellNavLink({
       aria-label={item.label}
       onMouseEnter={() => {
         router.prefetch(item.href);
-        start();
       }}
-      onMouseLeave={settle}
     >
-      <Icon
-        ref={iconRef}
-        size={14}
-        initialState={initialState}
-        className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none"
-      />
+      <Icon className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none" />
       <span className="hidden lg:inline">{item.label}</span>
     </Link>
   );
@@ -124,11 +116,15 @@ export function CreedShell({
 }: ShellProps) {
   const pathname = usePathname();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { signOut, state, exportMarkdown } = useCreed();
   const [failedAvatarUrl, setFailedAvatarUrl] = useState<string | null>(null);
-  const [billingOpen, setBillingOpen] = useState(false);
   const fileActionsRef = useRef<ShellFileActions>({});
   const [activeSectionId, setActiveSectionId] = useState<string | null>(null);
+  const [liveSections, setLiveSections] = useState<CreedSection[] | null>(null);
+  const documentOpen = pathname === "/file" && Boolean(searchParams.get("document"));
+  const visibleNavItems = documentOpen ? [] : navItems;
+  const sidebarSections = liveSections ?? sections;
   const registerFileActions = useCallback((actions: ShellFileActions) => {
     fileActionsRef.current = actions;
 
@@ -142,11 +138,15 @@ export function CreedShell({
     () => ({
       registerFileActions,
       setActiveSectionId,
+      setLiveSections,
     }),
     [registerFileActions]
   );
   const showAvatarImage = Boolean(avatarUrl) && failedAvatarUrl !== avatarUrl;
   const pendingProposalCountBySection = useMemo(() => {
+    if (documentOpen) {
+      return new Map<string, number>();
+    }
     const counts = new Map<string, number>();
     for (const proposal of state.proposals) {
       if (proposal.status !== "pending") continue;
@@ -158,7 +158,7 @@ export function CreedShell({
       for (const id of pendingProposalSectionIds) counts.set(id, 1);
     }
     return counts;
-  }, [state.proposals, pendingProposalSectionIds]);
+  }, [documentOpen, state.proposals, pendingProposalSectionIds]);
 
   // Sidebar previews for structural proposals. Existing sections with a
   // pending delete-section proposal get a red wash; pending new-section
@@ -166,6 +166,9 @@ export function CreedShell({
   // visible alongside real ones.
   const pendingDeleteSectionIds = useMemo(() => {
     const ids = new Set<string>();
+    if (documentOpen) {
+      return ids;
+    }
     for (const proposal of state.proposals) {
       if (proposal.status !== "pending") continue;
       if (proposal.draft.kind === "delete-section") {
@@ -173,9 +176,12 @@ export function CreedShell({
       }
     }
     return ids;
-  }, [state.proposals]);
+  }, [documentOpen, state.proposals]);
   const pendingNewSections = useMemo(() => {
     const rows: Array<{ id: string; name: string }> = [];
+    if (documentOpen) {
+      return rows;
+    }
     for (const proposal of state.proposals) {
       if (proposal.status !== "pending") continue;
       if (proposal.draft.kind !== "new-section") continue;
@@ -185,7 +191,7 @@ export function CreedShell({
       });
     }
     return rows;
-  }, [state.proposals]);
+  }, [documentOpen, state.proposals]);
 
   useEffect(() => {
     navItems.forEach((item) => {
@@ -256,8 +262,8 @@ export function CreedShell({
         <aside className="h-screen overflow-hidden border-r border-[var(--creed-border)] bg-[var(--creed-surface)] px-1.5 py-3 lg:px-5 lg:py-5">
           <div className="flex h-full flex-col">
             <Link
-              href="/home"
-              aria-label="Creed home"
+              href="/dashboard"
+              aria-label="Creed dashboard"
               className="mx-auto flex h-8 w-8 items-center justify-center rounded-[10px] transition-opacity duration-200 hover:opacity-60 lg:mx-0 lg:h-auto lg:w-auto lg:justify-start lg:px-2 lg:py-1.5"
             >
               <span className="lg:hidden">
@@ -268,21 +274,25 @@ export function CreedShell({
               </span>
             </Link>
 
-            <nav className="mt-5 space-y-1 lg:mt-8">
-              {navItems.map((item) => {
-                const active = pathname === item.href;
+            {visibleNavItems.length > 0 ? (
+              <nav className="mt-5 space-y-1 lg:mt-8">
+                {visibleNavItems.map((item) => {
+                  const active = pathname === item.href;
 
-                return <ShellNavLink key={item.href} item={item} active={active} />;
-              })}
-            </nav>
+                  return <ShellNavLink key={item.href} item={item} active={active} />;
+                })}
+              </nav>
+            ) : null}
 
-            <Separator className="my-4 bg-[var(--creed-border)] lg:my-6" />
+            {documentOpen ? (
+              <>
+                <Separator className="my-4 bg-[var(--creed-border)] lg:my-6" />
 
-            <div className="hidden text-[13px] font-medium text-[var(--creed-text-tertiary)] lg:block">
-              Sections
-            </div>
-            <div className="mt-2 min-h-0 flex-1 space-y-1 overflow-y-auto creed-scrollbar lg:mt-4 lg:pr-1">
-              {sections.filter((section) => !section.archived).map((section) => {
+                <div className="hidden text-[13px] font-medium text-[var(--creed-text-tertiary)] lg:block">
+                  Sections
+                </div>
+                <div className="mt-2 min-h-0 flex-1 space-y-1 overflow-y-auto creed-scrollbar lg:mt-4 lg:pr-1">
+              {sidebarSections.filter((section) => !section.archived).map((section) => {
                 const pendingCount = pendingProposalCountBySection.get(section.id) ?? 0;
                 const isActive = activeSectionId === section.id && pathname === "/file";
                 const pendingDelete = pendingDeleteSectionIds.has(section.id);
@@ -392,8 +402,13 @@ export function CreedShell({
                 <span className="hidden lg:inline"> Add section</span>
               </button>
             </div>
+              </>
+            ) : (
+              <div className="min-h-0 flex-1" />
+            )}
 
             <div className="mt-auto">
+              <NotificationMenu />
               <Separator className="my-4 bg-[var(--creed-border)] lg:my-6" />
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -431,36 +446,18 @@ export function CreedShell({
                   className="w-(--radix-dropdown-menu-trigger-width) border-[var(--creed-border)] bg-[var(--creed-surface)]"
                 >
                   <AnimatedMenuIconItem
-                    icon={LinkIcon}
+                    icon={Link2}
                     className="text-[13px]"
                     onSelect={() => {
-                      router.push("/home");
+                      router.push("/dashboard");
                     }}
                   >
-                    Homepage
-                  </AnimatedMenuIconItem>
-                  <AnimatedMenuIconItem
-                    icon={BookTextIcon}
-                    className="text-[13px]"
-                    onSelect={() => {
-                      router.push("/docs");
-                    }}
-                  >
-                    Docs
+                    Dashboard
                   </AnimatedMenuIconItem>
                   <FeedbackMenuItem />
                   <ThemeToggleMenuItem />
                   <AnimatedMenuIconItem
-                    icon={CreditCardIcon}
-                    className="text-[13px]"
-                    onSelect={() => {
-                      setBillingOpen(true);
-                    }}
-                  >
-                    Billing
-                  </AnimatedMenuIconItem>
-                  <AnimatedMenuIconItem
-                    icon={LogoutIcon}
+                    icon={Logout}
                     className="text-[13px]"
                     onSelect={() => {
                       void signOut();
@@ -478,8 +475,6 @@ export function CreedShell({
           {children}
         </main>
       </div>
-
-      <BillingDialog open={billingOpen} onOpenChange={setBillingOpen} />
     </ShellActionsContext.Provider>
   );
 }
@@ -501,9 +496,21 @@ export function useCreedShellActiveSection() {
   return context?.setActiveSectionId ?? (() => {});
 }
 
+export function useCreedShellLiveSections(sections: CreedSection[] | null) {
+  const context = useContext(ShellActionsContext);
+
+  useEffect(() => {
+    if (!context) {
+      return;
+    }
+
+    context.setLiveSections(sections);
+    return () => context.setLiveSections(null);
+  }, [context, sections]);
+}
+
 function ThemeToggleMenuItem() {
   const { theme, toggleTheme } = useTheme();
-  const iconRef = useRef<ContrastIconHandle | null>(null);
 
   return (
     <DropdownMenuItem
@@ -519,12 +526,10 @@ function ThemeToggleMenuItem() {
           : undefined;
         toggleTheme(origin);
       }}
-      onMouseEnter={() => iconRef.current?.startAnimation()}
-      onMouseLeave={() => iconRef.current?.stopAnimation()}
       className="flex items-center justify-between gap-2 text-[13px]"
     >
       <span className="flex items-center gap-2">
-        <ContrastIcon ref={iconRef} size={14} className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none" />
+        <Contrast className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none" />
         <span className="md:hidden">Theme</span>
         <span className="hidden md:inline">{theme === "dark" ? "Light mode" : "Dark mode"}</span>
       </span>

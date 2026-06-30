@@ -1,12 +1,33 @@
 import { NextResponse } from "next/server";
+import type { EmailOtpType } from "@supabase/supabase-js";
 import { upsertGitHubIntegration } from "@/lib/creed-backend";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+
+const EMAIL_OTP_TYPES = new Set<EmailOtpType>([
+  "signup",
+  "invite",
+  "magiclink",
+  "recovery",
+  "email_change",
+  "email",
+]);
+
+function isEmailOtpType(value: string | null): value is EmailOtpType {
+  return value !== null && EMAIL_OTP_TYPES.has(value as EmailOtpType);
+}
+
+function normalizeEmail(value: string | null | undefined) {
+  return value?.trim().toLowerCase() ?? "";
+}
 
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);
   const code = searchParams.get("code");
-  const next = searchParams.get("next") || "/";
+  const tokenHash = searchParams.get("token_hash");
+  const type = searchParams.get("type");
+  const next = searchParams.get("next") || "/accept-invite";
   const integration = searchParams.get("integration");
+  const expectedEmail = normalizeEmail(searchParams.get("expected_email"));
 
   // Identity-link flows (reconnect GitHub, connect Google/X in Settings) come
   // back through here with the user already signed in. We must not treat them
@@ -14,9 +35,22 @@ export async function GET(request: Request) {
   const isLinkFlow = integration !== null || next.startsWith("/settings");
 
   let exchangeFailed = false;
-  if (code) {
+  if (code || tokenHash) {
     const supabase = await createSupabaseServerClient();
-    const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+
+    const { data, error } =
+      tokenHash && isEmailOtpType(type)
+        ? await supabase.auth.verifyOtp({
+            token_hash: tokenHash,
+            type,
+          })
+        : code
+          ? await supabase.auth.exchangeCodeForSession(code)
+          : {
+              data: { session: null, user: null },
+              error: new Error("Invalid email link."),
+            };
+
     const session = data.session;
     const user = data.user ?? session?.user;
 
@@ -25,6 +59,19 @@ export async function GET(request: Request) {
     // normal for identity linking, so don't treat that as a failure.
     if (error) {
       exchangeFailed = true;
+    }
+
+    if (
+      expectedEmail &&
+      user &&
+      normalizeEmail(user.email) !== expectedEmail
+    ) {
+      await supabase.auth.signOut();
+      const mismatchNext = next.startsWith("/settings") ? "/settings" : "/accept-invite";
+      const redirectUrl = new URL("/login", origin);
+      redirectUrl.searchParams.set("next", mismatchNext);
+      redirectUrl.searchParams.set("error", "oauth_email_mismatch");
+      return NextResponse.redirect(redirectUrl);
     }
 
     if (integration === "github" && session?.provider_token && user) {
@@ -73,6 +120,7 @@ export async function GET(request: Request) {
 
   // Only a genuinely failed sign-in/confirmation goes to /login; link flows
   // always return to where they came from (the user is still signed in).
-  const target = code && exchangeFailed && !isLinkFlow ? "/login" : safeNext;
+  const attemptedExchange = Boolean(code || tokenHash);
+  const target = attemptedExchange && exchangeFailed && !isLinkFlow ? "/login" : safeNext;
   return NextResponse.redirect(`${origin}${target}`);
 }

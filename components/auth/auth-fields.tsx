@@ -1,15 +1,12 @@
 "use client";
 
-// Shared form primitives for the auth surface (/login, /signup,
-// /reset-password): the text field, the password field with the animated eye
-// toggle, the checkbox, and the submit button with the animated arrow. Kept
+// Shared form primitives for the auth surface (/login,
+// /reset-password): the text field, the password field with the eye
+// toggle, the checkbox, and the submit button. Kept
 // here so every auth screen stays visually and behaviourally identical.
 
 import { useState, type ReactNode, type Ref } from "react";
-import { Check, LoaderCircle } from "lucide-react";
-import { ArrowRightIcon } from "@/components/ui/arrow-right";
-import { EyeToggleIcon } from "@/components/ui/eye-toggle";
-import { useAnimatedIconControls } from "@/components/creed/animated-icon-controls";
+import { ArrowRight, Check, Eye, EyeOff, LoaderCircle } from "@/components/ui/phosphor-icons";
 import { cn } from "@/lib/utils";
 
 type AuthFieldProps = {
@@ -83,7 +80,6 @@ export function PasswordField({
   inputRef?: Ref<HTMLInputElement>;
 }) {
   const [show, setShow] = useState(false);
-  const eyeShake = useAnimatedIconControls(0, undefined, 600);
 
   return (
     <AuthField
@@ -101,16 +97,9 @@ export function PasswordField({
           tabIndex={-1}
           aria-label={show ? "Hide password" : "Show password"}
           onClick={() => setShow((v) => !v)}
-          onMouseEnter={eyeShake.start}
-          onMouseLeave={eyeShake.settle}
           className="flex h-8 w-8 items-center justify-center rounded-[8px] text-[var(--creed-text-tertiary)] transition-colors hover:text-[#2563EB]"
         >
-          <EyeToggleIcon
-            ref={eyeShake.iconRef}
-            off={show}
-            size={18}
-            className="inline-flex items-center justify-center"
-          />
+          {show ? <EyeOff className="h-[18px] w-[18px]" /> : <Eye className="h-[18px] w-[18px]" />}
         </button>
       }
     />
@@ -145,28 +134,17 @@ export function AuthSubmitButton({
   loading: boolean;
   disabled?: boolean;
 }) {
-  const arrow = useAnimatedIconControls(80, undefined, 420);
-
   return (
     <button
       type="submit"
       disabled={disabled}
-      onMouseEnter={arrow.start}
-      onMouseLeave={arrow.settle}
-      onPointerDown={(event) => {
-        if (event.pointerType !== "mouse") arrow.start();
-      }}
       className="mt-2 inline-flex h-12 w-full items-center justify-center gap-2 rounded-[var(--radius-md)] bg-[#2563EB] text-[15px] font-medium text-white transition-colors hover:bg-[#1D4ED8] disabled:cursor-not-allowed disabled:opacity-50"
     >
       {label}
       {loading ? (
         <LoaderCircle className="h-4 w-4 animate-spin" />
       ) : (
-        <ArrowRightIcon
-          ref={arrow.iconRef}
-          size={16}
-          className="inline-flex shrink-0 items-center justify-center leading-none"
-        />
+        <ArrowRight className="inline-flex h-4 w-4 shrink-0 items-center justify-center leading-none" />
       )}
     </button>
   );

@@ -74,7 +74,7 @@ function base64UrlSha256(input: string) {
 
 // RFC 7636 S256: BASE64URL(SHA256(verifier)) === challenge, compared in
 // constant time.
-export function verifyPkceS256(verifier: string, challenge: string) {
+function verifyPkceS256(verifier: string, challenge: string) {
   if (!verifier || !challenge) {
     return false;
   }
@@ -324,17 +324,4 @@ export async function findOAuthAccessToken(
     clientName: client?.clientName ?? null,
     scope: row.scope,
   };
-}
-
-export async function revokeOAuthTokensForUser(userId: string, clientId?: string) {
-  const admin = adminDb();
-  let query = admin
-    .from("oauth_tokens")
-    .update({ revoked_at: new Date().toISOString() })
-    .eq("user_id", userId)
-    .is("revoked_at", null);
-  if (clientId) {
-    query = query.eq("client_id", clientId);
-  }
-  await query;
 }

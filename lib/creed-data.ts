@@ -58,7 +58,7 @@ export function isAccentKey(value: unknown): value is AccentKey {
   );
 }
 
-export const CREED_SEED_VERSION = "2026-04-18-agent-behavior-v1";
+const CREED_SEED_VERSION = "2026-04-18-agent-behavior-v1";
 
 export type ActorType = "user" | "agent";
 
@@ -79,7 +79,7 @@ export type AgentPermission = "hidden" | "read-only" | "propose" | "direct";
 
 export const permissionToWritable = (permission: AgentPermission) =>
   permission === "propose" || permission === "direct";
-export const permissionIsReadable = (permission: AgentPermission) => permission !== "hidden";
+const permissionIsReadable = (permission: AgentPermission) => permission !== "hidden";
 export function normalizeAgentPermission(value: unknown): AgentPermission {
   return value === "hidden" || value === "read-only" || value === "propose" || value === "direct"
     ? value
@@ -133,21 +133,21 @@ export type GitHubSyncStatus =
 // matching answer. All ten ship as agent-writable so AI can keep the profile
 // accurate, polished, concise, and current.
 export const IDENTITY_SECTION_ID = "identity";
-export const BELIEFS_SECTION_ID = "beliefs";
+const BELIEFS_SECTION_ID = "beliefs";
 export const GOALS_SECTION_ID = "goals";
 export const WORK_SECTION_ID = "work";
 export const PREFERENCES_SECTION_ID = "preferences";
-export const CONSTRAINTS_SECTION_ID = "constraints";
-export const PEOPLE_SECTION_ID = "people";
-export const HEALTH_SECTION_ID = "health";
+const CONSTRAINTS_SECTION_ID = "constraints";
+const PEOPLE_SECTION_ID = "people";
+const HEALTH_SECTION_ID = "health";
 export const ROUTINES_SECTION_ID = "routines";
-export const CONTEXT_SECTION_ID = "context";
+const CONTEXT_SECTION_ID = "context";
 
 // Legacy IDs - kept so historical Creeds with the old dev-leaning section set
 // still hydrate cleanly. New starter files never emit these.
-export const OPERATING_PRINCIPLES_SECTION_ID = "operating-principles";
-export const CURRENT_FOCUS_SECTION_ID = "current-focus";
-export const LEGACY_CONVENTIONS_SECTION_ID = "conventions";
+const OPERATING_PRINCIPLES_SECTION_ID = "operating-principles";
+const CURRENT_FOCUS_SECTION_ID = "current-focus";
+const LEGACY_CONVENTIONS_SECTION_ID = "conventions";
 
 // Retained for back-compat with any callers that still reference the
 // historical "governed sections" concept. Under the unified model, agent
@@ -155,7 +155,7 @@ export const LEGACY_CONVENTIONS_SECTION_ID = "conventions";
 // id list. The list below is the default set of agent-writable section IDs
 // that ship with a fresh Creed.
 export type GovernedSectionId = string;
-export const defaultAgentWritableSectionIds = [
+const defaultAgentWritableSectionIds = [
   IDENTITY_SECTION_ID,
   BELIEFS_SECTION_ID,
   GOALS_SECTION_ID,
@@ -172,20 +172,20 @@ export const defaultAgentWritableSectionIds = [
   CURRENT_FOCUS_SECTION_ID,
 ] as const;
 
-export type HiddenInstructionSectionRule = {
+type HiddenInstructionSectionRule = {
   title: string;
   means: string;
   belongs: string;
   doesNotBelong: string;
 };
 
-export type HiddenInstructionExampleBlock = {
+type HiddenInstructionExampleBlock = {
   title: string;
   good: string[];
   bad: string[];
 };
 
-export type CreedSelfImprovementContract = {
+type CreedSelfImprovementContract = {
   purpose: string[];
   startOfWork: string[];
   endOfWork: string[];
@@ -196,7 +196,7 @@ export type CreedSelfImprovementContract = {
   noChangeRule: string;
 };
 
-export type HiddenInstructionContract = {
+type HiddenInstructionContract = {
   whatCreedIs: string[];
   coreOperatingRule: string[];
   selfImprovement: CreedSelfImprovementContract;
@@ -216,13 +216,13 @@ export type HiddenInstructionContract = {
 // `section_permissions` is the authoritative per-section list; `preferred_mode`
 // / `require_approval` are coarse hints kept for agents trained on the old flat
 // model. `mode_is_mixed` flags that sections differ.
-export type SectionPermissionEntry = {
+type SectionPermissionEntry = {
   id: string;
   name: string;
   permission: AgentPermission;
 };
 
-export type AgentWritePolicy =
+type AgentWritePolicy =
   | {
       preferred_mode: "proposals_only";
       require_approval: true;
@@ -326,11 +326,11 @@ export type ProposalDraft =
 
 // Type aliases retained so legacy import sites keep compiling during the
 // transition. Each is structurally identical to RichTextProposalDraft.
-export type OperatingPrinciplesProposalDraft = RichTextProposalDraft;
-export type DecisionProposalDraft = RichTextProposalDraft;
-export type CurrentFocusProposalDraft = RichTextProposalDraft;
-export type RulesProposalDraft = RichTextProposalDraft;
-export type ChipsProposalDraft = RichTextProposalDraft;
+type OperatingPrinciplesProposalDraft = RichTextProposalDraft;
+type DecisionProposalDraft = RichTextProposalDraft;
+type CurrentFocusProposalDraft = RichTextProposalDraft;
+type RulesProposalDraft = RichTextProposalDraft;
+type ChipsProposalDraft = RichTextProposalDraft;
 
 export type Proposal = {
   id: string;
@@ -471,7 +471,7 @@ export function normalizeLegacyProposalDraft(draft: ProposalDraft | { kind?: str
   };
 }
 
-export function normalizeLegacySection(section: CreedSection): CreedSection {
+function normalizeLegacySection(section: CreedSection): CreedSection {
   if (section.id !== LEGACY_CONVENTIONS_SECTION_ID && (section.accent as string) !== LEGACY_CONVENTIONS_SECTION_ID) {
     return section;
   }
@@ -794,25 +794,25 @@ export const accentLabelMap: Record<AccentKey, string> = {
   custom: "Mono",
 };
 
-export const proposalChangeTypeLabelMap: Record<ProposalChangeType, string> = {
+const proposalChangeTypeLabelMap: Record<ProposalChangeType, string> = {
   "new-memory": "Memory",
   "refines-existing": "Refines",
   "conflicts-existing": "Conflict",
 };
 
-export const proposalImpactLabelMap: Record<ProposalImpact, string> = {
+const proposalImpactLabelMap: Record<ProposalImpact, string> = {
   "future-responses": "Future responses",
   "code-generation": "Code generation",
   "project-context": "Project context",
 };
 
-export const proposalConfidenceLabelMap: Record<ProposalConfidence, string> = {
+const proposalConfidenceLabelMap: Record<ProposalConfidence, string> = {
   tentative: "Tentative",
   repeated: "Repeated",
   durable: "Durable",
 };
 
-export const collaborationRules: HiddenInstructionContract = {
+const collaborationRules: HiddenInstructionContract = {
   whatCreedIs: [
     "Creed is the user's personal context profile: a durable, high-signal record of who they are.",
     "It captures identity, beliefs, goals, work, preferences, constraints, people, health, routines, and other context worth carrying across every AI conversation.",
@@ -1262,7 +1262,7 @@ function buildAgentContractPrologue(docsUrl: string): string {
   return built;
 }
 
-export function buildHiddenAgentGuidanceMarkdown(
+function buildHiddenAgentGuidanceMarkdown(
   options?: {
     proposalUrl?: string;
     proposalToken?: string;

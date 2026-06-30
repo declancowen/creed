@@ -1,11 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { AnimatedCheckmark } from "@/components/ui/animated-checkmark";
-import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { CopyIcon } from "@/components/ui/copy";
+import { Copy } from "@/components/ui/phosphor-icons";
 import { AgentIconStack } from "@/components/creed/agent-icon-stack";
 import { AnimatedIconButton } from "@/components/creed/animated-icon-action";
 import { ConnectionCard, resolveConnectionStatus } from "@/components/creed/connection-card";
@@ -14,7 +13,6 @@ import { useCreed } from "@/components/creed/creed-provider";
 import { cn } from "@/lib/utils";
 
 export function ConnectionsScreen() {
-  const router = useRouter();
   const { state } = useCreed();
   const [copied, setCopied] = useState<string | null>(null);
   const [agentSetupOpen, setAgentSetupOpen] = useState(false);
@@ -24,12 +22,6 @@ export function ConnectionsScreen() {
     setCopied(key);
     window.setTimeout(() => setCopied(null), 1600);
   }
-
-  useEffect(() => {
-    if (state.sections.length === 0) {
-      router.replace("/onboarding");
-    }
-  }, [router, state.sections.length]);
 
   const connected = state.mcpStatus === "connected";
   const mcpStatusLabel = connected ? "Connected via MCP" : "Not connected via MCP";
@@ -112,7 +104,7 @@ export function ConnectionsScreen() {
 
           <div className="mt-4 flex flex-wrap items-center gap-3">
             <AnimatedIconButton
-              icon={CopyIcon}
+              icon={Copy}
               showIcon={copied !== "mcp-url"}
               className="creed-copy-cycle min-w-[116px] justify-center rounded-md px-4 text-white"
               onClick={() => copyValue("mcp-url", state.mcpUrl)}

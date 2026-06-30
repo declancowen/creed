@@ -4,9 +4,9 @@ import "server-only";
 // logs auto-pick those up). The interface is shaped so we can swap in Sentry,
 // DataDog, or OpenTelemetry by changing one file.
 
-export type LogLevel = "info" | "warn" | "error";
+type LogLevel = "info" | "warn" | "error";
 
-export type LogContext = {
+type LogContext = {
   requestId?: string;
   userId?: string;
   route?: string;
@@ -56,7 +56,7 @@ export const log = {
   },
 };
 
-export type RouteHandler<T extends Request = Request> = (
+type RouteHandler<T extends Request = Request> = (
   request: T,
   ...args: unknown[]
 ) => Promise<Response> | Response;
@@ -66,7 +66,7 @@ export type RouteHandler<T extends Request = Request> = (
  * metadata and a 500 response is returned. Pair with the request-id middleware
  * so log lines correlate across services.
  */
-export function withErrorLogging<T extends Request = Request>(
+function withErrorLogging<T extends Request = Request>(
   routeName: string,
   handler: RouteHandler<T>
 ): RouteHandler<T> {

@@ -10,13 +10,13 @@ import { inferAgentIconKind, normalizeMcpClientId } from "@/lib/creed-backend";
 
 export type McpHealthRange = "7d" | "30d" | "90d";
 
-export const MCP_HEALTH_RANGES: readonly McpHealthRange[] = ["7d", "30d", "90d"];
+const MCP_HEALTH_RANGES: readonly McpHealthRange[] = ["7d", "30d", "90d"];
 
 export function isMcpHealthRange(value: string): value is McpHealthRange {
   return (MCP_HEALTH_RANGES as readonly string[]).includes(value);
 }
 
-export type McpHealthMetric = "reads" | "directs" | "proposals";
+type McpHealthMetric = "reads" | "directs" | "proposals";
 
 export type McpHealthAgent = {
   clientId: string;

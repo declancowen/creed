@@ -3,7 +3,7 @@
 // Shared OAuth trigger for the marketing auth surface. Owns the one bit of
 // real OAuth logic (kick off Supabase OAuth, routing the result through
 // /auth/callback with an optional `next` destination) so the chrome button
-// and the /login + /signup screens don't each carry a copy.
+// and /login doesn't carry provider-specific copies.
 
 import { useState } from "react";
 import { toast } from "sonner";

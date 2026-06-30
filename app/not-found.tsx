@@ -14,16 +14,10 @@ export default function NotFound() {
       </p>
       <div className="mt-2 flex items-center gap-3">
         <Link
-          href="/home"
+          href="/login"
           className="inline-flex h-10 items-center justify-center rounded-md bg-[#2563EB] px-5 text-[14px] font-medium text-white transition-colors hover:bg-[#1D4ED8]"
         >
-          Back home
-        </Link>
-        <Link
-          href="/pricing"
-          className="inline-flex h-10 items-center justify-center rounded-md border border-[var(--creed-border)] bg-transparent px-5 text-[14px] font-medium text-[var(--creed-text-primary)] transition-colors hover:bg-[var(--creed-surface-raised)]"
-        >
-          See pricing
+          Go to login
         </Link>
       </div>
     </div>

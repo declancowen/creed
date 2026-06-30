@@ -18,7 +18,7 @@ type GitHubTokenRefreshPayload = {
   error_description?: string;
 };
 
-export type GitHubRepo = {
+type GitHubRepo = {
   id: number;
   name: string;
   full_name: string;
@@ -29,11 +29,11 @@ export type GitHubRepo = {
   private: boolean;
 };
 
-export type GitHubBranch = {
+type GitHubBranch = {
   name: string;
 };
 
-export type GitHubFileSnapshot = {
+type GitHubFileSnapshot = {
   sha: string;
   content: string;
   contentHash: string;
@@ -41,7 +41,7 @@ export type GitHubFileSnapshot = {
   committedAt?: string;
 };
 
-export type GitHubPushResult = {
+type GitHubPushResult = {
   sha: string;
   message?: string;
   committedAt?: string;

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireApiAuth } from "@/lib/api-auth";
 import type { CreedSection } from "@/lib/creed-data";
 import { loadCreedState, persistCreedState } from "@/lib/creed-backend";
 import { requireAuthenticatedUser } from "@/lib/github-version-control";
@@ -13,7 +14,10 @@ type ApplyBody = {
 
 export async function POST(request: Request) {
   try {
-    const { supabase, user } = await requireAuthenticatedUser();
+    const auth = await requireApiAuth();
+    if (auth instanceof NextResponse) return auth;
+
+    const { supabase, user } = await requireAuthenticatedUser(auth);
     const body = (await request.json()) as ApplyBody;
 
     if (!Array.isArray(body.sections) || body.sections.length === 0) {

@@ -15,7 +15,7 @@
 // override via the env var.
 const fallbackContactEmail = "connorchepburn@gmail.com";
 
-export const CONTACT_EMAIL =
+const CONTACT_EMAIL =
   process.env.NEXT_PUBLIC_CONTACT_EMAIL?.trim() || fallbackContactEmail;
 
 export const CONTACT_MAILTO = `mailto:${CONTACT_EMAIL}`;
@@ -23,9 +23,9 @@ export const CONTACT_MAILTO = `mailto:${CONTACT_EMAIL}`;
 // Default social URLs surface on the deployed site without needing env
 // vars set. Forks can override via NEXT_PUBLIC_*_URL or set the env var
 // to an empty string to hide the icon entirely.
-export const TWITTER_URL =
+const TWITTER_URL =
   process.env.NEXT_PUBLIC_TWITTER_URL?.trim() || "https://x.com/connorhpbrn";
-export const INSTAGRAM_URL =
+const INSTAGRAM_URL =
   process.env.NEXT_PUBLIC_INSTAGRAM_URL?.trim() || "https://instagram.com/connorhpbrn";
 export const GITHUB_URL =
   process.env.NEXT_PUBLIC_GITHUB_URL?.trim() || "https://github.com/connorhpbrn/creed";

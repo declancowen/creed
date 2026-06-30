@@ -13,13 +13,19 @@ export const metadata: Metadata = {
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ next?: string | string[] }>;
+  searchParams: Promise<{ next?: string | string[]; error?: string | string[] }>;
 }) {
   const configured = isSupabaseConfigured();
-  const nextPath = sanitizeNextPath((await searchParams).next);
+  const params = await searchParams;
+  const nextPath = params.next ? sanitizeNextPath(params.next) : "/dashboard";
+  const error =
+    typeof params.error === "string" &&
+    (params.error === "oauth_email_mismatch" || params.error === "google_email_mismatch")
+      ? "oauth_email_mismatch"
+      : undefined;
 
-  // Already signed in? Don't show the login form (which would let them loop
-  // through OAuth pointlessly) - send them on to `next` (or the app).
+  // Already signed in? Don't show the sign-in form - send them on to `next`
+  // (or the app).
   if (configured) {
     const supabase = await createSupabaseServerClient();
     const {
@@ -30,5 +36,5 @@ export default async function LoginPage({
     }
   }
 
-  return <AuthScreen mode="login" configured={configured} nextPath={nextPath} />;
+  return <AuthScreen configured={configured} nextPath={nextPath} authError={error} />;
 }

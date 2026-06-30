@@ -12,7 +12,10 @@ export async function GET(request: Request) {
   const range = url.searchParams.get("range") as AiUsageRange | null;
   const resolvedRange = range && ranges.has(range) ? range : "7d";
   const modeParam = url.searchParams.get("mode");
-  const mode: AiMode = modeParam === "byok" ? "byok" : "credits";
+  if (modeParam && modeParam !== "byok") {
+    return NextResponse.json({ error: "Invalid AI mode." }, { status: 400 });
+  }
+  const mode: AiMode = "byok";
 
   const usage = await readAiUsageSummary(auth.supabase, auth.user.id, resolvedRange, mode);
   return NextResponse.json({ usage });

@@ -67,15 +67,15 @@ but a few things are non-negotiable:
 
 ## Architecture cheatsheet
 
-- `app/(creed-app)/` — the authenticated product (`/file`,
+- `app/(creed-app)/` — the authenticated product (`/dashboard`, `/file`,
   `/connections`, `/settings`).
-- `app/` (top level) — public marketing routes, `/auth/callback`,
-  `/onboarding`, API handlers.
+- `app/` (top level) — auth entry points, `/auth/callback`, OAuth MCP routes,
+  API handlers.
 - `app/api/app/*` — session-authenticated user APIs.
 - `app/api/creed/*` and `app/mcp/route.ts` — token-authenticated agent
   APIs.
 - `components/creed/*` — product UI (editor, sidebars, dialogs).
-- `components/marketing/*` — public-site UI.
+- `components/marketing/*` — shared auth visual helpers.
 - `components/ui/*` — shadcn-style primitives.
 - `lib/creed-data.ts` — shared types + section constants.
 - `lib/creed-backend.ts` — Supabase reads / writes for product state.

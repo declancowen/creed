@@ -1,23 +1,15 @@
 import { redirect } from "next/navigation";
-import { BackendSetupScreen } from "@/components/auth/backend-setup-screen";
-import { hasPersistedCreed } from "@/lib/creed-backend";
-import { isSupabaseTableMissingError } from "@/lib/creed-backend-errors";
-import { hasActiveEntitlement } from "@/lib/stripe";
 import { isSupabaseConfigured } from "@/lib/supabase/env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { log } from "@/lib/observability";
 
-// Root-page router. Branches on three signals: Supabase configured?
-// (otherwise marketing-only), signed in?, paid?. Only then do we ask
-// whether the user has any sections to decide `/file` vs `/onboarding`.
-//
-// We deliberately use the lightweight `hasPersistedCreed` probe rather
-// than the full `loadCreedState` fan-out - this route is a redirect, not
-// a render, so any extra round-trips are pure overhead and the
-// (creed-app) layout will load real state on the next request.
+// Root-page router. Signed-out visitors see login; signed-in users go straight
+// into the app. Public signup/onboarding is not part of the invite-only auth flow.
+export const dynamic = "force-dynamic";
+
 export default async function Home() {
   if (!isSupabaseConfigured()) {
-    redirect("/home");
+    redirect("/login");
   }
 
   let supabase;
@@ -38,42 +30,8 @@ export default async function Home() {
   }
 
   if (!user) {
-    redirect("/home");
+    redirect("/login");
   }
 
-  // Entitlement gate: the app is the paid product, so signed-in users
-  // without a paid row are sent to /onboarding (free: connect an agent,
-  // compose, preview, then "Get Creed") rather than into the app. The
-  // (creed-app) layout also gates /file etc, but short-circuiting here
-  // avoids the redundant section-probe round-trip for unpaid users.
-  const paid = await hasActiveEntitlement(supabase, user.id);
-  if (!paid) {
-    redirect("/onboarding");
-  }
-
-  // `redirect()` works by throwing a NEXT_REDIRECT marker that the
-  // framework catches at the boundary. Wrapping it in try/catch is the
-  // canonical Next.js footgun: the catch swallows the redirect signal,
-  // logs it as a phantom error, and re-throws in a way that surfaces
-  // app/error.tsx with a digest instead of actually redirecting. Keep
-  // the redirect OUTSIDE the try; only the DB probe is wrapped.
-  let hasSections: boolean;
-  try {
-    hasSections = await hasPersistedCreed(supabase, user.id);
-  } catch (error) {
-    if (isSupabaseTableMissingError(error)) {
-      return (
-        <BackendSetupScreen
-          errorMessage={
-            error instanceof Error ? error.message : "Creed tables are missing."
-          }
-        />
-      );
-    }
-
-    log.error("home_has_persisted_creed_failed", { route: "/", userId: user.id }, error);
-    throw error;
-  }
-
-  redirect(hasSections ? "/file" : "/onboarding");
+  redirect("/dashboard");
 }

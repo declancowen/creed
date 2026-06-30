@@ -10,7 +10,7 @@ import {
 } from "@/lib/creed-data";
 import { callOpenRouter, parseJsonObject } from "@/lib/ai/openrouter";
 import { recordAiUsage } from "@/lib/ai/persistence";
-import { deductCredits, resolveAiCredential } from "@/lib/ai/credits";
+import { resolveAiCredential } from "@/lib/ai/credits";
 import {
   buildQualityPrompt,
   buildQualityResponseFormat,
@@ -56,7 +56,7 @@ export type CreedQualityReport = {
 
 // Controlled tag vocabulary. The AI only picks from this set so the UI can
 // reliably colour-code every tag. Order matches narrative weight.
-export const QUALITY_TAG_VOCAB = {
+const QUALITY_TAG_VOCAB = {
   green: [
     "Specific",
     "Concrete",
@@ -108,19 +108,19 @@ function assertNoError(error: { message: string } | null, fallback: string) {
   }
 }
 
-export function hashCreedSections(sections: CreedSection[]) {
+function hashCreedSections(sections: CreedSection[]) {
   return createHash("sha256")
     .update(JSON.stringify(sections, (key, value) => QUALITY_HASH_IGNORED_KEYS.has(key) ? undefined : value))
     .digest("hex");
 }
 
-export function hashCreedSection(section: CreedSection) {
+function hashCreedSection(section: CreedSection) {
   return createHash("sha256")
     .update(JSON.stringify(section, (key, value) => QUALITY_HASH_IGNORED_KEYS.has(key) ? undefined : value))
     .digest("hex");
 }
 
-export function hashCreedSectionsById(sections: CreedSection[]) {
+function hashCreedSectionsById(sections: CreedSection[]) {
   return Object.fromEntries(sections.map((section) => [section.id, hashCreedSection(section)]));
 }
 
@@ -594,7 +594,6 @@ export async function analyzeCreedQuality({
         contentHash,
         sectionHashes: Object.keys(storedHashes).length ? storedHashes : sectionHashes,
         cached: true,
-        creditBalanceUsd: null,
       };
     }
   }
@@ -647,7 +646,7 @@ export async function analyzeCreedQuality({
         modelId: latest?.model_id ?? "carry-forward",
       });
     }
-    return { report: reportWithHashes, contentHash, sectionHashes, cached: false, creditBalanceUsd: null };
+    return { report: reportWithHashes, contentHash, sectionHashes, cached: false };
   }
 
   const credential = await resolveAiCredential(client, userId);
@@ -711,18 +710,6 @@ export async function analyzeCreedQuality({
   });
   const reportWithHashes = { ...report, sectionHashes, rubricVersion: CREED_QUALITY_RUBRIC_VERSION };
 
-  // Now that we have a valid report, bill prepaid credits - before the report /
-  // usage writes so a later DB hiccup can't skip the charge. No-op for BYOK.
-  let creditBalanceUsd: number | null = null;
-  if (credential.mode === "credits") {
-    creditBalanceUsd = await deductCredits({
-      userId,
-      costUsd: result.estimatedCostUsd,
-      feature: "quality_analysis",
-      modelId: credential.modelId,
-    });
-  }
-
   await persistQualityReport({
     client,
     userId,
@@ -732,27 +719,22 @@ export async function analyzeCreedQuality({
     modelId: credential.modelId,
   });
 
-  // Record usage only when the charge actually landed: BYOK never charges, and
-  // in credits mode a non-null balance means the debit succeeded. This keeps the
-  // spend chart consistent with the balance (no phantom cost if the debit failed).
-  if (credential.mode === "byok" || creditBalanceUsd !== null) {
-    try {
-      await recordAiUsage({
-        client,
-        userId,
-        feature: "quality_analysis",
-        modelId: credential.modelId,
-        modelQuality: result.modelQuality,
-        inputTokens: result.inputTokens,
-        outputTokens: result.outputTokens,
-        estimatedCostUsd: result.estimatedCostUsd,
-        aiMode: credential.mode,
-      });
-    } catch {
-      // Usage logging is best-effort; a completed, charged analysis must not
-      // fail just because the spend-chart insert hiccupped.
-    }
+  try {
+    await recordAiUsage({
+      client,
+      userId,
+      feature: "quality_analysis",
+      modelId: credential.modelId,
+      modelQuality: result.modelQuality,
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+      estimatedCostUsd: result.estimatedCostUsd,
+      aiMode: credential.mode,
+    });
+  } catch {
+    // Usage logging is best-effort; a completed analysis must not fail just
+    // because the spend-chart insert hiccupped.
   }
 
-  return { report: reportWithHashes, contentHash, sectionHashes, cached: false, creditBalanceUsd };
+  return { report: reportWithHashes, contentHash, sectionHashes, cached: false };
 }

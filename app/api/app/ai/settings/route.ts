@@ -35,7 +35,7 @@ export async function PUT(request: Request) {
       return NextResponse.json({ error: "Invalid API key." }, { status: 400 });
     }
 
-    if (body.aiMode !== undefined && body.aiMode !== "credits" && body.aiMode !== "byok") {
+    if (body.aiMode !== undefined && body.aiMode !== "byok") {
       return NextResponse.json({ error: "Invalid AI mode." }, { status: 400 });
     }
 
@@ -45,7 +45,6 @@ export async function PUT(request: Request) {
       modelId: body.modelId,
       apiKey: body.apiKey,
       clearApiKey: body.clearApiKey === true,
-      aiMode: body.aiMode === "byok" || body.aiMode === "credits" ? body.aiMode : undefined,
     });
 
     void recordAuditEvent({
@@ -56,7 +55,7 @@ export async function PUT(request: Request) {
         modelId: body.modelId,
         apiKeyChanged: typeof body.apiKey === "string",
         apiKeyCleared: body.clearApiKey === true,
-        aiMode: body.aiMode,
+        aiMode: "byok",
       },
     });
 

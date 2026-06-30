@@ -3,10 +3,8 @@ type AnimatedHeadingProps = {
   className?: string;
 };
 
-// Page titles (and the auth screens) used to play a per-glyph blur-in. That
-// letter-by-letter animation now lives only on the landing hero and onboarding.
-// These render plainly; on marketing pages the surrounding content fade carries
-// the entrance instead.
+// Auth page titles used to play a per-glyph blur-in. These render plainly so
+// the auth screens stay quiet and quick.
 export function AnimatedPageTitle({ text, className }: AnimatedHeadingProps) {
   const lines = text.split("\n");
   return (
@@ -20,7 +18,7 @@ export function AnimatedPageTitle({ text, className }: AnimatedHeadingProps) {
   );
 }
 
-export function AnimatedSectionHeading({ text, className }: AnimatedHeadingProps) {
+function AnimatedSectionHeading({ text, className }: AnimatedHeadingProps) {
   const lines = text.split("\n");
   return (
     <h2 className={className}>

@@ -2,8 +2,8 @@
 
 // Shared split-screen chrome for the auth surface: the branded left column
 // (wordmark, optional top-right link, centred content, footer) and the framed
-// image panel on the right. /login, /signup and /reset-password all render
-// inside it so they stay visually identical.
+// image panel on the right. /login and /reset-password render inside it so
+// they stay visually identical.
 
 import Link from "next/link";
 import type { ReactNode } from "react";
@@ -20,7 +20,7 @@ export function AuthShell({ topRight, children }: { topRight?: ReactNode; childr
       <div className="flex w-full flex-col px-6 py-6 md:w-1/2 md:px-12 md:py-8 lg:px-20">
         <div className="flex items-center justify-between">
           <Link
-            href="/home"
+            href="/login"
             aria-label="Creed home"
             className="-ml-1 inline-flex shrink-0 items-center transition-opacity duration-200 hover:opacity-60"
           >
@@ -39,9 +39,6 @@ export function AuthShell({ topRight, children }: { topRight?: ReactNode; childr
             <a href={CONTACT_MAILTO} className="transition-colors hover:text-[#2563EB]">
               Contact
             </a>
-            <Link href="/docs" className="transition-colors hover:text-[#2563EB]">
-              Docs
-            </Link>
           </div>
         </div>
       </div>

@@ -1,11 +1,9 @@
 "use client";
 
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, RotateCw } from "@/components/ui/phosphor-icons";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { RefreshCwIcon } from "@/components/ui/refresh-cw";
-import { useAnimatedIconControls } from "@/components/creed/animated-icon-controls";
 import { cn } from "@/lib/utils";
 
 function useIsMobile() {
@@ -123,7 +121,7 @@ function TagPill({ label }: { label: string }) {
   );
 }
 
-export function qualityScoreColor(score?: number) {
+function qualityScoreColor(score?: number) {
   if (score === undefined) {
     return "var(--creed-text-tertiary)";
   }
@@ -139,7 +137,7 @@ export function qualityScoreColor(score?: number) {
   return "var(--creed-score-good)";
 }
 
-export function qualityToneColor(tone: "good" | "bad" | "neutral") {
+function qualityToneColor(tone: "good" | "bad" | "neutral") {
   if (tone === "good") {
     return "var(--creed-success)";
   }
@@ -237,16 +235,12 @@ export function QualityRefreshButton({
   loading?: boolean;
   title: string;
 }) {
-  const refreshIcon = useAnimatedIconControls(80);
-
   return (
     <button
       type="button"
       aria-label={title}
       onClick={onClick}
       disabled={loading}
-      onMouseEnter={() => refreshIcon.start()}
-      onMouseLeave={() => refreshIcon.settle()}
       className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[var(--creed-text-secondary)] transition-colors duration-150 hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)] disabled:opacity-60"
     >
       {/* While loading, keep the icon spinning continuously from wherever it
@@ -261,11 +255,7 @@ export function QualityRefreshButton({
             : { duration: 0.5, ease: [0.22, 1, 0.36, 1] }
         }
       >
-        <RefreshCwIcon
-          ref={refreshIcon.iconRef}
-          className="h-4 w-4"
-          size={16}
-        />
+        <RotateCw className="h-4 w-4" />
       </motion.span>
     </button>
   );
@@ -543,7 +533,7 @@ export function OverallQualityPopover({
                 onClick={onRefresh}
                 className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[var(--creed-border)] bg-[var(--creed-surface)] px-2.5 text-[12px] font-medium text-[var(--creed-text-primary)] transition-colors hover:bg-[var(--creed-surface-raised)]"
               >
-                <RefreshCwIcon className="h-3 w-3" size={12} />
+                <RotateCw className="h-3 w-3" />
                 Run analysis
               </button>
             ) : null}

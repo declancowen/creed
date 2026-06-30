@@ -419,7 +419,7 @@ export async function getAiModel(modelId: string | null | undefined) {
   return models.find((model) => model.id === modelId) ?? models.find((model) => model.id === DEFAULT_AI_MODEL_ID) ?? seedModels[0];
 }
 
-export function getSeedAiModel(modelId: string | null | undefined) {
+function getSeedAiModel(modelId: string | null | undefined) {
   return seedModels.find((model) => model.id === modelId) ?? seedModels[0];
 }
 

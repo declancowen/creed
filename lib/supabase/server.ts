@@ -27,7 +27,7 @@ export async function createSupabaseServerClient() {
   });
 }
 
-export async function getAuthenticatedUser() {
+async function getAuthenticatedUser() {
   if (!isSupabaseConfigured()) {
     return null;
   }

@@ -1,0 +1,10 @@
+# Vercel builds remotely — never upload local build output, caches, or deps.
+.next
+.next-runtime
+node_modules
+.git
+.vercel
+tsconfig.tsbuildinfo
+*.log
+.DS_Store
+.env*.local

@@ -1,10 +1,8 @@
 import type { MetadataRoute } from "next";
 import { getSiteUrl } from "@/lib/supabase/env";
 
-// Indexable surface = marketing pages only. Everything behind auth or
-// payment plus the API routes are disallowed so crawlers don't waste
-// budget on redirect chains and we never accidentally index a leaked
-// success URL.
+// This fork has no public marketing surface. Keep crawlers out of the
+// authenticated app, auth handshakes, and APIs.
 export default function robots(): MetadataRoute.Robots {
   const base = getSiteUrl().replace(/\/$/, "");
 
@@ -13,18 +11,7 @@ export default function robots(): MetadataRoute.Robots {
       {
         userAgent: "*",
         allow: "/",
-        disallow: [
-          "/api/",
-          "/auth/",
-          "/authorize",
-          "/register",
-          "/token",
-          "/file",
-          "/onboarding",
-          "/connections",
-          "/settings",
-          "/payment/",
-        ],
+        disallow: "/",
       },
     ],
     sitemap: `${base}/sitemap.xml`,

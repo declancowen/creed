@@ -3,7 +3,7 @@
 // segment, so a bar's corners look the same whether its top is a tall block or
 // a thin coloured cap. Use StackTopBar on every series of a stack.
 
-export function RoundedTopBar({
+function RoundedTopBar({
   x = 0,
   y = 0,
   width = 0,

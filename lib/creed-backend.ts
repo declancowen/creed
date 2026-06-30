@@ -1061,16 +1061,15 @@ export function createBlankCreedState(
 
 /**
  * Cheap "has this user persisted any sections yet?" probe used by
- * `app/page.tsx` to decide between `/file` (already onboarded) and
- * `/onboarding` (fresh user). Reads a single row's `section_id` rather
- * than fanning out the full `loadCreedState`, which is overkill for a
- * binary decision.
+ * `app/page.tsx` to decide whether an already-signed-in user has a personal
+ * Creed file. Reads a single row's `section_id` rather than fanning out the
+ * full `loadCreedState`, which is overkill for a binary decision.
  *
  * NB: we deliberately don't use `head: true` + `count` - the structural
  * `SupabaseLikeClient` type doesn't expose `count` and the row-payload
  * approach is cheaper to type and just as fast on a single-row read.
  */
-export async function hasPersistedCreed(
+async function hasPersistedCreed(
   client: unknown,
   userId: string
 ): Promise<boolean> {
@@ -1492,7 +1491,7 @@ async function findUserIdByTokenHash(
   return (data as { user_id: string } | null)?.user_id ?? null;
 }
 
-export async function findUserIdByReadToken(client: unknown, token: string) {
+async function findUserIdByReadToken(client: unknown, token: string) {
   return findUserIdByTokenHash(
     client as SupabaseLikeClient,
     "creed_tokens",

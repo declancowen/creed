@@ -42,6 +42,10 @@ export type SupabaseLikeClient = {
       getUserById?: (
         id: string
       ) => Promise<{ data: { user: User | null }; error: { message: string } | null }>;
+      listUsers?: (params?: {
+        page?: number;
+        perPage?: number;
+      }) => Promise<{ data: { users: User[] }; error: { message: string } | null }>;
     };
   };
 };

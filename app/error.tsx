@@ -33,7 +33,7 @@ export default function RouteError({
         Something went sideways
       </h1>
       <p className="max-w-md text-[15px] leading-7 text-[var(--creed-text-secondary)]">
-        This is a temporary error. Try again, or head back to the home page -
+        This is a temporary error. Try again, or head back to login -
         if it keeps happening, the digest below helps us track it down.
       </p>
       {error.digest ? (
@@ -50,10 +50,10 @@ export default function RouteError({
           Try again
         </button>
         <Link
-          href="/home"
+          href="/login"
           className="inline-flex h-10 items-center justify-center rounded-md border border-[var(--creed-border)] bg-transparent px-5 text-[14px] font-medium text-[var(--creed-text-primary)] transition-colors hover:bg-[var(--creed-surface-raised)]"
         >
-          Back home
+          Back to login
         </Link>
       </div>
     </div>

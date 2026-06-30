@@ -26,7 +26,7 @@ const SITE_DESCRIPTION =
   "Creed is one personal context file that every AI reads before it answers. Written once, kept current by your agents, and portable across every tool you use.";
 
 // `title.default` is the brand title used by any page that doesn't set its
-// own (the root redirect and /home both fall back to it). `title.template`
+// own. `title.template`
 // suffixes per-page titles, so individual pages set a bare title ("Pricing")
 // and get "Pricing | Creed" automatically. A page that wants an exact title
 // uses `title: { absolute: "..." }`.
@@ -54,11 +54,9 @@ export const metadata: Metadata = {
 };
 
 // The root layout is intentionally static: it holds no user state, reads no
-// cookies/headers, and renders no CreedProvider. That is what lets marketing
-// pages prerender as a static shell so <Link> fully prefetches them and
-// navigation is instant with no server round-trip. The user-specific work
+// cookies/headers, and renders no CreedProvider. User-specific work
 // (Supabase session, loadCreedState, CreedProvider) lives in <AuthedProviders>,
-// pulled in only by the layouts that need it (the app shell and onboarding).
+// pulled in only by the signed-in app shell.
 export default function RootLayout({
   children,
 }: Readonly<{

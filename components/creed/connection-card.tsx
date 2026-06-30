@@ -2,8 +2,7 @@
 
 import { useState } from "react";
 import { AnimatedCheckmark } from "@/components/ui/animated-checkmark";
-import { CopyIcon } from "@/components/ui/copy";
-import { PlusIcon } from "@/components/ui/plus";
+import { Copy, Plus } from "@/components/ui/phosphor-icons";
 import { AnimatedIconButton } from "@/components/creed/animated-icon-action";
 import { IntegrationGlyph } from "@/components/creed/brand";
 import type { ConnectionItem, McpClient } from "@/lib/creed-data";
@@ -118,7 +117,7 @@ export function ConnectionCard({
       <div className="mt-4 flex flex-wrap items-center gap-3">
         {connection.deepLink ? (
           <AnimatedIconButton
-            icon={PlusIcon}
+            icon={Plus}
             showIcon={!flashed}
             className={buttonClass}
             onClick={() => {
@@ -140,7 +139,7 @@ export function ConnectionCard({
           </AnimatedIconButton>
         ) : connection.command ? (
           <AnimatedIconButton
-            icon={CopyIcon}
+            icon={Copy}
             showIcon={!flashed}
             className={buttonClass}
             onClick={() => copy(connection.command ?? "")}
@@ -156,7 +155,7 @@ export function ConnectionCard({
           </AnimatedIconButton>
         ) : (
           <AnimatedIconButton
-            icon={CopyIcon}
+            icon={Copy}
             showIcon={!flashed}
             className={buttonClass}
             onClick={() => copy(mcpUrl)}

@@ -1,10 +1,9 @@
 "use client";
 
-import { ChevronLeft, LoaderCircle } from "lucide-react";
-import Link from "next/link";
+import { ChevronLeft, LoaderCircle, MessageSquare } from "@/components/ui/phosphor-icons";
 import { CONTACT_MAILTO } from "@/lib/branding";
 import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   DropdownMenuPortal,
   DropdownMenuSub,
@@ -12,10 +11,6 @@ import {
   DropdownMenuSubTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  MessageSquareIcon,
-  type MessageSquareIconHandle,
-} from "@/components/ui/message-square";
 import { cn } from "@/lib/utils";
 
 const MAX_LENGTH = 10_000;
@@ -54,7 +49,6 @@ export function FeedbackMenuItem() {
   const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState<"idle" | "sent" | "error">("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const iconRef = useRef<MessageSquareIconHandle | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -119,8 +113,6 @@ export function FeedbackMenuItem() {
   return (
     <DropdownMenuSub open={subOpen} onOpenChange={setSubOpen}>
       <DropdownMenuSubTrigger
-        onMouseEnter={() => iconRef.current?.startAnimation()}
-        onMouseLeave={() => iconRef.current?.stopAnimation()}
         onPointerDown={(event) => {
           // Touch: toggle so a second tap closes it. Mouse keeps Radix's
           // hover-driven open/close.
@@ -136,11 +128,7 @@ export function FeedbackMenuItem() {
           "[&>svg:last-of-type]:hidden"
         )}
       >
-        <MessageSquareIcon
-          ref={iconRef}
-          size={14}
-          className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none"
-        />
+        <MessageSquare className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none" />
         <span className="flex-1 text-left">Feedback</span>
         <ChevronLeft
           className={cn(
@@ -221,18 +209,6 @@ export function FeedbackMenuItem() {
                     >
                       Contact us
                     </a>
-                    {isMobile ? null : (
-                      <>
-                        {" "}
-                        or{" "}
-                        <Link
-                          href="/docs"
-                          className="font-medium text-[#2563EB] transition-colors hover:text-[#1D4ED8]"
-                        >
-                          see docs
-                        </Link>
-                      </>
-                    )}
                     .
                   </motion.span>
                 )}
