@@ -37,6 +37,7 @@ import {
   listSharedDocuments,
   readSharedDocument,
   readSharedDocumentById,
+  readSharedDocumentFolder,
 } from "@/lib/shared-documents";
 import { policyForActor } from "@/lib/workspace-settings";
 import { routeDocumentEdit } from "@/lib/document-editing";
@@ -79,7 +80,7 @@ const MCP_INSTRUCTIONS = [
   "Comments you add to a document (creed_create_document_comment / creed_reply_to_document_comment) are recorded as private pending proposals that only the user sees; they notify no one and are invisible to other members until the user approves them, at which point they become the user's own comment. The tool result reports outcome 'proposed'. Use comments to leave review feedback the user can approve and share, e.g. when asked to audit a document.",
   "Document and Creed content is Markdown with a rich component set: `##`/`###` headings, bullet and numbered lists, `>` callouts, `---` dividers, inline `#tags`, fenced code blocks, and ```mermaid diagrams (flowcharts, sequence, ER, journey) that render live in the editor and natively on GitHub. In a document body a `##` heading starts a section; nest a subsection by appending `<!-- creed:depth=1 -->` to the heading (max depth 2). Reach for a diagram when a branching process, sequence, data model, or journey is clearer as a picture than as nested bullets.",
   "Documents can reference other documents or folders. Write `[[doc:SLUG]]` for an inline chip that links to a document, `[[folder:SLUG]]` to link a folder, and prefix with `!` (`![[doc:SLUG]]`) on its own line for a full-width card showing the target's title, description, and property pills. Use the slug from creed_list_documents / creed_read_document. Prefer references over pasting a document's contents so links stay live.",
-  "You can organise the shared workspace: create folders (creed_create_folder), create documents inside them (creed_create_document with folderId), and archive empty folders. Agent work lives in documents; use folders to keep those documents tidy.",
+  "You can organise the shared workspace: create folders (creed_create_folder), create documents inside them (creed_create_document with folderId), and archive empty folders. Agent work lives in documents; use folders to keep those documents tidy. creed_list_documents returns every non-archived document and folder across the whole workspace regardless of nesting (each document reports its folderId and path); use creed_get_folder (by id or slug) to inspect a single folder plus the child folders and documents it directly contains.",
 ].join(" ");
 
 type JsonRpcRequest = {
@@ -438,7 +439,7 @@ const tools = [
   {
     name: "creed_list_documents",
     description:
-      "List shared Markdown documents and folders. Use this before reading or updating a document. Documents include id, slug, path, and revision.",
+      "List shared Markdown documents and folders. Returns every non-archived document and folder across the whole workspace regardless of nesting; each document includes id, slug, title, path, folderId, and revision. Use this before reading or updating a document, and creed_get_folder to inspect a single folder's contents.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -452,6 +453,18 @@ const tools = [
       type: "object",
       properties: {
         documentId: { type: "string" },
+        slug: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "creed_get_folder",
+    description:
+      "Get one shared document folder by id or slug, along with the folders and documents it directly contains. Use this to inspect a single folder's contents; creed_list_documents returns every document and folder across the whole workspace regardless of nesting.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        folderId: { type: "string" },
         slug: { type: "string" },
       },
     },
@@ -1170,6 +1183,20 @@ async function handleToolCall(
       ...document,
       contentMarkdown: document.content,
     });
+  }
+
+  if (name === "creed_get_folder") {
+    const folderId = stringArg(args, "folderId");
+    const slug = stringArg(args, "slug");
+    if (!folderId && !slug) {
+      throw new Error("creed_get_folder requires folderId or slug.");
+    }
+    const admin = getSupabaseAdminClient();
+    const folder = await readSharedDocumentFolder(admin as never, { folderId, slug });
+    if (!folder) {
+      throw new Error("Folder not found.");
+    }
+    return jsonToolResult({ folder });
   }
 
   if (name === "creed_create_folder") {

@@ -345,6 +345,68 @@ export async function listSharedDocuments(client: unknown) {
   return (data ?? []).map(mapDocumentSummary);
 }
 
+export type SharedDocumentFolderDetail = SharedDocumentFolder & {
+  childFolders: SharedDocumentFolder[];
+  documents: SharedDocumentSummary[];
+};
+
+// Resolve a single folder by id or slug and return it along with the folders
+// and documents it directly contains. This is the folder analogue of
+// readSharedDocument / readSharedDocumentById.
+export async function readSharedDocumentFolder(
+  client: unknown,
+  identifier: { folderId?: string | null; slug?: string | null }
+): Promise<SharedDocumentFolderDetail | null> {
+  const db = client as SupabaseLikeClient;
+  const folderId = identifier.folderId?.trim();
+  const slug = identifier.slug?.trim();
+  if (!folderId && !slug) return null;
+
+  const folderQuery = db
+    .from("creed_document_folders")
+    .select("id, slug, name, path, parent_id, archived_at, updated_at")
+    .is("archived_at", null);
+  const { data: folderRow, error: folderError } = (await (folderId
+    ? folderQuery.eq("id", folderId)
+    : folderQuery.eq("slug", slug)
+  ).maybeSingle()) as {
+    data: SharedDocumentFolderRow | null;
+    error: { message: string } | null;
+  };
+
+  assertNoError(folderError, "Could not load folder.");
+  if (!folderRow) return null;
+
+  const folder = mapFolder(folderRow);
+
+  const [childFoldersResult, documentsResult] = (await Promise.all([
+    db
+      .from("creed_document_folders")
+      .select("id, slug, name, path, parent_id, archived_at, updated_at")
+      .eq("parent_id", folder.id)
+      .is("archived_at", null)
+      .order("path", { ascending: true }),
+    db
+      .from("creed_documents")
+      .select(DOCUMENT_COLUMNS)
+      .eq("folder_id", folder.id)
+      .is("archived_at", null)
+      .order("updated_at", { ascending: false }),
+  ])) as [
+    { data: SharedDocumentFolderRow[] | null; error: { message: string } | null },
+    { data: SharedDocumentRow[] | null; error: { message: string } | null },
+  ];
+
+  assertNoError(childFoldersResult.error, "Could not load child folders.");
+  assertNoError(documentsResult.error, "Could not load folder documents.");
+
+  return {
+    ...folder,
+    childFolders: (childFoldersResult.data ?? []).map(mapFolder),
+    documents: (documentsResult.data ?? []).map(mapDocumentSummary),
+  };
+}
+
 export async function readSharedDocument(client: unknown, slug: string) {
   const db = client as SupabaseLikeClient;
   const { data, error } = (await db

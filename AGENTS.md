@@ -24,6 +24,10 @@ There is no GitHub syncing for documents (push/pull/publish were removed).
 
 Agents working through MCP must:
 - list/read shared documents through the Creed MCP document tools;
+  `creed_list_documents` returns every non-archived document and folder across
+  the whole workspace regardless of nesting (each document reports its
+  `folderId`/`path`); use `creed_get_folder` (by id or slug) to inspect one
+  folder plus the child folders and documents it directly contains;
 - read current comments before changing a document when review context matters;
 - update document content with `expectedRevision` and re-read on conflicts;
 - use document metadata tools for status/type/stage/lifecycle/priority/size;
