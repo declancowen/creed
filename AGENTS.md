@@ -55,6 +55,21 @@ The token round-trips through Markdown, so it survives edits by both humans and
 agents. In-editor, users insert the same references with `@` or the "Reference
 document" slash command.
 
+External URLs render in three shapes (mirroring Notion's paste-link menu),
+which round-trip as reserved-label Markdown links:
+
+- `[mention](https://url)` — inline favicon + title chip;
+- `[bookmark](https://url)` on its own line — a card with title, description, favicon;
+- `[embed](https://url)` on its own line — a full-width sandboxed-iframe preview.
+
+A plain `[label](https://url)` stays an ordinary hyperlink. In-editor, pasting a
+bare URL shows a picker (Link / Mention / Bookmark / Embed) — there is no slash
+command. Link metadata is fetched server-side by `app/api/app/link-preview`
+(SSRF-guarded) and cached client-side in `lib/link-preview-index.ts`; the nodes
+live in `components/creed/extensions/url-reference.tsx` and the tokens in
+`lib/url-reference.ts`. Parsing/serialization is in `lib/rich-text.ts` and
+`lib/creed-data.ts` alongside the doc-reference and table handling.
+
 Document and Creed content is Markdown with a rich component set that round-trips
 through the Tiptap editor: `##`/`###` headings, bullet/numbered lists, `>`
 callouts, `---` dividers, inline `#tags`, fenced code blocks, GFM pipe tables,

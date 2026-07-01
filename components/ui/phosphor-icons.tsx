@@ -8,7 +8,9 @@ import {
   ArrowDown,
   ArrowBendUpLeft,
   Archive,
+  At,
   Bell,
+  BookmarkSimple,
   CaretDown,
   CaretLeft,
   CaretRight,
@@ -33,6 +35,7 @@ import {
   FloppyDisk,
   Folder,
   FolderOpen,
+  FrameCorners,
   Funnel,
   GearSix,
   GridFour,
@@ -99,7 +102,9 @@ const ArrowUpIcon = icon(ArrowUp);
 const ArrowDownIcon = icon(ArrowDown);
 const ArrowBendUpLeftIcon = icon(ArrowBendUpLeft);
 const ArchiveIcon = icon(Archive);
+const AtSignIcon = icon(At);
 const BellIcon = icon(Bell);
+const BookmarkIcon = icon(BookmarkSimple);
 const BoldIcon = icon(TextB);
 export const CheckIcon = icon(Check);
 const CheckCircleIcon = icon(CheckCircle);
@@ -123,6 +128,7 @@ const FileStackIcon = icon(Stack);
 const FlagIcon = icon(Flag);
 const FolderIcon = icon(Folder);
 const FolderUpIcon = icon(FolderOpen);
+const FrameCornersIcon = icon(FrameCorners);
 const FolderTreeIcon = icon(TreeStructure);
 const FunnelIcon = icon(Funnel);
 const SettingsIcon = icon(GearSix);
@@ -178,7 +184,9 @@ export {
   ArrowBendUpLeftIcon as Reply,
   ArchiveIcon as Archive,
   AlertTriangleIcon as AlertTriangle,
+  AtSignIcon as AtSign,
   BellIcon as Bell,
+  BookmarkIcon as Bookmark,
   BoldIcon as Bold,
   CheckIcon as Check,
   CheckCircleIcon as CheckCircle2,
@@ -202,6 +210,7 @@ export {
   FlagIcon as Flag,
   FolderIcon as Folder,
   FolderUpIcon as FolderUp,
+  FrameCornersIcon as Embed,
   FunnelIcon as Funnel,
   SettingsIcon as Settings,
   GripVerticalIcon as GripVertical,

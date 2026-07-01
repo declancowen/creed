@@ -110,6 +110,36 @@ test("table cell with a literal pipe is escaped and round-trips", () => {
   assert.ok(result.includes("<td>a | b</td>"), `literal pipe should survive: ${result}`);
 });
 
+test("url mention round-trips as an inline chip token", () => {
+  const editor = '<p>See <span data-url-ref="mention" data-url="https://example.com/x"></span> now.</p>';
+  const section = makeSection({ content: editor });
+  const markdown = sectionToMarkdown(section);
+  assert.ok(markdown.includes("[mention](https://example.com/x)"), `missing mention token in: ${markdown}`);
+  const result = roundtripContent(editor);
+  assert.ok(
+    result.includes('data-url-ref="mention"') && result.includes('data-url="https://example.com/x"'),
+    `mention did not round-trip: ${result}`
+  );
+});
+
+test("url bookmark round-trips as a block token", () => {
+  const editor = '<div data-url-ref="bookmark" data-url="https://example.com"></div>';
+  const section = makeSection({ content: editor });
+  const markdown = sectionToMarkdown(section);
+  assert.ok(markdown.includes("[bookmark](https://example.com)"), `missing bookmark token in: ${markdown}`);
+  const result = roundtripContent(editor);
+  assert.ok(result.includes('data-url-ref="bookmark"'), `bookmark did not round-trip: ${result}`);
+});
+
+test("url embed round-trips as a block token", () => {
+  const editor = '<div data-url-ref="embed" data-url="https://example.com"></div>';
+  const section = makeSection({ content: editor });
+  const markdown = sectionToMarkdown(section);
+  assert.ok(markdown.includes("[embed](https://example.com)"), `missing embed token in: ${markdown}`);
+  const result = roundtripContent(editor);
+  assert.ok(result.includes('data-url-ref="embed"'), `embed did not round-trip: ${result}`);
+});
+
 test("multi-paragraph round-trip yields multiple paragraphs", () => {
   const result = roundtripContent("<p>First.</p><p>Second.</p><p>Third.</p>");
   const paragraphs = result.match(/<p>/g);

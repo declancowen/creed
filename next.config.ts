@@ -13,7 +13,8 @@ const csp = [
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
   "connect-src 'self' https://*.supabase.co https://*.supabase.in https://api.github.com",
-  "frame-src 'self'",
+  // URL embeds render arbitrary https pages in a sandboxed iframe.
+  "frame-src 'self' https:",
   "frame-ancestors 'self'",
   "base-uri 'self'",
   "form-action 'self'",

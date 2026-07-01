@@ -1102,6 +1102,25 @@ export function sectionToMarkdown(section: CreedSection) {
     (tag) => referenceTokenFromTag(tag, "card")
   );
 
+  // External URL references: mention chip (inline), bookmark card + embed
+  // (block). Serialize back to `[mention|bookmark|embed](url)` before the
+  // generic tag stripper runs. Node views render richer DOM, but getHTML emits
+  // the empty `<span/div data-url-ref data-url>` from renderHTML, which is what
+  // we match here. See components/creed/extensions/url-reference.tsx.
+  const urlFromTag = (tag: string) => decodeEntities(/data-url="([^"]*)"/.exec(tag)?.[1] ?? "");
+  text = text.replace(/<span\b[^>]*\bdata-url-ref="mention"[^>]*><\/span>/g, (tag) => {
+    const url = urlFromTag(tag);
+    return url ? `[mention](${url})` : "";
+  });
+  text = text.replace(/<div\b[^>]*\bdata-url-ref="bookmark"[^>]*><\/div>/g, (tag) => {
+    const url = urlFromTag(tag);
+    return url ? `\n\n[bookmark](${url})\n\n` : "";
+  });
+  text = text.replace(/<div\b[^>]*\bdata-url-ref="embed"[^>]*><\/div>/g, (tag) => {
+    const url = urlFromTag(tag);
+    return url ? `\n\n[embed](${url})\n\n` : "";
+  });
+
   // Inline tag marks first so we don't strip them in the generic tag
   // stripper below.
   text = text.replace(
@@ -1628,6 +1647,11 @@ function buildHiddenAgentGuidanceMarkdown(
       "      B -->|Yes| C[Serve content]",
       "      B -->|No| D[Return 401]",
       "  ```",
+      "",
+      "**Web links** - reference an external page as more than raw text.",
+      "  Syntax: `[mention](https://url)` renders an inline favicon+title chip; `[bookmark](https://url)` on its own line renders a card (title, description, favicon); `[embed](https://url)` on its own line renders a full-width live preview. A plain `[label](https://url)` stays an ordinary hyperlink.",
+      "  When: mention inside prose to name a source, bookmark to feature one key link, embed when the page itself should be viewable inline.",
+      "  Don't: embed more than a couple of pages in one section (they are heavy); don't bookmark every link - most inline references are a plain link or a mention.",
       "",
       "**Horizontal rule** - visual divider between major thoughts.",
       "  Syntax: `---` on its own line (or `***` / `___`).",

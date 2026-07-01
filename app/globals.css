@@ -770,6 +770,110 @@
   cursor: col-resize;
 }
 
+/* External URL references (components/creed/extensions/url-reference.tsx):
+   mention chip (inline, styled inline in JS), bookmark card, full-width embed. */
+.creed-url-ref-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 22ch;
+}
+.ProseMirror .creed-url-ref-bookmark {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+  justify-content: space-between;
+  border: 1px solid var(--creed-border-strong);
+  border-radius: 10px;
+  overflow: hidden;
+  margin: 0.75em 0;
+  padding: 12px 14px;
+  cursor: pointer;
+  background: var(--creed-surface);
+}
+.creed-url-ref-card-text {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.creed-url-ref-card-title {
+  font-weight: 600;
+  font-size: 0.95em;
+  line-height: 1.3;
+}
+.creed-url-ref-card-desc {
+  color: var(--creed-text-secondary);
+  font-size: 0.85em;
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.creed-url-ref-card-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--creed-text-secondary);
+  font-size: 0.8em;
+  min-width: 0;
+}
+.creed-url-ref-card-link span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.creed-url-ref-card-thumb {
+  width: 120px;
+  flex: 0 0 auto;
+  align-self: stretch;
+  background-size: cover;
+  background-position: center;
+  border-radius: 8px;
+}
+.ProseMirror .creed-url-ref-embed {
+  margin: 0.75em 0;
+  border: 1px solid var(--creed-border-strong);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--creed-surface);
+}
+.creed-url-ref-embed-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--creed-border-strong);
+  font-size: 0.85em;
+}
+.creed-url-ref-embed-host {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--creed-text-secondary);
+}
+.creed-url-ref-embed-open {
+  flex: 0 0 auto;
+  font-size: 0.85em;
+  color: var(--creed-text-secondary);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.creed-url-ref-embed-open:hover {
+  color: var(--creed-text-primary);
+}
+.creed-url-ref-embed-frame {
+  width: 100%;
+  height: 460px;
+  border: 0;
+  display: block;
+  background: var(--creed-surface);
+}
+
 /* Syntax highlighting (lowlight / highlight.js classes). The token palette
    reads as a calm "GitHub-light" style so colour stays subtle in long blocks;
    the .dark block below adapts each hue for the dark canvas. */

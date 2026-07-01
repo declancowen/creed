@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "creed": {
+      "url": "https://creed-virid.vercel.app/mcp",
+      "oauthScopes": [
+        "read",
+        "propose",
+        "direct_edit"
+      ],
+      "disabled": false
+    }
+  }
+}

@@ -24,6 +24,9 @@ import {
   Heading3,
   Italic,
   Link2,
+  AtSign,
+  Bookmark,
+  Embed,
   List,
   ListOrdered,
   LoaderCircle,
@@ -46,6 +49,12 @@ import {
   DocReferenceCard,
   DocReferenceInline,
 } from "@/components/creed/extensions/doc-reference";
+import {
+  UrlBookmarkCard,
+  UrlEmbed,
+  UrlMentionInline,
+} from "@/components/creed/extensions/url-reference";
+import { isHttpUrl } from "@/lib/url-reference";
 import {
   ensureReferenceIndex,
   searchReferences,
@@ -304,6 +313,9 @@ export function RichTextEditor({
   const [tableToolbar, setTableToolbar] = useState<{ x: number; y: number; placeBelow: boolean } | null>(null);
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
   const [linkDraft, setLinkDraft] = useState("");
+  const [linkPicker, setLinkPicker] = useState<
+    { url: string; from: number; to: number; x: number; y: number } | null
+  >(null);
   const [commentDraft, setCommentDraft] = useState<CommentDraftState | null>(null);
   const [commentBody, setCommentBody] = useState("");
   const [savingComment, setSavingComment] = useState(false);
@@ -319,6 +331,15 @@ export function RichTextEditor({
     },
     [router]
   );
+  // External URLs open in a new tab (they are not in-app routes).
+  const openUrl = useCallback((url: string) => {
+    if (typeof window !== "undefined") {
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+  }, []);
+  // Live editor handle for imperative use inside editorProps callbacks (paste),
+  // which run before the `editor` const is assigned.
+  const editorRef = useRef<Editor | null>(null);
   // Load the reference index up-front (idempotent) so the `@` menu has data by
   // the time the user opens it.
   useEffect(() => {
@@ -880,6 +901,9 @@ export function RichTextEditor({
       }),
       InlineTagMark,
       MermaidBlock,
+      UrlMentionInline.configure({ onOpen: openUrl }),
+      UrlBookmarkCard.configure({ onOpen: openUrl }),
+      UrlEmbed.configure({ onOpen: openUrl }),
       TableKit.configure({
         table: {
           resizable: true,
@@ -943,6 +967,34 @@ export function RichTextEditor({
         view.dispatch(
           state.tr.delete(previousNodeStart, previousNodeStart + previousNode.nodeSize).scrollIntoView()
         );
+        return true;
+      },
+      handlePaste: (view, event) => {
+        // Pasting a bare URL (no selection) inserts a plain link and opens a
+        // small picker to convert it to a mention / bookmark / embed. Pasting
+        // a URL over a selection just links the selection (Notion behaviour).
+        if (readOnly) return false;
+        const text = event.clipboardData?.getData("text/plain")?.trim();
+        if (!text || /\s/.test(text) || !isHttpUrl(text)) return false;
+        const instance = editorRef.current;
+        if (!instance) return false;
+
+        const { from, to, empty } = view.state.selection;
+        event.preventDefault();
+
+        if (!empty) {
+          instance.chain().focus().extendMarkRange("link").setLink({ href: text }).run();
+          return true;
+        }
+
+        instance
+          .chain()
+          .focus()
+          .insertContent({ type: "text", text, marks: [{ type: "link", attrs: { href: text } }] })
+          .run();
+
+        const coords = view.coordsAtPos(from);
+        setLinkPicker({ url: text, from, to: from + text.length, x: coords.left, y: coords.bottom });
         return true;
       },
     },
@@ -1044,6 +1096,23 @@ export function RichTextEditor({
       clearTableHideTimer();
     };
   }, [editor, readOnly, positionTableToolbar, scheduleTableToolbarHide, clearTableHideTimer]);
+
+  // Convert the just-pasted plain link into a mention chip, bookmark card, or
+  // full-width embed, replacing the recorded link range.
+  function convertPastedLink(form: "mention" | "bookmark" | "embed") {
+    const picker = linkPicker;
+    const instance = editorRef.current;
+    if (!picker || !instance) return;
+    const chain = instance
+      .chain()
+      .focus()
+      .deleteRange({ from: picker.from, to: picker.to });
+    if (form === "mention") chain.insertUrlMention({ url: picker.url });
+    else if (form === "bookmark") chain.insertUrlBookmark({ url: picker.url });
+    else chain.insertUrlEmbed({ url: picker.url });
+    chain.run();
+    setLinkPicker(null);
+  }
 
   function syncSelectionToolbar(currentEditor: Editor) {
     if (readOnly) {
@@ -1385,6 +1454,10 @@ export function RichTextEditor({
     editor.setEditable(!readOnly);
   }, [content, editor, readOnly]);
 
+  useEffect(() => {
+    editorRef.current = editor ?? null;
+  }, [editor]);
+
   return (
     <div ref={containerRef} className="relative" style={editorThemeStyle}>
       <AnimatePresence>
@@ -1576,6 +1649,34 @@ export function RichTextEditor({
             Delete
           </TableToolbarButton>
         </div>
+      ) : null}
+
+      {linkPicker && !readOnly ? (
+        <>
+          <div className="fixed inset-0 z-40" onMouseDown={() => setLinkPicker(null)} />
+          <div
+            className="fixed z-50 flex items-center gap-0.5 rounded-lg border border-[var(--creed-border)] bg-[var(--creed-surface)] p-1 text-[var(--creed-text-primary)] shadow-[0_6px_20px_rgba(28,28,26,0.10)]"
+            style={{ left: linkPicker.x, top: linkPicker.y + 6 }}
+            onMouseDown={(event) => event.preventDefault()}
+          >
+            <TableToolbarButton onClick={() => setLinkPicker(null)}>
+              <Link2 className="h-3.5 w-3.5" />
+              Link
+            </TableToolbarButton>
+            <TableToolbarButton onClick={() => convertPastedLink("mention")}>
+              <AtSign className="h-3.5 w-3.5" />
+              Mention
+            </TableToolbarButton>
+            <TableToolbarButton onClick={() => convertPastedLink("bookmark")}>
+              <Bookmark className="h-3.5 w-3.5" />
+              Bookmark
+            </TableToolbarButton>
+            <TableToolbarButton onClick={() => convertPastedLink("embed")}>
+              <Embed className="h-3.5 w-3.5" />
+              Embed
+            </TableToolbarButton>
+          </div>
+        </>
       ) : null}
 
       <Dialog open={linkDialogOpen} onOpenChange={setLinkDialogOpen}>
