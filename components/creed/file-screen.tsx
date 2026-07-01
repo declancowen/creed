@@ -2533,7 +2533,7 @@ export function FileScreen({
                       </DropdownMenuTrigger>
                       <DropdownMenuContent
                         align="end"
-                        className="border-[var(--creed-border)] bg-[var(--creed-surface)]"
+                        className="w-64 border-[var(--creed-border)] bg-[var(--creed-surface)]"
                       >
                         <AnimatedMenuIconItem
                           icon={FolderUp}
