@@ -3941,31 +3941,26 @@ function DocumentCollaborationRail({
             </div>
           </ScrollArea>
         ) : (
-          <ScrollArea className="mt-5 min-h-0 flex-1">
-            <div className="space-y-3 pr-4">
+          <ScrollArea className="mt-3 min-h-0 flex-1">
+            <div className="divide-y divide-[var(--creed-border)]/60 pr-3">
               {activity.length ? (
                 activity.map((event) => (
-                  <div
-                    key={event.id}
-                    className="rounded-[14px] border border-[var(--creed-border)] bg-[var(--creed-surface-raised)] p-3"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-medium text-[var(--creed-text-primary)]">
-                          {event.actorLabel}
-                        </div>
-                        <div className="mt-1 text-sm leading-5 text-[var(--creed-text-secondary)]">
-                          {event.summary || event.action}
-                        </div>
-                      </div>
-                      <div className="shrink-0 text-[11px] text-[var(--creed-text-tertiary)]">
+                  <div key={event.id} className="py-1.5">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="truncate text-[11.5px] font-medium text-[var(--creed-text-primary)]">
+                        {event.actorLabel}
+                      </span>
+                      <span className="shrink-0 text-[10px] tabular-nums text-[var(--creed-text-tertiary)]">
                         {formatDocumentTimestamp(event.createdAt)}
-                      </div>
+                      </span>
+                    </div>
+                    <div className="mt-0.5 text-[11.5px] leading-[1.45] text-[var(--creed-text-secondary)]">
+                      {event.summary || event.action}
                     </div>
                   </div>
                 ))
               ) : (
-                <div className="rounded-[14px] border border-dashed border-[var(--creed-border)] px-4 py-8 text-center text-sm text-[var(--creed-text-secondary)]">
+                <div className="px-1 py-8 text-center text-[12px] text-[var(--creed-text-secondary)]">
                   No activity yet.
                 </div>
               )}
