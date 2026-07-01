@@ -942,6 +942,7 @@ export function FileScreen({
   const [activeDocumentPanel, setActiveDocumentPanel] = useState<"comments" | "activity" | null>(
     sharedDocument?.activeCommentId ? "comments" : null
   );
+  const [focusVersionId, setFocusVersionId] = useState<string | null>(null);
   const [activeDocumentCommentId, setActiveDocumentCommentId] = useState<string | null>(
     sharedDocument?.activeCommentId ?? null
   );
@@ -2689,6 +2690,8 @@ export function FileScreen({
                     refreshSignal={reviewRefreshKey}
                     onProposalsChange={setDocumentProposals}
                     onCommentPosted={handleProposalCommentPosted}
+                    focusVersionId={focusVersionId}
+                    onFocusVersionHandled={() => setFocusVersionId(null)}
                     onDocumentUpdated={(doc) => {
                       setCurrentDocument(doc);
                       const parsed = parseDocumentSections(doc.content, doc.title);
@@ -3019,6 +3022,7 @@ export function FileScreen({
             onApprovePending={(commentId) => void approvePendingComment(commentId)}
             onRejectPending={(commentId) => void rejectPendingComment(commentId)}
             onActiveCommentChange={setActiveDocumentCommentId}
+            onOpenVersion={(versionId) => setFocusVersionId(versionId)}
             onClose={() => setActiveDocumentPanel(null)}
           />
         ) : (
@@ -3782,6 +3786,7 @@ function DocumentCollaborationRail({
   onApprovePending,
   onRejectPending,
   onActiveCommentChange,
+  onOpenVersion,
   onClose,
 }: {
   panel: "comments" | "activity" | null;
@@ -3805,6 +3810,7 @@ function DocumentCollaborationRail({
   onApprovePending: (commentId: string) => void;
   onRejectPending: (commentId: string) => void;
   onActiveCommentChange: (commentId: string | null) => void;
+  onOpenVersion?: (versionId: string) => void;
   onClose: () => void;
 }) {
   const open = panel !== null;
@@ -3944,21 +3950,45 @@ function DocumentCollaborationRail({
           <ScrollArea className="mt-3 min-h-0 flex-1">
             <div className="divide-y divide-[var(--creed-border)]/60 pr-3">
               {activity.length ? (
-                activity.map((event) => (
-                  <div key={event.id} className="py-1.5">
-                    <div className="flex items-baseline justify-between gap-2">
-                      <span className="truncate text-[11.5px] font-medium text-[var(--creed-text-primary)]">
-                        {event.actorLabel}
-                      </span>
-                      <span className="shrink-0 text-[10px] tabular-nums text-[var(--creed-text-tertiary)]">
-                        {formatDocumentTimestamp(event.createdAt)}
-                      </span>
+                activity.map((event) => {
+                  const metadata = event.metadata as Record<string, unknown> | undefined;
+                  const versionId =
+                    typeof metadata?.versionId === "string" ? metadata.versionId : null;
+                  const clickable = Boolean(versionId && onOpenVersion);
+                  const body = (
+                    <>
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="truncate text-[11.5px] font-medium text-[var(--creed-text-primary)]">
+                          {event.actorLabel}
+                        </span>
+                        <span className="flex shrink-0 items-center gap-1 text-[10px] tabular-nums text-[var(--creed-text-tertiary)]">
+                          {clickable ? (
+                            <History className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-100" />
+                          ) : null}
+                          {formatDocumentTimestamp(event.createdAt)}
+                        </span>
+                      </div>
+                      <div className="mt-0.5 text-[11.5px] leading-[1.45] text-[var(--creed-text-secondary)]">
+                        {event.summary || event.action}
+                      </div>
+                    </>
+                  );
+                  return clickable ? (
+                    <button
+                      key={event.id}
+                      type="button"
+                      title="Open in version history"
+                      onClick={() => versionId && onOpenVersion?.(versionId)}
+                      className="group block w-full py-1.5 text-left transition-colors hover:bg-[var(--creed-surface-raised)]"
+                    >
+                      {body}
+                    </button>
+                  ) : (
+                    <div key={event.id} className="py-1.5">
+                      {body}
                     </div>
-                    <div className="mt-0.5 text-[11.5px] leading-[1.45] text-[var(--creed-text-secondary)]">
-                      {event.summary || event.action}
-                    </div>
-                  </div>
-                ))
+                  );
+                })
               ) : (
                 <div className="px-1 py-8 text-center text-[12px] text-[var(--creed-text-secondary)]">
                   No activity yet.

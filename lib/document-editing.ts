@@ -437,12 +437,15 @@ export async function acceptDocumentProposal(
     | { ok: true; document: SharedDocument; version: DocumentVersion }
     | { ok: false; code: "invalid" | "not-found" | "conflict"; error: string };
 
+  let acceptedSectionLabel: string | null = null;
+
   if (proposal.kind === "document-section") {
     const section = sectionFromDraft(claimed.draft);
     if (!section) {
       await releaseProposalClaim(client, input.proposalId);
       return { ok: false, code: "invalid", error: "This section proposal is malformed." };
     }
+    acceptedSectionLabel = sectionChangeLabel(section);
 
     // Merge-guarded apply: the section must still match what the author saw, so
     // sibling section proposals from the same edit can be accepted in any order
@@ -516,8 +519,15 @@ export async function acceptDocumentProposal(
     documentId: input.documentId,
     actorUserId: input.actorUserId,
     action: "document.proposal.accepted",
-    summary: "Accepted a proposal",
-    metadata: { proposalId: input.proposalId, revision: applied.version.revision },
+    summary: acceptedSectionLabel
+      ? `Accepted a proposal · ${acceptedSectionLabel}`
+      : "Accepted a proposal",
+    metadata: {
+      proposalId: input.proposalId,
+      revision: applied.version.revision,
+      versionId: applied.version.id,
+      ...(acceptedSectionLabel ? { sectionName: acceptedSectionLabel } : {}),
+    },
   });
 
   return { ok: true, value: { document: applied.document, version: applied.version } };

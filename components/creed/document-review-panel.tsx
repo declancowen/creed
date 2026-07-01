@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { diffWords } from "diff";
 import { AnimatePresence, motion } from "framer-motion";
@@ -426,6 +426,8 @@ export function DocumentReviewPanel({
   onDocumentUpdated,
   onProposalsChange,
   onCommentPosted,
+  focusVersionId,
+  onFocusVersionHandled,
 }: {
   documentId: string;
   revision: number;
@@ -435,6 +437,8 @@ export function DocumentReviewPanel({
   onDocumentUpdated: (document: SharedDocument) => void;
   onProposalsChange?: (proposals: DocumentProposal[]) => void;
   onCommentPosted?: (comment: DocumentComment) => void;
+  focusVersionId?: string | null;
+  onFocusVersionHandled?: () => void;
 }) {
   const [proposals, setProposals] = useState<DocumentProposal[]>([]);
   const [versions, setVersions] = useState<DocumentVersion[]>([]);
@@ -442,6 +446,23 @@ export function DocumentReviewPanel({
   const [expandedVersion, setExpandedVersion] = useState<string | null>(null);
   const [busyProposal, setBusyProposal] = useState<string | null>(null);
   const [revertingVersion, setRevertingVersion] = useState<string | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  // When an activity item asks to focus a version, open history, expand that
+  // version's diff, and scroll it into view. Waits for `versions` to load so a
+  // just-clicked event resolves once the list is fetched.
+  useEffect(() => {
+    if (!focusVersionId) return;
+    if (!versions.some((version) => version.id === focusVersionId)) return;
+    setHistoryOpen(true);
+    setExpandedVersion(focusVersionId);
+    const timer = window.setTimeout(() => {
+      const selector = `[data-version-row="${(window.CSS?.escape ?? ((v: string) => v))(focusVersionId)}"]`;
+      rootRef.current?.querySelector(selector)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      onFocusVersionHandled?.();
+    }, 340);
+    return () => window.clearTimeout(timer);
+  }, [focusVersionId, versions, onFocusVersionHandled]);
 
   const usersById = useMemo(() => new Map(users.map((user) => [user.id, user])), [users]);
 
@@ -577,7 +598,7 @@ export function DocumentReviewPanel({
   }
 
   return (
-    <div className="mt-5 space-y-3">
+    <div ref={rootRef} className="mt-5 space-y-3">
       {hasProposals ? (
         <DocumentReviewPill
           proposals={proposals}
@@ -1076,7 +1097,7 @@ function VersionRow({
   onRevert: () => void;
 }) {
   return (
-    <div className="px-4 py-2.5">
+    <div className="px-4 py-2.5" data-version-row={version.id}>
       <div className="flex items-center justify-between gap-3">
         <button
           type="button"
