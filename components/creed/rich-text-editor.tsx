@@ -16,6 +16,7 @@ import Suggestion, {
 } from "@tiptap/suggestion";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { NodeSelection, PluginKey } from "@tiptap/pm/state";
+import { DOMSerializer } from "@tiptap/pm/model";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Bold,
@@ -134,6 +135,9 @@ type SelectionToolbarState = {
   y: number;
   /** When true, the toolbar sits below the selection (selection hugs viewport top). */
   placeBelow: boolean;
+  /** When true, an atom node (mermaid, embed, card) is selected - show only the
+   * relevant actions (comment / make section), not text formatting. */
+  nodeSelection: boolean;
 };
 
 // Anchored composer that appears when the user clicks the comment button in
@@ -1127,11 +1131,19 @@ export function RichTextEditor({
     const { state } = currentEditor;
     const { selection } = state;
 
-    // Bail for empty selections, NodeSelections (an atom block like a mermaid
-    // diagram, embed, or reference card is selected - the text-format bubble
-    // and mark-based comments don't apply to it), and any selection where the
-    // editor isn't focused. Notion only shows the bubble for a live text range.
-    if (selection.empty || selection instanceof NodeSelection || !currentEditor.isFocused) {
+    const isNodeSelection = selection instanceof NodeSelection;
+    // For an atom node (mermaid, embed, reference card) only the comment and
+    // make-section actions apply - text formatting does not. Show the reduced
+    // bubble only if one of those actions is actually available.
+    const hasNodeAction = Boolean(onCreateSectionFromSelection) || commentsEnabled;
+
+    // Bail for empty selections, focus loss, and node selections with no
+    // applicable action. A live text range shows the full bubble.
+    if (
+      selection.empty ||
+      !currentEditor.isFocused ||
+      (isNodeSelection && !hasNodeAction)
+    ) {
       setSelectionToolbar(null);
       return;
     }
@@ -1184,10 +1196,16 @@ export function RichTextEditor({
     );
 
     setSelectionToolbar((prev) => {
-      if (prev && prev.x === x && prev.y === y && prev.placeBelow === placeBelow) {
+      if (
+        prev &&
+        prev.x === x &&
+        prev.y === y &&
+        prev.placeBelow === placeBelow &&
+        prev.nodeSelection === isNodeSelection
+      ) {
         return prev;
       }
-      return { x, y, placeBelow };
+      return { x, y, placeBelow, nodeSelection: isNodeSelection };
     });
   }
 
@@ -1219,8 +1237,43 @@ export function RichTextEditor({
   // Promote the current selection into its own section. The first non-empty
   // line becomes the section name; any following lines become the body. The
   // selected text is then removed from this section so it isn't duplicated.
+  // Describe the currently-selected atom node (mermaid / embed / bookmark /
+  // reference card) for the comment + make-section actions: a human label and
+  // the node's HTML (so make-section can move the node into a new section).
+  function selectedNodeInfo(): { label: string; html: string } | null {
+    if (!editor) return null;
+    const selection = editor.state.selection;
+    if (!(selection instanceof NodeSelection)) return null;
+    const node = selection.node;
+    const typeName = node.type.name;
+    let label = typeName;
+    if (typeName === "mermaidBlock") {
+      const source = String(node.attrs.source ?? "");
+      label = source.split("\n").map((line) => line.trim()).find(Boolean) || "Mermaid diagram";
+    } else if (typeName.startsWith("url")) {
+      label = String(node.attrs.url ?? "Link");
+    } else if (typeName.startsWith("docReference")) {
+      label = String(node.attrs.refSlug ?? "Reference");
+    }
+    const serializer = DOMSerializer.fromSchema(editor.schema);
+    const wrap = document.createElement("div");
+    wrap.appendChild(serializer.serializeNode(node));
+    return { label, html: wrap.innerHTML };
+  }
+
   function makeSectionFromSelection() {
     if (!editor || readOnly || !onCreateSectionFromSelection) {
+      return;
+    }
+    // Atom node selection (mermaid, embed, reference card): promote the node
+    // itself into a new section, using a derived label as the title.
+    const nodeInfo = selectedNodeInfo();
+    if (nodeInfo) {
+      const name =
+        nodeInfo.label.length > 120 ? `${nodeInfo.label.slice(0, 117)}...` : nodeInfo.label;
+      editor.chain().focus().deleteSelection().run();
+      setSelectionToolbar(null);
+      onCreateSectionFromSelection({ name, content: nodeInfo.html });
       return;
     }
     const { from, to } = editor.state.selection;
@@ -1259,7 +1312,8 @@ export function RichTextEditor({
       return;
     }
     const { from, to } = editor.state.selection;
-    const quote = editor.state.doc.textBetween(from, to, " ").trim();
+    const quote =
+      editor.state.doc.textBetween(from, to, " ").trim() || selectedNodeInfo()?.label || "";
     if (!quote) {
       return;
     }
@@ -1483,76 +1537,80 @@ export function RichTextEditor({
               event.preventDefault();
             }}
           >
-            <ToolbarButton
-              active={editor.isActive("heading", { level: 2 })}
-              disabled={editor.isActive("code") || editor.isActive("codeBlock")}
-              onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
-              label="Heading 2"
-            >
-              <Heading2 className="h-3.5 w-3.5" />
-            </ToolbarButton>
-            <ToolbarButton
-              active={editor.isActive("heading", { level: 3 })}
-              disabled={editor.isActive("code") || editor.isActive("codeBlock")}
-              onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
-              label="Heading 3"
-            >
-              <Heading3 className="h-3.5 w-3.5" />
-            </ToolbarButton>
-            <ToolbarDivider />
-            <ToolbarButton
-              active={editor.isActive("bold")}
-              disabled={
-                editor.isActive("code") ||
-                !editor.can().chain().focus().toggleBold().run()
-              }
-              onClick={() => editor.chain().focus().toggleBold().run()}
-              label="Bold"
-            >
-              <Bold className="h-3.5 w-3.5" />
-            </ToolbarButton>
-            <ToolbarButton
-              active={editor.isActive("italic")}
-              disabled={
-                editor.isActive("code") ||
-                !editor.can().chain().focus().toggleItalic().run()
-              }
-              onClick={() => editor.chain().focus().toggleItalic().run()}
-              label="Italic"
-            >
-              <Italic className="h-3.5 w-3.5" />
-            </ToolbarButton>
-            <ToolbarButton
-              active={editor.isActive("strike")}
-              disabled={
-                editor.isActive("code") ||
-                !editor.can().chain().focus().toggleStrike().run()
-              }
-              onClick={() => editor.chain().focus().toggleStrike().run()}
-              label="Strikethrough"
-            >
-              <Strikethrough className="h-3.5 w-3.5" />
-            </ToolbarButton>
-            <ToolbarButton
-              active={editor.isActive("code")}
-              disabled={!editor.can().chain().focus().toggleCode().run()}
-              onClick={() => editor.chain().focus().toggleCode().run()}
-              label="Inline code"
-            >
-              <Code2 className="h-3.5 w-3.5" />
-            </ToolbarButton>
-            <ToolbarDivider />
-            <ToolbarButton
-              active={editor.isActive("link")}
-              disabled={editor.isActive("code") || editor.isActive("codeBlock")}
-              onClick={toggleLink}
-              label="Link"
-            >
-              <Link2 className="h-3.5 w-3.5" />
-            </ToolbarButton>
+            {!selectionToolbar.nodeSelection ? (
+              <>
+                <ToolbarButton
+                  active={editor.isActive("heading", { level: 2 })}
+                  disabled={editor.isActive("code") || editor.isActive("codeBlock")}
+                  onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
+                  label="Heading 2"
+                >
+                  <Heading2 className="h-3.5 w-3.5" />
+                </ToolbarButton>
+                <ToolbarButton
+                  active={editor.isActive("heading", { level: 3 })}
+                  disabled={editor.isActive("code") || editor.isActive("codeBlock")}
+                  onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
+                  label="Heading 3"
+                >
+                  <Heading3 className="h-3.5 w-3.5" />
+                </ToolbarButton>
+                <ToolbarDivider />
+                <ToolbarButton
+                  active={editor.isActive("bold")}
+                  disabled={
+                    editor.isActive("code") ||
+                    !editor.can().chain().focus().toggleBold().run()
+                  }
+                  onClick={() => editor.chain().focus().toggleBold().run()}
+                  label="Bold"
+                >
+                  <Bold className="h-3.5 w-3.5" />
+                </ToolbarButton>
+                <ToolbarButton
+                  active={editor.isActive("italic")}
+                  disabled={
+                    editor.isActive("code") ||
+                    !editor.can().chain().focus().toggleItalic().run()
+                  }
+                  onClick={() => editor.chain().focus().toggleItalic().run()}
+                  label="Italic"
+                >
+                  <Italic className="h-3.5 w-3.5" />
+                </ToolbarButton>
+                <ToolbarButton
+                  active={editor.isActive("strike")}
+                  disabled={
+                    editor.isActive("code") ||
+                    !editor.can().chain().focus().toggleStrike().run()
+                  }
+                  onClick={() => editor.chain().focus().toggleStrike().run()}
+                  label="Strikethrough"
+                >
+                  <Strikethrough className="h-3.5 w-3.5" />
+                </ToolbarButton>
+                <ToolbarButton
+                  active={editor.isActive("code")}
+                  disabled={!editor.can().chain().focus().toggleCode().run()}
+                  onClick={() => editor.chain().focus().toggleCode().run()}
+                  label="Inline code"
+                >
+                  <Code2 className="h-3.5 w-3.5" />
+                </ToolbarButton>
+                <ToolbarDivider />
+                <ToolbarButton
+                  active={editor.isActive("link")}
+                  disabled={editor.isActive("code") || editor.isActive("codeBlock")}
+                  onClick={toggleLink}
+                  label="Link"
+                >
+                  <Link2 className="h-3.5 w-3.5" />
+                </ToolbarButton>
+              </>
+            ) : null}
             {onCreateSectionFromSelection ? (
               <>
-                <ToolbarDivider />
+                {!selectionToolbar.nodeSelection ? <ToolbarDivider /> : null}
                 <ToolbarButton
                   onClick={makeSectionFromSelection}
                   label="Make section"
@@ -1563,7 +1621,9 @@ export function RichTextEditor({
             ) : null}
             {commentsEnabled ? (
               <>
-                <ToolbarDivider />
+                {!selectionToolbar.nodeSelection || onCreateSectionFromSelection ? (
+                  <ToolbarDivider />
+                ) : null}
                 <ToolbarButton
                   onClick={openCommentComposer}
                   label="Comment"
