@@ -14,6 +14,7 @@ import {
   FileText,
   Flag,
   Folder,
+  Funnel,
   LayoutGrid,
   List,
   ListOrdered,
@@ -25,6 +26,7 @@ import {
   SlidersHorizontal,
   Tag,
   TShirt,
+  X,
 } from "@/components/ui/phosphor-icons";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -520,6 +522,7 @@ export function DocumentsDashboardScreen({
     preferences.visibleProperties.length ? preferences.visibleProperties : DEFAULT_VISIBLE_DOCUMENT_PROPERTIES
   );
   const [filter, setFilter] = useState("");
+  const [propertyFilters, setPropertyFilters] = useState<Partial<Record<DocumentPropertyKey, string[]>>>({});
   const [draggedDocumentId, setDraggedDocumentId] = useState<string | null>(null);
   const [savingView, setSavingView] = useState<"user" | "global" | null>(null);
   const [updatingDocumentId, setUpdatingDocumentId] = useState<string | null>(null);
@@ -534,7 +537,7 @@ export function DocumentsDashboardScreen({
 
   const filteredDocuments = useMemo(() => {
     const query = filter.trim().toLowerCase();
-    const filtered = query
+    const searched = query
       ? documentRows.filter((document) =>
           [
             document.title,
@@ -550,8 +553,18 @@ export function DocumentsDashboardScreen({
         )
       : documentRows;
 
+    const activeFilters = Object.entries(propertyFilters) as [DocumentPropertyKey, string[]][];
+    const filtered = activeFilters.length
+      ? searched.filter((document) =>
+          activeFilters.every(
+            ([property, values]) =>
+              !values.length || values.includes(String(document[property]))
+          )
+        )
+      : searched;
+
     return sortDocuments(filtered, sortBy, sortDir);
-  }, [documentRows, filter, sortBy, sortDir]);
+  }, [documentRows, filter, propertyFilters, sortBy, sortDir]);
 
   const filteredFolders = useMemo(() => {
     const query = filter.trim().toLowerCase();
@@ -690,6 +703,32 @@ export function DocumentsDashboardScreen({
     }
   }
 
+  const activeFilterCount = useMemo(
+    () =>
+      Object.values(propertyFilters).reduce(
+        (sum, values) => sum + (values?.length ?? 0),
+        0
+      ),
+    [propertyFilters]
+  );
+
+  function toggleFilterValue(property: DocumentPropertyKey, value: string) {
+    setPropertyFilters((current) => {
+      const existing = current[property] ?? [];
+      const next = existing.includes(value)
+        ? existing.filter((item) => item !== value)
+        : [...existing, value];
+      const updated = { ...current };
+      if (next.length) updated[property] = next;
+      else delete updated[property];
+      return updated;
+    });
+  }
+
+  function clearFilters() {
+    setPropertyFilters({});
+  }
+
   function toggleVisibleProperty(property: DocumentPropertyKey) {
     setVisibleProperties((current) => {
       if (current.includes(property)) {
@@ -820,6 +859,81 @@ export function DocumentsDashboardScreen({
               <ArrowDown className="h-3.5 w-3.5" strokeWidth={1.8} />
             )}
           </button>
+
+          <details className="relative">
+            <summary className="flex h-8 cursor-pointer list-none items-center gap-1.5 rounded-[8px] border border-[var(--creed-border)] px-2.5 text-[12.5px] font-medium text-[var(--creed-text-secondary)] transition hover:bg-[var(--creed-surface-raised)] [&::-webkit-details-marker]:hidden">
+              <Funnel className="h-3.5 w-3.5" strokeWidth={1.8} />
+              Filter
+              {activeFilterCount > 0 ? (
+                <span className="ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--creed-text-primary)] px-1 text-[10px] font-semibold leading-none text-[var(--creed-surface)]">
+                  {activeFilterCount}
+                </span>
+              ) : null}
+            </summary>
+            <div className="absolute right-0 z-20 mt-2 w-64 rounded-[10px] border border-[var(--creed-border)] bg-[var(--creed-surface)] p-1.5 shadow-[0_12px_30px_rgba(28,28,26,0.1)]">
+              {DOCUMENT_PROPERTY_OPTIONS.map((property) => {
+                const options = PROPERTY_OPTIONS[property.value] as unknown as ReadonlyArray<{
+                  value: string;
+                  label: string;
+                }>;
+                const selected = propertyFilters[property.value] ?? [];
+                return (
+                  <details key={property.value} className="group/filter">
+                    <summary className="flex cursor-pointer list-none items-center gap-2 rounded-[7px] px-2 py-1.5 text-[13px] text-[var(--creed-text-primary)] transition hover:bg-[var(--creed-surface-raised)] [&::-webkit-details-marker]:hidden">
+                      <ChevronRight className="h-3 w-3 shrink-0 text-[var(--creed-text-tertiary)] transition group-open/filter:rotate-90" strokeWidth={1.8} />
+                      <span className="text-[var(--creed-text-tertiary)]">
+                        <PropertyTypeIcon property={property.value} />
+                      </span>
+                      <span className="flex-1 truncate">{property.label}</span>
+                      {selected.length ? (
+                        <span className="shrink-0 text-[11px] font-medium text-[var(--creed-text-tertiary)]">
+                          {selected.length}
+                        </span>
+                      ) : null}
+                    </summary>
+                    <div className="pb-1 pl-6">
+                      {options.map((option) => (
+                        <label
+                          key={option.value}
+                          className="flex cursor-pointer items-center gap-2 rounded-[7px] px-2 py-1 text-[12.5px] text-[var(--creed-text-primary)] transition hover:bg-[var(--creed-surface-raised)]"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selected.includes(option.value)}
+                            onChange={() => toggleFilterValue(property.value, option.value)}
+                            className="h-3.5 w-3.5"
+                          />
+                          <span
+                            className="h-2 w-2 shrink-0 rounded-full"
+                            style={{
+                              backgroundColor:
+                                DOCUMENT_TONE_DOT_COLOR[
+                                  documentPropertyTone(property.value, option.value)
+                                ],
+                            }}
+                          />
+                          <span className="min-w-0 truncate">{option.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </details>
+                );
+              })}
+              {activeFilterCount > 0 ? (
+                <>
+                  <div className="my-1 border-t border-[var(--creed-border)]" />
+                  <button
+                    type="button"
+                    onClick={clearFilters}
+                    className="flex w-full items-center gap-2 rounded-[7px] px-2 py-1.5 text-[12.5px] font-medium text-[var(--creed-text-secondary)] transition hover:bg-[var(--creed-surface-raised)]"
+                  >
+                    <X className="h-3.5 w-3.5" strokeWidth={1.8} />
+                    Clear filters
+                  </button>
+                </>
+              ) : null}
+            </div>
+          </details>
 
           <details className="relative">
             <summary className="flex h-8 cursor-pointer list-none items-center gap-1.5 rounded-[8px] border border-[var(--creed-border)] px-2.5 text-[12.5px] font-medium text-[var(--creed-text-secondary)] transition hover:bg-[var(--creed-surface-raised)] [&::-webkit-details-marker]:hidden">

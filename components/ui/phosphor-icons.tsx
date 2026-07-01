@@ -33,6 +33,7 @@ import {
   FloppyDisk,
   Folder,
   FolderOpen,
+  Funnel,
   GearSix,
   GridFour,
   ChatText,
@@ -122,6 +123,7 @@ const FlagIcon = icon(Flag);
 const FolderIcon = icon(Folder);
 const FolderUpIcon = icon(FolderOpen);
 const FolderTreeIcon = icon(TreeStructure);
+const FunnelIcon = icon(Funnel);
 const SettingsIcon = icon(GearSix);
 const GripVerticalIcon = icon(DotsThreeVertical);
 const Heading2Icon = icon(TextHTwo);
@@ -198,6 +200,7 @@ export {
   FlagIcon as Flag,
   FolderIcon as Folder,
   FolderUpIcon as FolderUp,
+  FunnelIcon as Funnel,
   SettingsIcon as Settings,
   GripVerticalIcon as GripVertical,
   Heading2Icon as Heading2,
