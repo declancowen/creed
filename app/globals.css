@@ -725,7 +725,8 @@
   border-collapse: collapse;
   width: 100%;
   table-layout: fixed;
-  font-size: 0.95em;
+  font-size: 0.78em;
+  line-height: 1.35;
   border: 1px solid var(--creed-border-strong);
 }
 .ProseMirror table td,
