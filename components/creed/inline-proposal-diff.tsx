@@ -169,7 +169,7 @@ export function InlineProposalDiff({
 
       <ExpandRegion open={expanded}>
         <div className="border-t border-[var(--creed-border)]" />
-        <div className="creed-diff-block px-4 py-3">
+        <div className="creed-diff-block creed-scrollbar px-4 py-3 text-[12px] leading-5">
           {parts.length === 0 ? (
             <span className="text-[var(--creed-text-tertiary)]">No textual change</span>
           ) : (

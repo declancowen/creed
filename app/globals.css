@@ -391,7 +391,9 @@
 }
 
 .ProseMirror {
-  min-height: 56px;
+  /* One line tall when empty: keeps a click target for empty sections without
+     leaving a block of dead, typeable space below short content. */
+  min-height: 1.75em;
   font-family: var(--font-geist-sans), sans-serif;
   color: var(--creed-text-primary);
   font-size: 16px;
@@ -400,7 +402,7 @@
 }
 
 .ProseMirror.continuation-editor {
-  min-height: 56px;
+  min-height: 1.75em;
 }
 
 .ProseMirror.continuation-editor > * + * {

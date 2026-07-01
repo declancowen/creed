@@ -89,7 +89,12 @@ import {
   summarizeDiff,
 } from "@/components/creed/inline-proposal-diff";
 import { ReviewPill } from "@/components/creed/review-pill";
-import { DocumentReviewPanel } from "@/components/creed/document-review-panel";
+import {
+  DocumentReviewPanel,
+  InlineDocumentProposal,
+  resolveProposalPerson,
+  type DocumentProposal as DocumentReviewProposal,
+} from "@/components/creed/document-review-panel";
 import {
   useCreedShellFileActions,
   useCreedShellActiveSection,
@@ -939,6 +944,8 @@ export function FileScreen({
   const [documentLocked, setDocumentLocked] = useState(false);
   const [documentSaving, setDocumentSaving] = useState(false);
   const [reviewRefreshKey, setReviewRefreshKey] = useState(0);
+  const [documentProposals, setDocumentProposals] = useState<DocumentReviewProposal[]>([]);
+  const [busyDocumentProposalId, setBusyDocumentProposalId] = useState<string | null>(null);
   const [savingDocumentProperty, setSavingDocumentProperty] = useState<DocumentPropertyName | null>(null);
   const documentUsers = useMemo(() => sharedDocument?.users ?? [], [sharedDocument]);
   const currentUserId = sharedDocument?.currentUserId ?? null;
@@ -1025,6 +1032,29 @@ export function FileScreen({
       ),
     [editorSections, pendingProposals]
   );
+  // Map each pending document section-proposal to the rendered section it
+  // targets, so the editor can show an inline card at the bottom of that
+  // section (like the personal file's InlineProposalDiff). Section proposals
+  // carry the section heading; match it to the rendered section by name, and
+  // never reuse a proposal across two sections.
+  const documentProposalsBySection = useMemo(() => {
+    const map = new Map<string, DocumentReviewProposal[]>();
+    if (!documentMode) return map;
+    const norm = (value: string | null | undefined) => (value ?? "").trim().toLowerCase();
+    const used = new Set<string>();
+    for (const section of renderSections) {
+      const matches = documentProposals.filter(
+        (proposal) =>
+          proposal.kind === "document-section" &&
+          proposal.status === "pending" &&
+          !used.has(proposal.id) &&
+          norm(proposal.sectionHeading) === norm(section.name)
+      );
+      for (const match of matches) used.add(match.id);
+      if (matches.length > 0) map.set(section.id, matches);
+    }
+    return map;
+  }, [documentMode, documentProposals, renderSections]);
   const [activityOpen, setActivityOpen] = useState(false);
 
   // Global ⌘A / Ctrl+A → toggle the activity sidebar instead of select-all.
@@ -1336,6 +1366,23 @@ export function FileScreen({
     }
   }
 
+  // Promote a text selection (captured inside a section's editor) into a new
+  // section placed right after the source section. Routes through the same
+  // add-section paths as the composer so profile and document modes stay in
+  // sync; the editor has already stripped the selected text from the source.
+  function createSectionFromSelection(
+    afterSectionId: string,
+    input: { name: string; content?: string }
+  ) {
+    const name = input.name.trim() || "New section";
+    const starter = input.content?.trim() ? input.content : undefined;
+    if (documentMode) {
+      addDocumentSection(name, starter, afterSectionId, "sibling");
+    } else {
+      addSectionAfter(afterSectionId, name, starter, "sibling");
+    }
+  }
+
   function submitComposer() {
     if (!composerName.trim()) {
       return;
@@ -1421,6 +1468,41 @@ export function FileScreen({
     const payload = (await response.json()) as { activity?: DocumentActivityEvent[] };
     if (payload.activity) {
       setDocumentActivity(payload.activity);
+    }
+  }
+
+  // Accept or reject a pending document section-proposal from its inline card in
+  // the body. On accept the returned document replaces local state and sections
+  // re-parse; either way the review panel is refreshed (which re-emits the
+  // pending list via onProposalsChange, updating the inline cards).
+  async function resolveDocumentProposal(id: string, action: "accept" | "reject") {
+    if (!currentDocument) return;
+    setBusyDocumentProposalId(id);
+    try {
+      const response = await fetch(
+        `/api/app/documents/${encodeURIComponent(currentDocument.id)}/proposals/${encodeURIComponent(id)}/${action}`,
+        { method: "POST" }
+      );
+      const payload = (await response.json()) as {
+        document?: SharedDocument;
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(payload.error || `Could not ${action} the proposal.`);
+      }
+      if (action === "accept" && payload.document) {
+        setCurrentDocument(payload.document);
+        const parsed = parseDocumentSections(payload.document.content, payload.document.title);
+        setDocumentSections(parsed);
+        setSavedDocumentMarkdown(documentSectionsToMarkdown(parsed, payload.document.title));
+        void reloadDocumentActivity(payload.document.id);
+      }
+      setReviewRefreshKey((key) => key + 1);
+      toast.success(action === "accept" ? "Proposal accepted" : "Proposal rejected");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : `Could not ${action} the proposal.`);
+    } finally {
+      setBusyDocumentProposalId(null);
     }
   }
 
@@ -1551,6 +1633,16 @@ export function FileScreen({
   // New comments are created from the in-editor popup composer, which supplies
   // the selected text as the anchor quote. Replies use the sidebar and go
   // through createDocumentReply below.
+  // A proposal comment was posted from a review card: surface it in the
+  // comments sidebar immediately, reusing the same comment placement as
+  // section-anchored comments (dedupe so a later reload can't double it).
+  function handleProposalCommentPosted(comment: DocumentComment) {
+    setDocumentComments((rows) =>
+      rows.some((row) => row.id === comment.id) ? rows : [...rows, comment]
+    );
+    setActiveDocumentPanel("comments");
+  }
+
   async function createDocumentCommentFromEditor(input: {
     quote: string;
     body: string;
@@ -2525,6 +2617,8 @@ export function FileScreen({
                     currentContent={currentDocument.content}
                     users={documentUsers}
                     refreshSignal={reviewRefreshKey}
+                    onProposalsChange={setDocumentProposals}
+                    onCommentPosted={handleProposalCommentPosted}
                     onDocumentUpdated={(doc) => {
                       setCurrentDocument(doc);
                       const parsed = parseDocumentSections(doc.content, doc.title);
@@ -2540,8 +2634,12 @@ export function FileScreen({
                     distinct via its own card chrome and a top margin - but
                     structurally they share the same sticky context, which
                     means the pill always rides directly under the header
-                    while the user scrolls through the file. */}
-                {normalizedPendingProposals.length > 0 ? (
+                    while the user scrolls through the file.
+
+                    Only shown for 2+ pending proposals: a single proposal
+                    needs no roll-up summary, so we skip straight to its
+                    inline section card (accept / reject + diff in place). */}
+                {normalizedPendingProposals.length > 1 ? (
                   <div className="mt-5 flex justify-start">
                     <ReviewPill
                       proposals={normalizedPendingProposals.map((proposal) => {
@@ -2623,6 +2721,13 @@ export function FileScreen({
                           : () => toggleSectionLock(section.id)
                       }
                       proposals={normalizedPendingProposals.filter((item) => item.sectionId === section.id)}
+                      documentProposals={documentProposalsBySection.get(section.id) ?? []}
+                      documentUsers={documentUsers}
+                      documentReviewDocumentId={currentDocument?.id ?? ""}
+                      busyDocumentProposalId={busyDocumentProposalId}
+                      onAcceptDocumentProposal={(id) => void resolveDocumentProposal(id, "accept")}
+                      onRejectDocumentProposal={(id) => void resolveDocumentProposal(id, "reject")}
+                      onDocumentCommentPosted={handleProposalCommentPosted}
                       onAcceptProposal={(id) => {
                         void acceptProposal(id);
                       }}
@@ -2688,6 +2793,9 @@ export function FileScreen({
                       }}
                       onAddSectionAfter={(mode) => openComposerAndReveal(section.id, mode)}
                       canAddSubsection={canAddSubsection}
+                      onCreateSectionFromSelection={(input) =>
+                        createSectionFromSelection(section.id, input)
+                      }
                       comments={documentMode ? [...rootDocumentComments, ...pendingComments] : []}
                       activeCommentId={activeDocumentCommentId}
                       commentUsers={documentMode ? mentionableUsers : []}
@@ -3118,6 +3226,13 @@ function SectionCard({
   proposals,
   onAcceptProposal,
   onRejectProposal,
+  documentProposals = [],
+  documentUsers = [],
+  documentReviewDocumentId = "",
+  busyDocumentProposalId = null,
+  onAcceptDocumentProposal,
+  onRejectDocumentProposal,
+  onDocumentCommentPosted,
   onChangeRichText,
   onRename,
   onSetAccent,
@@ -3126,6 +3241,7 @@ function SectionCard({
   onArchive,
   onAddSectionAfter,
   canAddSubsection,
+  onCreateSectionFromSelection,
   comments = [],
   activeCommentId = null,
   commentUsers = [],
@@ -3145,6 +3261,13 @@ function SectionCard({
   proposals: Proposal[];
   onAcceptProposal: (proposalId: string) => void;
   onRejectProposal: (proposalId: string) => void;
+  documentProposals?: DocumentReviewProposal[];
+  documentUsers?: WorkspaceUser[];
+  documentReviewDocumentId?: string;
+  busyDocumentProposalId?: string | null;
+  onAcceptDocumentProposal?: (proposalId: string) => void;
+  onRejectDocumentProposal?: (proposalId: string) => void;
+  onDocumentCommentPosted?: (comment: DocumentComment) => void;
   onChangeRichText: (content: string) => void;
   onRename: () => void;
   onSetAccent: (accent: AccentKey) => void;
@@ -3153,6 +3276,7 @@ function SectionCard({
   onArchive: () => void;
   onAddSectionAfter: (mode: "sibling" | "child") => void;
   canAddSubsection: boolean;
+  onCreateSectionFromSelection: (input: { name: string; content?: string }) => void;
   comments?: DocumentComment[];
   activeCommentId?: string | null;
   commentUsers?: WorkspaceUser[];
@@ -3426,6 +3550,7 @@ function SectionCard({
             onChange={onChangeRichText}
             onAddSectionAfter={onAddSectionAfter}
             canAddSubsection={canAddSubsection}
+            onCreateSectionFromSelection={onCreateSectionFromSelection}
             commentUsers={commentUsers}
             onCreateComment={onCreateComment}
             comments={sectionCommentAnchors}
@@ -3434,6 +3559,28 @@ function SectionCard({
             enableReferences={enableReferences}
           />
         </div>
+
+        {documentProposals.length > 0 ? (
+          <div className="mt-4 space-y-3">
+            {documentProposals.map((documentProposal) => (
+              <InlineDocumentProposal
+                key={documentProposal.id}
+                proposal={documentProposal}
+                person={resolveProposalPerson(
+                  documentUsers,
+                  documentProposal.authorUserId,
+                  documentProposal.authorAgentLabel
+                )}
+                busy={busyDocumentProposalId === documentProposal.id}
+                documentId={documentReviewDocumentId}
+                users={documentUsers}
+                onCommentPosted={onDocumentCommentPosted}
+                onAccept={() => onAcceptDocumentProposal?.(documentProposal.id)}
+                onReject={() => onRejectDocumentProposal?.(documentProposal.id)}
+              />
+            ))}
+          </div>
+        ) : null}
       </section>
     </Reorder.Item>
   );

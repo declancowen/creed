@@ -69,6 +69,18 @@ import { cn } from "@/lib/utils";
 const slashPluginKey = new PluginKey("creedSlashCommand");
 const mentionPluginKey = new PluginKey("creedReferenceMention");
 
+// Escape user text before interpolating it into section-body HTML. Mirrors the
+// helper used by the write API / creed-data serializers so promoted selections
+// can't inject markup into a new section's content.
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 // Pre-bundled curated language set: js/ts/jsx/tsx, python, ruby, go, rust,
 // java, c/cpp, cs, php, swift, kotlin, json, yaml, bash, sql, html, css,
 // markdown, etc. Auto-detects when no language is specified on the node.
@@ -150,6 +162,11 @@ type RichTextEditorProps = {
   // MAX_SECTION_DEPTH). Gates the "New subsection" slash command so the menu
   // never offers a nesting level the tree can't represent.
   canAddSubsection?: boolean;
+  // Promotes the current text selection into a brand-new section placed after
+  // this one. When provided, the selection toolbar shows a "Make section"
+  // button: the first line of the selection becomes the section name, the rest
+  // becomes its body, and the selected text is removed from this section.
+  onCreateSectionFromSelection?: (input: { name: string; content?: string }) => void;
   // Workspace members available to @mention from the in-editor comment
   // composer. Only supplied in document mode.
   commentUsers?: WorkspaceUser[];
@@ -247,6 +264,7 @@ export function RichTextEditor({
   onChange,
   onAddSectionAfter,
   canAddSubsection = false,
+  onCreateSectionFromSelection,
   commentUsers = [],
   onCreateComment,
   comments = [],
@@ -853,8 +871,8 @@ export function RichTextEditor({
       attributes: {
         class:
           density === "continuation"
-            ? "continuation-editor min-h-[56px] pb-0 text-[var(--creed-text-primary)]"
-            : "min-h-[56px] pb-2 text-[var(--creed-text-primary)]",
+            ? "continuation-editor pb-0 text-[var(--creed-text-primary)]"
+            : "pb-2 text-[var(--creed-text-primary)]",
       },
       handleKeyDown: (view, event) => {
         if (event.key !== "Backspace") {
@@ -1018,6 +1036,44 @@ export function RichTextEditor({
 
     editor.chain().focus().extendMarkRange("link").setLink({ href: linkDraft.trim() }).run();
     setLinkDialogOpen(false);
+  }
+
+  // Promote the current selection into its own section. The first non-empty
+  // line becomes the section name; any following lines become the body. The
+  // selected text is then removed from this section so it isn't duplicated.
+  function makeSectionFromSelection() {
+    if (!editor || readOnly || !onCreateSectionFromSelection) {
+      return;
+    }
+    const { from, to } = editor.state.selection;
+    if (from === to) {
+      return;
+    }
+    // Split on block boundaries so multi-paragraph selections keep their line
+    // structure; each resulting line becomes its own paragraph in the body.
+    const selectedText = editor.state.doc.textBetween(from, to, "\n", "\n");
+    const lines = selectedText
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    if (lines.length === 0) {
+      return;
+    }
+
+    const [nameLine, ...bodyLines] = lines;
+    // Keep the section title to a sensible length even if the user highlighted
+    // a long paragraph as the first line.
+    const name = nameLine.length > 120 ? `${nameLine.slice(0, 117)}...` : nameLine;
+    const content =
+      bodyLines.length > 0
+        ? bodyLines.map((line) => `<p>${escapeHtml(line)}</p>`).join("")
+        : undefined;
+
+    // Remove the promoted text from the source section, then hand the derived
+    // name/body up so the parent can insert the new section after this one.
+    editor.chain().focus().deleteSelection().run();
+    setSelectionToolbar(null);
+    onCreateSectionFromSelection({ name, content });
   }
 
   function openCommentComposer() {
@@ -1312,6 +1368,17 @@ export function RichTextEditor({
             >
               <Link2 className="h-3.5 w-3.5" />
             </ToolbarButton>
+            {onCreateSectionFromSelection ? (
+              <>
+                <ToolbarDivider />
+                <ToolbarButton
+                  onClick={makeSectionFromSelection}
+                  label="Make section"
+                >
+                  <PlusSquare className="h-3.5 w-3.5" />
+                </ToolbarButton>
+              </>
+            ) : null}
             {commentsEnabled ? (
               <>
                 <ToolbarDivider />

@@ -2,15 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { diffWords } from "diff";
 import { AnimatePresence, motion } from "framer-motion";
 import { Check, ChevronDown, History, LoaderCircle, MessageSquare, RotateCcw, Send, X } from "@/components/ui/phosphor-icons";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import {
-  DiffBadge,
-  computeDiffParts,
-  summarizeDiff,
-} from "@/components/creed/inline-proposal-diff";
+import { DiffBadge, summarizeDiff } from "@/components/creed/inline-proposal-diff";
 import {
   diffMarkdownSections,
   sectionChangeLabel,
@@ -18,20 +15,24 @@ import {
   type SectionChangeStatus,
 } from "@/lib/document-section-diff";
 import type { WorkspaceUser } from "@/lib/document-collaboration";
+import type { DocumentComment } from "@/lib/document-collaboration";
 import type { SharedDocument } from "@/lib/shared-documents";
+import { MentionTextarea } from "@/components/creed/mention-textarea";
 import { cn } from "@/lib/utils";
 
-// Supabase-only review surface for a shared document: workspace-shared pending
-// proposals (accept/reject) and the append-only version history (diff/revert).
-// Diffs are grouped by the document's dynamic Markdown sections (a summary plus
-// per-section expandable diffs) and every proposal/version is attributed to the
-// person behind it (avatar + name), not the model/MCP label.
+// Supabase-only review surface for a shared document. Mirrors the personal-file
+// ReviewPill: a compact summary pill (total +/- and "N proposals") that reveals
+// the per-section proposals, each showing its own diff and accept/reject. Diffs
+// render as clean editor-like text (Markdown syntax stripped the way the
+// personal file strips HTML), never raw Markdown source. Every proposal/version
+// is attributed to the person behind it (avatar + name), not the model/MCP
+// label. The append-only version history sits below with the same rendered diff.
 
 type ActorType = "human" | "agent";
 
 type SectionStatus = "added" | "removed" | "modified" | "unchanged";
 
-type DocumentProposal = {
+export type DocumentProposal = {
   id: string;
   actorType: ActorType;
   authorUserId: string | null;
@@ -101,8 +102,7 @@ function initialsFor(label: string) {
 
 // Person attribution: avatar + name. We monitor the workspace from a people
 // perspective, so even an agent-authored change is credited to the person whose
-// connection made it (agent edits carry that user id); the model/MCP label is
-// only a last-resort fallback when no person is known.
+// connection made it; the model/MCP label is only a last-resort fallback.
 function PersonBadge({ person }: { person: Person }) {
   return (
     <span className="inline-flex min-w-0 items-center gap-1.5">
@@ -115,19 +115,57 @@ function PersonBadge({ person }: { person: Person }) {
   );
 }
 
-function DiffText({ before, after }: { before: string; after: string }) {
-  const parts = useMemo(() => computeDiffParts(before, after), [before, after]);
+// Strip Markdown syntax down to readable prose so a diff of two Markdown bodies
+// reads like the rendered editor, not like raw source. This is the Markdown
+// analogue of the personal-file `htmlToText`: it removes heading/list/quote
+// markers, unwraps links/images to their text, and drops emphasis/code fences.
+function markdownToText(md: string) {
+  return (md ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/^\uFEFF/, "")
+    .replace(/```[^\n]*\n?/g, "") // fenced code delimiters
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "") // headings
+    .replace(/^\s{0,3}>\s?/gm, "") // blockquotes
+    .replace(/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/gm, "") // horizontal rules
+    .replace(/^\s*(?:[-*+]|\d+\.)\s+/gm, "") // list markers
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1") // images -> alt
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1") // links -> text
+    .replace(/`([^`]+)`/g, "$1") // inline code
+    .replace(/(\*\*|__)(.*?)\1/g, "$2") // bold
+    .replace(/(\*|_)([^*_]+?)\1/g, "$2") // italic
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function mdDiffParts(before: string, after: string) {
+  return diffWords(markdownToText(before), markdownToText(after));
+}
+
+type DiffPart = ReturnType<typeof mdDiffParts>[number];
+
+function DiffChunks({ parts }: { parts: DiffPart[] }) {
+  if (parts.length === 0) {
+    return <span className="text-[var(--creed-text-tertiary)]">No textual change</span>;
+  }
   return (
-    <div className="creed-diff-block max-h-[240px] overflow-y-auto rounded-[10px] bg-[var(--creed-surface)] px-3.5 py-3 text-[13px] leading-6">
-      {parts.length === 0 ? (
-        <span className="text-[var(--creed-text-tertiary)]">No textual change</span>
-      ) : (
-        parts.map((part, index) => {
-          if (part.added) return <span key={index} className="creed-diff-add">{part.value}</span>;
-          if (part.removed) return <span key={index} className="creed-diff-remove">{part.value}</span>;
-          return <span key={index}>{part.value}</span>;
-        })
-      )}
+    <>
+      {parts.map((part, index) => {
+        if (part.added) return <span key={index} className="creed-diff-add">{part.value}</span>;
+        if (part.removed) return <span key={index} className="creed-diff-remove">{part.value}</span>;
+        return <span key={index}>{part.value}</span>;
+      })}
+    </>
+  );
+}
+
+// Rendered diff block: clean prose with add/remove highlighting, matching the
+// personal file's `creed-diff-block` look.
+function DiffText({ before, after }: { before: string; after: string }) {
+  const parts = useMemo(() => mdDiffParts(before, after), [before, after]);
+  return (
+    <div className="creed-diff-block creed-scrollbar max-h-[280px] overflow-y-auto px-3.5 py-3 text-[13px] leading-6">
+      <DiffChunks parts={parts} />
     </div>
   );
 }
@@ -139,6 +177,7 @@ const STATUS_DOT: Record<SectionChangeStatus, string> = {
   unchanged: "bg-[var(--creed-text-tertiary)]",
 };
 
+// One section row within a whole-document (version-history) grouped diff.
 function SectionChangeRow({
   change,
   open,
@@ -148,7 +187,7 @@ function SectionChangeRow({
   open: boolean;
   onToggle: () => void;
 }) {
-  const parts = useMemo(() => computeDiffParts(change.before, change.after), [change.before, change.after]);
+  const parts = useMemo(() => mdDiffParts(change.before, change.after), [change.before, change.after]);
   const stats = useMemo(() => summarizeDiff(parts), [parts]);
   const label = sectionChangeLabel(change);
 
@@ -168,11 +207,6 @@ function SectionChangeRow({
         />
         <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", STATUS_DOT[change.status])} />
         <span className="truncate text-[13px] text-[var(--creed-text-primary)]">{label}</span>
-        {change.status === "added" ? (
-          <span className="shrink-0 text-[11px] text-[var(--creed-text-tertiary)]">new section</span>
-        ) : change.status === "removed" ? (
-          <span className="shrink-0 text-[11px] text-[var(--creed-text-tertiary)]">removed</span>
-        ) : null}
         <span className="ml-auto inline-flex shrink-0 items-center gap-1.5">
           <DiffBadge tone="added" count={stats.added} />
           <DiffBadge tone="removed" count={stats.removed} />
@@ -187,8 +221,9 @@ function SectionChangeRow({
             transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
             className="overflow-hidden"
           >
-            <div className="px-2.5 pb-2.5">
-              <DiffText before={change.before} after={change.after} />
+            <div className="border-t border-[var(--creed-border)]" />
+            <div className="creed-diff-block creed-scrollbar max-h-[240px] overflow-y-auto px-3.5 py-2.5 text-[13px] leading-6">
+              <DiffChunks parts={parts} />
             </div>
           </motion.div>
         ) : null}
@@ -197,22 +232,18 @@ function SectionChangeRow({
   );
 }
 
-// Groups a whole-content diff by the document's Markdown sections: a per-section
-// list where only changed sections are shown, each expandable to its own diff.
+// Groups a whole-content diff by the document's Markdown sections (used by
+// version history, where a version can span many sections).
 function SectionGroupedDiff({ before, after }: { before: string; after: string }) {
   const changes = useMemo(() => diffMarkdownSections(before, after), [before, after]);
   const changed = useMemo(() => changes.filter((change) => change.status !== "unchanged"), [changes]);
   const [openKey, setOpenKey] = useState<string | null>(null);
 
-  // Auto-open when a single section changed; otherwise keep them collapsed so
-  // the section list reads as a summary the reviewer can drill into.
   useEffect(() => {
     setOpenKey(changed.length === 1 ? changed[0].key : null);
   }, [changed]);
 
   if (changed.length === 0) {
-    // Fall back to a plain whole-content diff when the change does not map onto
-    // any heading (e.g. a document with no headings at all).
     return <DiffText before={before} after={after} />;
   }
 
@@ -230,29 +261,6 @@ function SectionGroupedDiff({ before, after }: { before: string; after: string }
   );
 }
 
-type ProposalBatch = {
-  key: string;
-  proposals: DocumentProposal[];
-};
-
-// Group the pending proposals into review items: the per-section proposals from
-// one edit share a `batchId` and review together under one summary; a legacy
-// whole-content proposal (no batch) is its own group of one. Insertion order is
-// preserved so the newest edits keep their server ordering.
-function groupProposalBatches(proposals: DocumentProposal[]): ProposalBatch[] {
-  const order: string[] = [];
-  const byKey = new Map<string, DocumentProposal[]>();
-  for (const proposal of proposals) {
-    const key = proposal.batchId ?? proposal.id;
-    if (!byKey.has(key)) {
-      byKey.set(key, []);
-      order.push(key);
-    }
-    byKey.get(key)!.push(proposal);
-  }
-  return order.map((key) => ({ key, proposals: byKey.get(key)! }));
-}
-
 // The before/after a proposal represents: a section proposal carries its own
 // before/after; a legacy whole-content proposal diffs against the live document.
 function proposalDiffPair(proposal: DocumentProposal, currentContent: string) {
@@ -268,6 +276,147 @@ function sectionRowLabel(proposal: DocumentProposal) {
   return proposal.sectionHeading;
 }
 
+// Person attribution helper for callers outside this module (the document
+// editor renders inline proposal cards and needs the same person-first
+// resolution the panel uses).
+export function resolveProposalPerson(
+  users: WorkspaceUser[],
+  authorUserId: string | null,
+  agentLabel: string | null
+): Person {
+  if (authorUserId) {
+    const user = users.find((candidate) => candidate.id === authorUserId);
+    if (user) return { label: user.label, avatarUrl: user.avatarUrl };
+  }
+  if (agentLabel) return { label: agentLabel, avatarUrl: null };
+  return { label: "Someone", avatarUrl: null };
+}
+
+// The inline proposal card rendered in the document body at the bottom of the
+// section it targets (mirrors the personal file's InlineProposalDiff, but for a
+// dynamic document section: person attribution + Markdown-aware rendered diff).
+export function InlineDocumentProposal({
+  proposal,
+  person,
+  busy,
+  documentId,
+  users,
+  onCommentPosted,
+  onAccept,
+  onReject,
+}: {
+  proposal: DocumentProposal;
+  person: Person;
+  busy?: boolean;
+  documentId: string;
+  users: WorkspaceUser[];
+  onCommentPosted?: (comment: DocumentComment) => void;
+  onAccept: () => void;
+  onReject: () => void;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const [showComments, setShowComments] = useState(false);
+  const before = proposal.sectionBefore ?? "";
+  const after = proposal.sectionAfter ?? proposal.content;
+  const parts = useMemo(() => mdDiffParts(before, after), [before, after]);
+  const stats = useMemo(() => summarizeDiff(parts), [parts]);
+  const status = proposal.sectionStatus ?? "modified";
+  const headline =
+    status === "added"
+      ? "proposed a new section"
+      : status === "removed"
+        ? "proposed to remove this section"
+        : proposal.actorType === "agent"
+          ? "proposed an edit"
+          : "proposed an update";
+
+  return (
+    <div className="rounded-[14px] border border-[var(--creed-border)] bg-[var(--creed-surface)] shadow-[0_8px_24px_rgba(28,28,26,0.04)]">
+      <div className="flex items-center justify-between gap-3 px-3 py-2">
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          aria-expanded={expanded}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm text-[var(--creed-text-secondary)]"
+        >
+          <ChevronDown
+            className={cn(
+              "h-3.5 w-3.5 shrink-0 text-[var(--creed-text-tertiary)] transition-transform duration-200",
+              expanded ? "rotate-0" : "-rotate-90"
+            )}
+          />
+          <PersonBadge person={person} />
+          <span className="text-[var(--creed-text-tertiary)]">{headline}</span>
+          <span className="text-[var(--creed-text-tertiary)]">·</span>
+          <span className="inline-flex items-center gap-1">
+            <DiffBadge tone="added" count={stats.added} size="md" />
+            <DiffBadge tone="removed" count={stats.removed} size="md" />
+          </span>
+        </button>
+        <div className="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setShowComments((value) => !value)}
+            aria-expanded={showComments}
+            title="Comment on this proposal"
+            className={cn(
+              "flex h-7 w-7 items-center justify-center rounded-md text-[var(--creed-text-tertiary)] transition-colors hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)]",
+              showComments ? "text-[var(--creed-text-primary)]" : ""
+            )}
+          >
+            <MessageSquare className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={onReject}
+            disabled={busy}
+            className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-sm font-medium text-[var(--creed-text-secondary)] transition-colors hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)] disabled:opacity-50"
+          >
+            <X className="h-3.5 w-3.5" />
+            Reject
+          </button>
+          <button
+            type="button"
+            onClick={onAccept}
+            disabled={busy}
+            className="inline-flex h-7 items-center gap-1 rounded-md bg-[#2563eb] px-2.5 text-sm font-medium text-white transition-colors hover:bg-[#1d4ed8] disabled:opacity-50"
+          >
+            <Check className="h-3.5 w-3.5" />
+            Accept
+          </button>
+        </div>
+      </div>
+      <AnimatePresence initial={false}>
+        {expanded ? (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
+            className="overflow-hidden"
+          >
+            <div className="border-t border-[var(--creed-border)]" />
+            <DiffText before={before} after={after} />
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+      <AnimatePresence initial={false}>
+        {showComments ? (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
+            className="overflow-hidden"
+          >
+            <ProposalCommentThread documentId={documentId} proposalId={proposal.id} users={users} onPosted={onCommentPosted} />
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 export function DocumentReviewPanel({
   documentId,
   revision,
@@ -275,6 +424,8 @@ export function DocumentReviewPanel({
   users,
   refreshSignal,
   onDocumentUpdated,
+  onProposalsChange,
+  onCommentPosted,
 }: {
   documentId: string;
   revision: number;
@@ -282,6 +433,8 @@ export function DocumentReviewPanel({
   users: WorkspaceUser[];
   refreshSignal?: number;
   onDocumentUpdated: (document: SharedDocument) => void;
+  onProposalsChange?: (proposals: DocumentProposal[]) => void;
+  onCommentPosted?: (comment: DocumentComment) => void;
 }) {
   const [proposals, setProposals] = useState<DocumentProposal[]>([]);
   const [versions, setVersions] = useState<DocumentVersion[]>([]);
@@ -313,6 +466,7 @@ export function DocumentReviewPanel({
       if (proposalsRes.ok) {
         const payload = (await proposalsRes.json()) as { proposals?: DocumentProposal[] };
         setProposals(payload.proposals ?? []);
+        onProposalsChange?.(payload.proposals ?? []);
       }
       if (versionsRes.ok) {
         const payload = (await versionsRes.json()) as { versions?: DocumentVersion[] };
@@ -321,23 +475,14 @@ export function DocumentReviewPanel({
     } catch {
       // Non-fatal: leave the last known lists in place.
     }
-  }, [documentId]);
+  }, [documentId, onProposalsChange]);
 
-  // Refetch when the document changes (id or applied revision) or when the
-  // parent signals a new proposal was created (a proposal does not advance the
-  // document revision, so revision alone would miss it).
   useEffect(() => {
     void refresh();
   }, [refresh, revision, refreshSignal]);
 
-  // Keep proposals/versions live for the whole workspace: another member (or an
-  // agent over MCP) can create or resolve a proposal without changing anything
-  // this client knows about. Mirror the app's existing polling pattern
-  // (creed-provider / notification-menu): poll on an interval, pause when the
-  // tab is hidden, and refetch immediately on focus.
   useEffect(() => {
     let interval: number | null = null;
-
     function start() {
       stop();
       interval = window.setInterval(() => void refresh(), 30_000);
@@ -360,7 +505,6 @@ export function DocumentReviewPanel({
         stop();
       }
     }
-
     if (document.visibilityState === "visible") start();
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibility);
@@ -371,28 +515,31 @@ export function DocumentReviewPanel({
     };
   }, [refresh]);
 
-  async function resolveProposal(id: string, action: "accept" | "reject") {
-    setBusyProposal(id);
-    try {
-      const response = await fetch(
-        `/api/app/documents/${encodeURIComponent(documentId)}/proposals/${encodeURIComponent(id)}/${action}`,
-        { method: "POST" }
-      );
-      const payload = (await response.json()) as EditOutcomeResponse & { proposal?: unknown };
-      if (!response.ok) {
-        throw new Error(payload.error || `Could not ${action} the proposal.`);
+  const resolveProposal = useCallback(
+    async (id: string, action: "accept" | "reject") => {
+      setBusyProposal(id);
+      try {
+        const response = await fetch(
+          `/api/app/documents/${encodeURIComponent(documentId)}/proposals/${encodeURIComponent(id)}/${action}`,
+          { method: "POST" }
+        );
+        const payload = (await response.json()) as EditOutcomeResponse;
+        if (!response.ok) {
+          throw new Error(payload.error || `Could not ${action} the proposal.`);
+        }
+        if (action === "accept" && payload.document) {
+          onDocumentUpdated(payload.document);
+        }
+        toast.success(action === "accept" ? "Proposal accepted" : "Proposal rejected");
+        await refresh();
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : `Could not ${action} the proposal.`);
+      } finally {
+        setBusyProposal(null);
       }
-      if (action === "accept" && payload.document) {
-        onDocumentUpdated(payload.document);
-      }
-      toast.success(action === "accept" ? "Proposal accepted" : "Proposal rejected");
-      await refresh();
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : `Could not ${action} the proposal.`);
-    } finally {
-      setBusyProposal(null);
-    }
-  }
+    },
+    [documentId, onDocumentUpdated, refresh]
+  );
 
   async function revertTo(versionId: string) {
     setRevertingVersion(versionId);
@@ -423,7 +570,6 @@ export function DocumentReviewPanel({
     }
   }
 
-  const batches = useMemo(() => groupProposalBatches(proposals), [proposals]);
   const hasProposals = proposals.length > 0;
 
   if (!hasProposals && versions.length === 0) {
@@ -433,30 +579,16 @@ export function DocumentReviewPanel({
   return (
     <div className="mt-5 space-y-3">
       {hasProposals ? (
-        <div className="rounded-[var(--radius-lg)] border border-[var(--creed-border)] bg-[var(--creed-surface)]">
-          <div className="flex items-center justify-between border-b border-[var(--creed-border)] px-4 py-2.5">
-            <span className="text-[13px] font-medium text-[var(--creed-text-primary)]">
-              {batches.length} pending {batches.length === 1 ? "proposal" : "proposals"}
-            </span>
-          </div>
-          <div className="divide-y divide-[var(--creed-border)]">
-            {batches.map((batch) => (
-              <ProposalBatchCard
-                key={batch.key}
-                batch={batch}
-                documentId={documentId}
-                currentContent={currentContent}
-                users={users}
-                person={resolvePerson(
-                  batch.proposals[0].authorUserId,
-                  batch.proposals[0].authorAgentLabel
-                )}
-                busyProposal={busyProposal}
-                onResolve={resolveProposal}
-              />
-            ))}
-          </div>
-        </div>
+        <DocumentReviewPill
+          proposals={proposals}
+          currentContent={currentContent}
+          documentId={documentId}
+          users={users}
+          resolvePerson={resolvePerson}
+          busyProposal={busyProposal}
+          onResolve={resolveProposal}
+          onCommentPosted={onCommentPosted}
+        />
       ) : null}
 
       {versions.length > 0 ? (
@@ -493,10 +625,6 @@ export function DocumentReviewPanel({
                     <VersionRow
                       key={version.id}
                       version={version}
-                      // The change a version introduced is the diff against the
-                      // version immediately before it (the next, older entry in
-                      // this newest-first list). The oldest version diffs against
-                      // an empty document, so it reads as all-added.
                       previousContent={versions[index + 1]?.content ?? ""}
                       person={resolvePerson(version.authorUserId, version.authorAgentLabel)}
                       isCurrent={index === 0}
@@ -518,120 +646,138 @@ export function DocumentReviewPanel({
   );
 }
 
-// One review item: the group of per-section proposals from a single edit (or a
-// single legacy whole-content proposal). Shows a summary line the reviewer can
-// expand into per-section rows, each accept/reject-able on its own, each with
-// its own comment thread. Accept/reject-all are conveniences over the per-row
-// controls.
-function ProposalBatchCard({
-  batch,
-  documentId,
+// The compact review summary, modelled on the personal-file ReviewPill: a
+// rounded pill showing total +/- and "N proposals" that toggles a list of the
+// per-section proposals beneath it, plus Reject all / Accept all. Collapsed by
+// default so the summary stays small instead of a large always-open box.
+function DocumentReviewPill({
+  proposals,
   currentContent,
+  documentId,
   users,
-  person,
+  resolvePerson,
   busyProposal,
   onResolve,
+  onCommentPosted,
 }: {
-  batch: ProposalBatch;
-  documentId: string;
+  proposals: DocumentProposal[];
   currentContent: string;
+  documentId: string;
   users: WorkspaceUser[];
-  person: Person;
+  resolvePerson: (authorUserId: string | null, agentLabel: string | null) => Person;
   busyProposal: string | null;
   onResolve: (id: string, action: "accept" | "reject") => Promise<void>;
+  onCommentPosted?: (comment: DocumentComment) => void;
 }) {
-  const [open, setOpen] = useState(true);
+  const [listOpen, setListOpen] = useState(false);
 
-  const summary = useMemo(() => {
+  const totals = useMemo(() => {
     let added = 0;
     let removed = 0;
-    for (const proposal of batch.proposals) {
+    for (const proposal of proposals) {
       const { before, after } = proposalDiffPair(proposal, currentContent);
-      const stats = summarizeDiff(computeDiffParts(before, after));
+      const stats = summarizeDiff(mdDiffParts(before, after));
       added += stats.added;
       removed += stats.removed;
     }
     return { added, removed };
-  }, [batch.proposals, currentContent]);
+  }, [proposals, currentContent]);
 
-  const sectionCount = batch.proposals.length;
-  const head = batch.proposals[0];
-  const anyBusy = batch.proposals.some((proposal) => busyProposal === proposal.id);
+  const anyBusy = proposals.some((proposal) => busyProposal === proposal.id);
 
   async function resolveAll(action: "accept" | "reject") {
     // Sequentially, so each section applies against the revision the previous
     // acceptance produced (the per-section merge guard handles ordering).
-    for (const proposal of batch.proposals) {
+    for (const proposal of proposals) {
       await onResolve(proposal.id, action);
     }
   }
 
+  // A single proposal needs no roll-up summary: skip the "N proposals" pill
+  // (and its Reject all / Accept all) and surface the one proposal row on its
+  // own, matching the personal file where one proposal goes straight to its
+  // section card.
+  if (proposals.length === 1) {
+    const proposal = proposals[0];
+    return (
+      <div className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--creed-border)] bg-[var(--creed-surface)]">
+        <DocumentReviewPillItem
+          proposal={proposal}
+          currentContent={currentContent}
+          documentId={documentId}
+          users={users}
+          person={resolvePerson(proposal.authorUserId, proposal.authorAgentLabel)}
+          busy={busyProposal === proposal.id}
+          onCommentPosted={onCommentPosted}
+          onAccept={() => void onResolve(proposal.id, "accept")}
+          onReject={() => void onResolve(proposal.id, "reject")}
+        />
+      </div>
+    );
+  }
+
   return (
-    <div className="px-4 py-3">
-      <div className="flex items-center justify-between gap-3">
+    <div className="space-y-2">
+      <div className="inline-flex items-center gap-1 rounded-[16px] border border-[var(--creed-border)] bg-[var(--creed-surface)] p-1.5 shadow-[0_8px_24px_rgba(28,28,26,0.04)]">
         <button
           type="button"
-          onClick={() => setOpen((value) => !value)}
-          className="flex min-w-0 flex-1 items-center gap-2 text-left"
-          aria-expanded={open}
+          onClick={() => setListOpen((value) => !value)}
+          aria-expanded={listOpen}
+          className="group/trigger inline-flex h-7 items-center gap-2 rounded-md px-2.5 text-sm font-medium text-[var(--creed-text-secondary)] outline-none transition-colors hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)]"
         >
+          <span className="inline-flex items-center gap-1">
+            <DiffBadge tone="added" count={totals.added} size="md" />
+            <DiffBadge tone="removed" count={totals.removed} size="md" />
+          </span>
+          <span className="text-[var(--creed-text-tertiary)]">·</span>
+          <span>{proposals.length === 1 ? "1 proposal" : `${proposals.length} proposals`}</span>
           <ChevronDown
             className={cn(
-              "h-3.5 w-3.5 shrink-0 text-[var(--creed-text-tertiary)] transition-transform duration-200",
-              open ? "rotate-0" : "-rotate-90"
+              "h-3.5 w-3.5 text-[var(--creed-text-tertiary)] transition-all duration-200 group-hover/trigger:text-[var(--creed-text-primary)]",
+              listOpen ? "rotate-0" : "-rotate-90"
             )}
           />
-          <PersonBadge person={person} />
-          <span className="truncate text-[13px] text-[var(--creed-text-secondary)]">
-            {" "}
-            {head.actorType === "agent" ? "proposed an edit" : "proposed a change"} ·{" "}
-            {sectionCount} {sectionCount === 1 ? "section" : "sections"} · {relativeTime(head.createdAt)}
-          </span>
-          <span className="ml-auto inline-flex shrink-0 items-center gap-1.5">
-            <DiffBadge tone="added" count={summary.added} />
-            <DiffBadge tone="removed" count={summary.removed} />
-          </span>
         </button>
-        <div className="flex shrink-0 items-center gap-1.5">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 gap-1 rounded-md px-2 text-[12px] text-[var(--creed-text-secondary)] hover:text-[var(--creed-text-primary)]"
-            disabled={anyBusy}
-            onClick={() => void resolveAll("reject")}
-          >
-            <X className="h-3.5 w-3.5" />
-            {sectionCount === 1 ? "Reject" : "Reject all"}
-          </Button>
-          <Button
-            size="sm"
-            className="h-7 gap-1 rounded-md bg-[var(--creed-accent)] px-2.5 text-[12px] text-white hover:bg-[var(--creed-accent-hover)]"
-            disabled={anyBusy}
-            onClick={() => void resolveAll("accept")}
-          >
-            <Check className="h-3.5 w-3.5" />
-            {sectionCount === 1 ? "Accept" : "Accept all"}
-          </Button>
-        </div>
+        <button
+          type="button"
+          onClick={() => void resolveAll("reject")}
+          disabled={anyBusy}
+          className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-sm font-medium text-[var(--creed-text-secondary)] transition-colors hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)] disabled:opacity-50"
+        >
+          <X className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">Reject all</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => void resolveAll("accept")}
+          disabled={anyBusy}
+          className="inline-flex h-7 items-center gap-1 rounded-md bg-[#2563eb] px-2.5 text-sm font-medium text-white transition-colors hover:bg-[#1d4ed8] disabled:opacity-50"
+        >
+          <Check className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">Accept all</span>
+        </button>
       </div>
+
       <AnimatePresence initial={false}>
-        {open ? (
+        {listOpen ? (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+            transition={{ duration: 0.26, ease: [0.16, 1, 0.3, 1] }}
             className="overflow-hidden"
           >
-            <div className="mt-3 space-y-1.5">
-              {batch.proposals.map((proposal) => (
-                <ProposalSectionRow
+            <div className="divide-y divide-[var(--creed-border)] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--creed-border)] bg-[var(--creed-surface)]">
+              {proposals.map((proposal) => (
+                <DocumentReviewPillItem
                   key={proposal.id}
                   proposal={proposal}
                   currentContent={currentContent}
                   documentId={documentId}
                   users={users}
+                  person={resolvePerson(proposal.authorUserId, proposal.authorAgentLabel)}
                   busy={busyProposal === proposal.id}
+                  onCommentPosted={onCommentPosted}
                   onAccept={() => void onResolve(proposal.id, "accept")}
                   onReject={() => void onResolve(proposal.id, "reject")}
                 />
@@ -644,12 +790,17 @@ function ProposalBatchCard({
   );
 }
 
-function ProposalSectionRow({
+// One proposal row inside the pill's reveal: person + section label + diff
+// badges; expands to the rendered diff (bottom of the section) with Reject /
+// Accept and a comment affordance.
+function DocumentReviewPillItem({
   proposal,
   currentContent,
   documentId,
   users,
+  person,
   busy,
+  onCommentPosted,
   onAccept,
   onReject,
 }: {
@@ -657,78 +808,75 @@ function ProposalSectionRow({
   currentContent: string;
   documentId: string;
   users: WorkspaceUser[];
+  person: Person;
   busy: boolean;
+  onCommentPosted?: (comment: DocumentComment) => void;
   onAccept: () => void;
   onReject: () => void;
 }) {
-  const [showDiff, setShowDiff] = useState(false);
+  const [open, setOpen] = useState(false);
   const [showComments, setShowComments] = useState(false);
   const { before, after } = proposalDiffPair(proposal, currentContent);
-  const stats = useMemo(() => summarizeDiff(computeDiffParts(before, after)), [before, after]);
+  const parts = useMemo(() => mdDiffParts(before, after), [before, after]);
+  const stats = useMemo(() => summarizeDiff(parts), [parts]);
   const label = sectionRowLabel(proposal);
-  const status = proposal.sectionStatus ?? "modified";
 
   return (
-    <div className="rounded-[10px] border border-[var(--creed-border)] bg-[var(--creed-surface)]">
+    <div>
       <div className="flex items-center gap-2 px-3 py-2">
         <button
           type="button"
-          onClick={() => setShowDiff((value) => !value)}
-          aria-expanded={showDiff}
-          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          onClick={() => setOpen((value) => !value)}
+          aria-expanded={open}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm"
         >
           <ChevronDown
             className={cn(
-              "h-3 w-3 shrink-0 text-[var(--creed-text-tertiary)] transition-transform duration-200",
-              showDiff ? "rotate-0" : "-rotate-90"
+              "h-3.5 w-3.5 shrink-0 text-[var(--creed-text-tertiary)] transition-transform duration-200",
+              open ? "rotate-0" : "-rotate-90"
             )}
           />
-          <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", STATUS_DOT[status])} />
-          <span className="truncate text-[13px] text-[var(--creed-text-primary)]">{label}</span>
-          {status === "added" ? (
-            <span className="shrink-0 text-[11px] text-[var(--creed-text-tertiary)]">new section</span>
-          ) : status === "removed" ? (
-            <span className="shrink-0 text-[11px] text-[var(--creed-text-tertiary)]">removed</span>
-          ) : null}
+          <PersonBadge person={person} />
+          <span className="truncate text-[13px] text-[var(--creed-text-secondary)]">{label}</span>
           <span className="ml-auto inline-flex shrink-0 items-center gap-1.5">
-            <DiffBadge tone="added" count={stats.added} />
-            <DiffBadge tone="removed" count={stats.removed} />
+            <DiffBadge tone="added" count={stats.added} size="md" />
+            <DiffBadge tone="removed" count={stats.removed} size="md" />
           </span>
         </button>
         <button
           type="button"
           onClick={() => setShowComments((value) => !value)}
           aria-expanded={showComments}
-          title="Comment on this section"
+          title="Comment on this proposal"
           className={cn(
-            "flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--creed-text-tertiary)] hover:text-[var(--creed-text-primary)]",
+            "flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--creed-text-tertiary)] transition-colors hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)]",
             showComments ? "text-[var(--creed-text-primary)]" : ""
           )}
         >
-          <MessageSquare className="h-3.5 w-3.5" />
+          <MessageSquare className="h-4 w-4" />
         </button>
         <Button
           variant="ghost"
           size="sm"
-          className="h-6 gap-1 rounded-md px-1.5 text-[11px] text-[var(--creed-text-secondary)] hover:text-[var(--creed-text-primary)]"
+          className="h-7 gap-1 rounded-md px-2 text-sm text-[var(--creed-text-secondary)] hover:text-[var(--creed-text-primary)]"
           disabled={busy}
           onClick={onReject}
         >
-          <X className="h-3 w-3" />
+          <X className="h-3.5 w-3.5" />
           Reject
         </Button>
         <Button
           size="sm"
-          className="h-6 gap-1 rounded-md bg-[var(--creed-accent)] px-2 text-[11px] text-white hover:bg-[var(--creed-accent-hover)]"
+          className="h-7 gap-1 rounded-md bg-[#2563eb] px-2.5 text-sm text-white hover:bg-[#1d4ed8]"
           disabled={busy}
           onClick={onAccept}
         >
-          <Check className="h-3 w-3" />
+          <Check className="h-3.5 w-3.5" />
           Accept
         </Button>
       </div>
       <AnimatePresence initial={false}>
-        {showDiff ? (
+        {open ? (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
@@ -736,13 +884,16 @@ function ProposalSectionRow({
             transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
             className="overflow-hidden"
           >
-            <div className="px-2.5 pb-2.5">
-              {proposal.kind === "document-section" ? (
-                <DiffText before={before} after={after} />
-              ) : (
+            <div className="border-t border-[var(--creed-border)]" />
+            {proposal.kind === "document-section" ? (
+              <div className="creed-diff-block creed-scrollbar max-h-[280px] overflow-y-auto px-3.5 py-3 text-[13px] leading-6">
+                <DiffChunks parts={parts} />
+              </div>
+            ) : (
+              <div className="px-3 py-3">
                 <SectionGroupedDiff before={before} after={after} />
-              )}
-            </div>
+              </div>
+            )}
           </motion.div>
         ) : null}
       </AnimatePresence>
@@ -755,7 +906,7 @@ function ProposalSectionRow({
             transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
             className="overflow-hidden"
           >
-            <ProposalCommentThread documentId={documentId} proposalId={proposal.id} users={users} />
+            <ProposalCommentThread documentId={documentId} proposalId={proposal.id} users={users} onPosted={onCommentPosted} />
           </motion.div>
         ) : null}
       </AnimatePresence>
@@ -763,17 +914,19 @@ function ProposalSectionRow({
   );
 }
 
-// The comment thread anchored to a single proposal. Comments are loaded lazily
-// when the thread is first opened; open comments here are auto-resolved server
-// side when the proposal is accepted or rejected.
+// The comment thread anchored to a single proposal. Loaded lazily; open
+// comments here are auto-resolved server-side when the proposal is accepted or
+// rejected.
 function ProposalCommentThread({
   documentId,
   proposalId,
   users,
+  onPosted,
 }: {
   documentId: string;
   proposalId: string;
   users: WorkspaceUser[];
+  onPosted?: (comment: DocumentComment) => void;
 }) {
   const [comments, setComments] = useState<ProposalComment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -793,7 +946,7 @@ function ProposalCommentThread({
         setComments(payload.comments ?? []);
       }
     } catch {
-      // Non-fatal: leave the last known thread in place.
+      // Non-fatal.
     } finally {
       setLoading(false);
     }
@@ -806,6 +959,12 @@ function ProposalCommentThread({
   async function submit() {
     const text = body.trim();
     if (!text || posting) return;
+    // Derive @mentions from the body the same way the normal comment and reply
+    // composers do, so the shared notification pipeline fires for proposal
+    // comments too (a "@Display Name" in the text mentions that member).
+    const mentionedUserIds = users
+      .filter((user) => user.label && text.includes(`@${user.label}`))
+      .map((user) => user.id);
     setPosting(true);
     try {
       const response = await fetch(
@@ -813,15 +972,21 @@ function ProposalCommentThread({
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ body: text, proposalId }),
+          body: JSON.stringify({ body: text, proposalId, mentionedUserIds }),
         }
       );
       if (!response.ok) {
         const payload = (await response.json().catch(() => ({}))) as { error?: string };
         throw new Error(payload.error || "Could not add comment.");
       }
+      const payload = (await response.json().catch(() => ({}))) as { comment?: DocumentComment };
       setBody("");
       await load();
+      // Surface the new comment to the sidebar (reusing the same comment
+      // placement as normal comments) without a full page reload.
+      if (payload.comment) {
+        onPosted?.(payload.comment);
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not add comment.");
     } finally {
@@ -867,27 +1032,25 @@ function ProposalCommentThread({
           );
         })
       )}
-      <div className="flex items-center gap-2 pt-1">
-        <input
+      <div className="space-y-1.5 pt-1">
+        <MentionTextarea
           value={body}
-          onChange={(event) => setBody(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              void submit();
-            }
-          }}
-          placeholder="Comment on this proposal"
-          className="min-w-0 flex-1 rounded-md border border-[var(--creed-border)] bg-[var(--creed-surface-raised)] px-2.5 py-1.5 text-[13px] text-[var(--creed-text-primary)] outline-none placeholder:text-[var(--creed-text-tertiary)] focus:border-[var(--creed-accent)]"
+          onChange={setBody}
+          users={users}
+          placeholder="Comment on this proposal. Use @ to mention someone."
+          onSubmit={() => void submit()}
+          className="min-h-[52px] rounded-md border border-[var(--creed-border)] bg-[var(--creed-surface-raised)] px-2.5 py-1.5 text-[13px]"
         />
-        <Button
-          size="sm"
-          className="h-8 shrink-0 gap-1 rounded-md bg-[var(--creed-accent)] px-2.5 text-[12px] text-white hover:bg-[var(--creed-accent-hover)]"
-          disabled={posting || !body.trim()}
-          onClick={() => void submit()}
-        >
-          <Send className="h-3.5 w-3.5" />
-        </Button>
+        <div className="flex justify-end">
+          <Button
+            size="sm"
+            className="h-8 shrink-0 gap-1 rounded-md bg-[#2563eb] px-2.5 text-[12px] text-white hover:bg-[#1d4ed8]"
+            disabled={posting || !body.trim()}
+            onClick={() => void submit()}
+          >
+            <Send className="h-3.5 w-3.5" />
+          </Button>
+        </div>
       </div>
     </div>
   );
