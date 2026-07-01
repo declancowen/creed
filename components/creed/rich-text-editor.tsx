@@ -1046,15 +1046,18 @@ export function RichTextEditor({
     const containerRect = container.getBoundingClientRect();
     const GAP = 6;
     const spaceAbove = tableRect.top - containerRect.top;
-    const placeBelow = spaceAbove < 40;
+    // Prefer just above the table's top-right. When there isn't room above
+    // (table hugs the top of the editor) we inset the bar into the table's
+    // top-right corner rather than dropping it below the whole table.
+    const inset = spaceAbove < 34;
     setTableToolbar({
-      // x is the table's right edge; the bar is translated -100% so its right
-      // edge lines up there (right-anchored).
+      // x is the table's right edge; the bar is translated -100% on X so its
+      // right edge lines up there (right-anchored).
       x: tableRect.right - containerRect.left,
-      y: placeBelow
-        ? tableRect.bottom - containerRect.top + GAP
+      y: inset
+        ? tableRect.top - containerRect.top + 4
         : tableRect.top - containerRect.top - GAP,
-      placeBelow,
+      placeBelow: inset,
     });
   }, []);
 
@@ -1067,16 +1070,17 @@ export function RichTextEditor({
 
     function locateTable(target: EventTarget | null): HTMLElement | null {
       if (!(target instanceof HTMLElement) || !editorDom.contains(target)) return null;
-      return (
-        (target.closest(".tableWrapper") as HTMLElement | null) ??
-        (target.closest("table") as HTMLElement | null)
-      );
+      return target.closest(".tableWrapper, table") as HTMLElement | null;
     }
 
     function handleOver(event: MouseEvent) {
       const tableEl = locateTable(event.target);
       if (tableEl) {
         clearTableHideTimer();
+        // Only recompute + re-render when the hovered table actually changes.
+        // mouseover bubbles per element, so without this guard moving within a
+        // table fires a getBoundingClientRect + setState storm (the jank).
+        if (hoveredTableRef.current === tableEl) return;
         hoveredTableRef.current = tableEl;
         positionTableToolbar(tableEl);
       } else if (hoveredTableRef.current) {
