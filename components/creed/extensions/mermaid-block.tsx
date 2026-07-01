@@ -72,7 +72,11 @@ export const MermaidBlock = Node.create({
   },
 
   parseHTML() {
-    return [{ tag: 'pre[data-type="mermaid"]', preserveWhitespace: "full" }];
+    // Both this node and CodeBlockLowlight register a rule that matches a
+    // `<pre>`. CodeBlockLowlight's `pre` rule is broad, so without a higher
+    // priority here a `<pre data-type="mermaid">` gets claimed as a plain code
+    // block and renders as highlighted source instead of a live diagram.
+    return [{ tag: 'pre[data-type="mermaid"]', priority: 100, preserveWhitespace: "full" }];
   },
 
   renderHTML({ node, HTMLAttributes }) {

@@ -965,57 +965,87 @@ export function RichTextEditor({
     },
   });
 
-  // Anchor the in-table controls just above (or below, near the top of the
-  // doc) the active table. Positioned absolutely inside containerRef so the
-  // offset is page-scroll invariant and the bar tracks the table on scroll.
-  function updateTableToolbar(currentEditor: Editor) {
-    if (readOnly || !containerRef.current || !currentEditor.isActive("table")) {
-      setTableToolbar(null);
-      return;
-    }
+  // Show the in-table controls only while the pointer is over a table, anchored
+  // above the table's top-right corner. Uses delegated mouseover/mouseout on
+  // the editor DOM (tables are ProseMirror-rendered, not React children) and a
+  // short hide delay so the pointer can travel from the table onto the bar.
+  const hoveredTableRef = useRef<HTMLElement | null>(null);
+  const tableHideTimerRef = useRef<number | null>(null);
 
-    const { state, view } = currentEditor;
-    const { $from } = state.selection;
-    let tablePos = -1;
-    for (let depth = $from.depth; depth > 0; depth -= 1) {
-      if ($from.node(depth).type.name === "table") {
-        tablePos = $from.before(depth);
-        break;
-      }
+  const clearTableHideTimer = useCallback(() => {
+    if (tableHideTimerRef.current !== null) {
+      window.clearTimeout(tableHideTimerRef.current);
+      tableHideTimerRef.current = null;
     }
-    if (tablePos < 0) {
-      setTableToolbar(null);
-      return;
-    }
+  }, []);
 
-    const dom = view.nodeDOM(tablePos);
-    const tableEl =
-      dom instanceof HTMLElement
-        ? ((dom.closest(".tableWrapper") as HTMLElement | null) ?? dom)
-        : null;
-    if (!tableEl) {
+  const scheduleTableToolbarHide = useCallback(() => {
+    clearTableHideTimer();
+    tableHideTimerRef.current = window.setTimeout(() => {
+      hoveredTableRef.current = null;
       setTableToolbar(null);
-      return;
-    }
+    }, 140);
+  }, [clearTableHideTimer]);
 
+  const positionTableToolbar = useCallback((tableEl: HTMLElement) => {
+    const container = containerRef.current;
+    if (!container) return;
     const tableRect = tableEl.getBoundingClientRect();
-    const containerRect = containerRef.current.getBoundingClientRect();
-    const GAP = 8;
+    const containerRect = container.getBoundingClientRect();
+    const GAP = 6;
     const spaceAbove = tableRect.top - containerRect.top;
-    // When the table hugs the top of the editor there's no room for the bar
-    // above it, so drop it just below the table instead.
-    const placeBelow = spaceAbove < 44;
+    const placeBelow = spaceAbove < 40;
     setTableToolbar({
-      x: tableRect.left - containerRect.left + tableRect.width / 2,
+      // x is the table's right edge; the bar is translated -100% so its right
+      // edge lines up there (right-anchored).
+      x: tableRect.right - containerRect.left,
       y: placeBelow
         ? tableRect.bottom - containerRect.top + GAP
         : tableRect.top - containerRect.top - GAP,
       placeBelow,
     });
-  }
+  }, []);
+
+  useEffect(() => {
+    if (!editor || readOnly) {
+      setTableToolbar(null);
+      return;
+    }
+    const editorDom = editor.view.dom as HTMLElement;
+
+    function locateTable(target: EventTarget | null): HTMLElement | null {
+      if (!(target instanceof HTMLElement) || !editorDom.contains(target)) return null;
+      return (
+        (target.closest(".tableWrapper") as HTMLElement | null) ??
+        (target.closest("table") as HTMLElement | null)
+      );
+    }
+
+    function handleOver(event: MouseEvent) {
+      const tableEl = locateTable(event.target);
+      if (tableEl) {
+        clearTableHideTimer();
+        hoveredTableRef.current = tableEl;
+        positionTableToolbar(tableEl);
+      } else if (hoveredTableRef.current) {
+        scheduleTableToolbarHide();
+      }
+    }
+
+    function handleLeave() {
+      scheduleTableToolbarHide();
+    }
+
+    editorDom.addEventListener("mouseover", handleOver);
+    editorDom.addEventListener("mouseleave", handleLeave);
+    return () => {
+      editorDom.removeEventListener("mouseover", handleOver);
+      editorDom.removeEventListener("mouseleave", handleLeave);
+      clearTableHideTimer();
+    };
+  }, [editor, readOnly, positionTableToolbar, scheduleTableToolbarHide, clearTableHideTimer]);
 
   function syncSelectionToolbar(currentEditor: Editor) {
-    updateTableToolbar(currentEditor);
     if (readOnly) {
       setSelectionToolbar(null);
       return;
@@ -1503,14 +1533,16 @@ export function RichTextEditor({
 
       {editor && tableToolbar && !readOnly ? (
         <div
-          className="absolute z-40 flex w-fit flex-wrap items-center gap-0.5 rounded-lg border border-[var(--creed-border)] bg-[var(--creed-surface)] p-1 text-[var(--creed-text-primary)] shadow-[0_6px_20px_rgba(28,28,26,0.10)]"
+          className="absolute z-40 flex w-max flex-nowrap items-center gap-0.5 whitespace-nowrap rounded-lg border border-[var(--creed-border)] bg-[var(--creed-surface)] p-1 text-[var(--creed-text-primary)] shadow-[0_6px_20px_rgba(28,28,26,0.10)]"
           style={{
             left: tableToolbar.x,
             top: tableToolbar.y,
             transform: tableToolbar.placeBelow
-              ? "translate(-50%, 0)"
-              : "translate(-50%, -100%)",
+              ? "translate(-100%, 0)"
+              : "translate(-100%, -100%)",
           }}
+          onMouseEnter={clearTableHideTimer}
+          onMouseLeave={scheduleTableToolbarHide}
           onMouseDown={(event) => {
             // Keep the table cell selection alive when a control is pressed.
             event.preventDefault();
