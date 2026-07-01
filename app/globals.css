@@ -742,6 +742,7 @@
 .ProseMirror table th,
 .creed-table th {
   background: var(--creed-surface-raised);
+  border-bottom-width: 2px;
   font-weight: 600;
 }
 .ProseMirror table td > *,
