@@ -50,6 +50,19 @@ function isDarkTheme() {
 
 let renderSeq = 0;
 
+// Inline SVG markup for the block's view-toggle + edit controls (the node view
+// builds plain DOM, so we can't use the React icon components here).
+function svgMarkup(inner: string) {
+  return `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:15px;height:15px;display:block;flex:0 0 auto">${inner}</svg>`;
+}
+const DIAGRAM_ICON = svgMarkup(
+  '<rect x="3" y="3" width="7" height="6" rx="1"/><rect x="14" y="15" width="7" height="6" rx="1"/><path d="M6.5 9v3a2 2 0 0 0 2 2h9"/>'
+);
+const CODE_ICON = svgMarkup('<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>');
+const PENCIL_ICON = svgMarkup(
+  '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>'
+);
+
 export const MermaidBlock = Node.create({
   name: "mermaidBlock",
   group: "block",
@@ -111,9 +124,41 @@ export const MermaidBlock = Node.create({
       dom.className = "creed-mermaid";
       dom.setAttribute("data-type", "mermaid");
 
+      // Controls: [Diagram | Code] view toggle + an Edit button. Revealed on
+      // hover (see globals.css). Diagram shows the rendered SVG, Code shows the
+      // Mermaid source read-only, Edit opens the editable textarea.
+      const controls = document.createElement("div");
+      controls.className = "creed-mermaid-controls";
+      controls.contentEditable = "false";
+
+      function makeTab(className: string, title: string, innerHTML: string) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = className;
+        button.title = title;
+        button.setAttribute("aria-label", title);
+        button.innerHTML = innerHTML;
+        button.addEventListener("mousedown", (event) => event.preventDefault());
+        return button;
+      }
+
+      const diagramTab = makeTab("creed-mermaid-tab", "Diagram view", DIAGRAM_ICON);
+      const codeTab = makeTab("creed-mermaid-tab", "Code view", CODE_ICON);
+      const editTab = makeTab(
+        "creed-mermaid-tab creed-mermaid-tab-edit",
+        "Edit diagram",
+        `${PENCIL_ICON}<span>Edit</span>`
+      );
+      controls.append(diagramTab, codeTab, editTab);
+
       const preview = document.createElement("div");
       preview.className = "creed-mermaid-preview";
       preview.setAttribute("role", "img");
+
+      // Read-only source view (Code tab).
+      const codeView = document.createElement("pre");
+      codeView.className = "creed-mermaid-code";
+      codeView.style.display = "none";
 
       const editRow = document.createElement("div");
       editRow.className = "creed-mermaid-edit";
@@ -137,13 +182,9 @@ export const MermaidBlock = Node.create({
       editActions.append(cancelButton, doneButton);
       editRow.append(textarea, editActions);
 
-      const editButton = document.createElement("button");
-      editButton.type = "button";
-      editButton.className = "creed-mermaid-edit-trigger";
-      editButton.textContent = "Edit diagram";
-      editButton.setAttribute("aria-label", "Edit diagram source");
+      dom.append(controls, preview, codeView, editRow);
 
-      dom.append(preview, editButton, editRow);
+      let mode: "diagram" | "code" = "diagram";
 
       function commit(next: string) {
         const pos = typeof getPos === "function" ? getPos() : null;
@@ -160,7 +201,7 @@ export const MermaidBlock = Node.create({
         const trimmed = source.trim();
         if (!trimmed) {
           preview.innerHTML =
-            '<span class="creed-mermaid-empty">Empty diagram. Click “Edit diagram” to add Mermaid syntax.</span>';
+            '<span class="creed-mermaid-empty">Empty diagram. Click “Edit” to add Mermaid syntax.</span>';
           return;
         }
 
@@ -190,13 +231,41 @@ export const MermaidBlock = Node.create({
         }
       }
 
+      function syncTabs() {
+        diagramTab.classList.toggle("is-active", mode === "diagram" && !editing);
+        codeTab.classList.toggle("is-active", mode === "code" && !editing);
+        editTab.classList.toggle("is-active", editing);
+      }
+
+      // Render the current non-editing view (diagram SVG or code source).
+      function showView() {
+        editRow.style.display = "none";
+        if (mode === "code") {
+          preview.style.display = "none";
+          codeView.style.display = "";
+          codeView.textContent = source.trim() || "Empty diagram.";
+        } else {
+          codeView.style.display = "none";
+          preview.style.display = "";
+          void renderDiagram();
+        }
+        syncTabs();
+      }
+
+      function setMode(next: "diagram" | "code") {
+        if (editing) return;
+        mode = next;
+        showView();
+      }
+
       function enterEdit() {
         if (!editor.isEditable) return;
         editing = true;
         textarea.value = source;
-        editRow.style.display = "";
-        editButton.style.display = "none";
         preview.style.display = "none";
+        codeView.style.display = "none";
+        editRow.style.display = "";
+        syncTabs();
         // Autosize + focus after paint.
         window.requestAnimationFrame(() => {
           textarea.style.height = "auto";
@@ -214,13 +283,18 @@ export const MermaidBlock = Node.create({
           }
         }
         editing = false;
-        editRow.style.display = "none";
-        editButton.style.display = "";
-        preview.style.display = "";
-        renderDiagram();
+        showView();
       }
 
-      editButton.addEventListener("click", (event) => {
+      diagramTab.addEventListener("click", (event) => {
+        event.preventDefault();
+        setMode("diagram");
+      });
+      codeTab.addEventListener("click", (event) => {
+        event.preventDefault();
+        setMode("code");
+      });
+      editTab.addEventListener("click", (event) => {
         event.preventDefault();
         enterEdit();
       });
@@ -252,7 +326,7 @@ export const MermaidBlock = Node.create({
         }
       });
 
-      void renderDiagram();
+      showView();
 
       return {
         dom,
@@ -262,7 +336,7 @@ export const MermaidBlock = Node.create({
           const nextSource = updated.attrs.source ?? "";
           if (nextSource !== source && !editing) {
             source = nextSource;
-            void renderDiagram();
+            showView();
           }
           return true;
         },

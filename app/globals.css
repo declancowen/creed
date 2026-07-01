@@ -653,24 +653,65 @@
   opacity: 0.85;
 }
 
-.ProseMirror .creed-mermaid-edit-trigger {
+.ProseMirror .creed-mermaid-controls {
   position: absolute;
   top: 0.5rem;
   right: 0.5rem;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
   border: 1px solid var(--creed-border);
   border-radius: 0.5rem;
   background: var(--creed-surface);
-  padding: 0.2rem 0.55rem;
-  font-size: 0.75rem;
-  font-weight: 500;
-  color: var(--creed-text-secondary);
+  box-shadow: 0 2px 8px rgba(28, 28, 26, 0.08);
   opacity: 0;
   transition: opacity 160ms cubic-bezier(0.22, 1, 0.36, 1);
-  cursor: pointer;
 }
 
-.ProseMirror .creed-mermaid:hover .creed-mermaid-edit-trigger {
+.ProseMirror .creed-mermaid:hover .creed-mermaid-controls,
+.ProseMirror .creed-mermaid-controls:focus-within {
   opacity: 1;
+}
+
+.ProseMirror .creed-mermaid-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--creed-text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+
+.ProseMirror .creed-mermaid-tab:hover {
+  background: var(--creed-surface-raised);
+  color: var(--creed-text-primary);
+}
+
+.ProseMirror .creed-mermaid-tab.is-active {
+  background: var(--creed-surface-raised);
+  color: var(--creed-text-primary);
+}
+
+.ProseMirror .creed-mermaid-code {
+  margin: 0;
+  padding: 0.4rem 0.2rem;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.82em;
+  line-height: 1.55;
+  white-space: pre;
+  overflow-x: auto;
+  color: var(--creed-text-primary);
+  background: transparent;
+  tab-size: 2;
 }
 
 .ProseMirror .creed-mermaid-source {
