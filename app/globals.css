@@ -712,43 +712,52 @@
   color: var(--creed-surface);
 }
 
-/* Tables. The editor wraps resizable tables in `.tableWrapper`; on the read
-   side (markdownToRichHtml) a plain `<table class="creed-table">` renders with
-   the same borders so live editing and rendered Markdown match. */
+/* Tables. Applies to the editor (where a resizable TableView renders the
+   `<table>` without our configured class) and to any raw rendered Markdown
+   (`.creed-table`, e.g. the diff panel). Grid lines on every cell, and text
+   pinned to the top-left so ragged row heights read cleanly. */
 .ProseMirror .tableWrapper {
   margin: 1em 0;
   overflow-x: auto;
 }
-.ProseMirror table.creed-table {
+.ProseMirror table,
+.creed-table {
   border-collapse: collapse;
   width: 100%;
   table-layout: fixed;
   font-size: 0.95em;
+  border: 1px solid var(--creed-border-strong);
 }
-.ProseMirror table.creed-table td,
-.ProseMirror table.creed-table th {
-  border: 1px solid var(--creed-border);
+.ProseMirror table td,
+.ProseMirror table th,
+.creed-table td,
+.creed-table th {
+  border: 1px solid var(--creed-border-strong);
   padding: 0.4em 0.6em;
   vertical-align: top;
   text-align: left;
   position: relative;
   min-width: 3em;
 }
-.ProseMirror table.creed-table th {
+.ProseMirror table th,
+.creed-table th {
   background: var(--creed-surface-raised);
   font-weight: 600;
 }
-.ProseMirror table.creed-table p {
+.ProseMirror table td > *,
+.ProseMirror table th > *,
+.creed-table td > *,
+.creed-table th > * {
   margin: 0;
 }
-.ProseMirror table.creed-table .selectedCell::after {
+.ProseMirror table .selectedCell::after {
   content: "";
   position: absolute;
   inset: 0;
   background: color-mix(in srgb, var(--creed-text-primary) 8%, transparent);
   pointer-events: none;
 }
-.ProseMirror table.creed-table .column-resize-handle {
+.ProseMirror table .column-resize-handle {
   position: absolute;
   right: -2px;
   top: 0;
