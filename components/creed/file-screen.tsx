@@ -7,6 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
@@ -151,6 +152,12 @@ import {
   shiftSubtreeDepth,
 } from "@/lib/section-hierarchy";
 import { cn } from "@/lib/utils";
+import {
+  useEditorView,
+  setEditorView,
+  EDITOR_WIDTH_PX,
+  EDITOR_FONT_SCALE,
+} from "@/lib/editor-view";
 
 const activityStatuses: Array<{ label: string; value: "all" | ActivityStatus }> = [
   { label: "All", value: "all" },
@@ -1122,6 +1129,7 @@ export function FileScreen({
   const inputRef = useRef<HTMLInputElement | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const editorScrollRef = useRef<HTMLDivElement | null>(null);
+  const editorView = useEditorView();
   const composerAreaRef = useRef<HTMLDivElement | null>(null);
   const lastDocumentStatusKeyRef = useRef<string | null>(null);
   // `exportMarkdown` is re-created by the provider whenever state changes,
@@ -2219,7 +2227,15 @@ export function FileScreen({
       <div className="relative flex h-full min-h-0 bg-[var(--creed-surface)] transition-colors duration-200">
         <div className="min-w-0 flex-1">
           <div ref={editorScrollRef} className="h-full overflow-y-auto overscroll-contain creed-scrollbar">
-            <div className="mx-auto max-w-[920px] px-4 py-6 pb-28 md:px-12 md:py-10 md:pb-10 xl:px-16">
+            <div
+              className="mx-auto px-4 py-6 pb-28 md:px-12 md:py-10 md:pb-10 xl:px-16"
+              style={{
+                maxWidth: EDITOR_WIDTH_PX[editorView.width],
+                // Scoped var consumed by `.ProseMirror` font-size (globals.css)
+                // so only editor content scales, not the header chrome.
+                "--editor-font-scale": String(EDITOR_FONT_SCALE[editorView.textScale]),
+              } as CSSProperties}
+            >
               <div
                 data-file-sticky-header
                 className="sticky top-0 z-20 mb-8 -mx-4 bg-[color:var(--creed-surface)]/95 px-4 pb-5 pt-2 backdrop-blur-sm md:-mx-12 md:mb-12 md:px-12 md:pb-7 xl:-mx-16 xl:px-16"
@@ -2571,6 +2587,60 @@ export function FileScreen({
                           ) : null}
                           {copiedAction === "download" ? "Downloaded" : "Download"}
                         </AnimatedMenuIconItem>
+                        <DropdownMenuSeparator />
+                        <div className="px-2 py-1.5">
+                          <div className="mb-1.5 px-0.5 text-[11px] font-medium uppercase tracking-wide text-[var(--creed-text-tertiary)]">
+                            View
+                          </div>
+                          <div className="mb-1.5 flex items-center justify-between gap-3">
+                            <span className="text-xs text-[var(--creed-text-secondary)]">Text</span>
+                            <div className="flex overflow-hidden rounded-md border border-[var(--creed-border)]">
+                              {(["small", "large"] as const).map((value) => (
+                                <button
+                                  key={value}
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    setEditorView({ textScale: value });
+                                  }}
+                                  className={cn(
+                                    "px-2.5 py-1 text-xs transition-colors",
+                                    editorView.textScale === value
+                                      ? "bg-[var(--creed-surface-raised)] text-[var(--creed-text-primary)]"
+                                      : "text-[var(--creed-text-secondary)] hover:text-[var(--creed-text-primary)]"
+                                  )}
+                                >
+                                  {value === "small" ? "Small" : "Large"}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-xs text-[var(--creed-text-secondary)]">Width</span>
+                            <div className="flex overflow-hidden rounded-md border border-[var(--creed-border)]">
+                              {(["narrow", "wide"] as const).map((value) => (
+                                <button
+                                  key={value}
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    setEditorView({ width: value });
+                                  }}
+                                  className={cn(
+                                    "px-2.5 py-1 text-xs transition-colors",
+                                    editorView.width === value
+                                      ? "bg-[var(--creed-surface-raised)] text-[var(--creed-text-primary)]"
+                                      : "text-[var(--creed-text-secondary)] hover:text-[var(--creed-text-primary)]"
+                                  )}
+                                >
+                                  {value === "narrow" ? "Narrow" : "Wide"}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
                         {!documentMode ? (
                           <>
                             <DropdownMenuSeparator />
