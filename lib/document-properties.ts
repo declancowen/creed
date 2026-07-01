@@ -121,7 +121,7 @@ export const DEFAULT_VISIBLE_DOCUMENT_PROPERTIES: DocumentPropertyKey[] = [
 
 export const DEFAULT_DOCUMENT_DASHBOARD_PREFERENCES = {
   viewMode: "list",
-  groupBy: "status",
+  groupBy: "none",
   sortBy: "updated",
   sortDir: "desc",
   visibleProperties: DEFAULT_VISIBLE_DOCUMENT_PROPERTIES,
@@ -201,6 +201,32 @@ export const DOCUMENT_TONE_DOT: Record<DocumentTone, string> = {
   purple: "bg-[#9333EA]",
   violet: "bg-[#7C3AED]",
   indigo: "bg-[#4F46E5]",
+};
+
+// Same palette as DOCUMENT_TONE_DOT but as raw hex, for inline `style` use where
+// dynamically-selected arbitrary Tailwind classes are not reliably generated
+// (e.g. group headers on the documents dashboard).
+export const DOCUMENT_TONE_DOT_COLOR: Record<DocumentTone, string> = {
+  slate: "#64748B",
+  blue: "#2563EB",
+  sky: "#0284C7",
+  cyan: "#0891B2",
+  teal: "#0D9488",
+  mint: "#10B981",
+  emerald: "#059669",
+  green: "#16A34A",
+  lime: "#65A30D",
+  yellow: "#CA8A04",
+  amber: "#D97706",
+  orange: "#EA580C",
+  coral: "#F97316",
+  red: "#DC2626",
+  rose: "#E11D48",
+  pink: "#DB2777",
+  fuchsia: "#C026D3",
+  purple: "#9333EA",
+  violet: "#7C3AED",
+  indigo: "#4F46E5",
 };
 
 const DOCUMENT_STATUS_TONE: Record<DocumentStatus, DocumentTone> = {

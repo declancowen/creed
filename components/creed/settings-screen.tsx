@@ -2,33 +2,22 @@
 
 import {
   useEffect,
-  useMemo,
   useState,
-  type ComponentType,
   type ReactNode,
 } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import type { UserIdentity } from "@supabase/supabase-js";
-import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts";
 import {
-  Check,
-  ChevronDown,
   ChevronRight,
-  Download,
-  Eye,
   EyeOff,
+  FileText,
+  Folder,
   LoaderCircle,
   PenTool,
   Plug,
   ShieldCheck,
   Unplug,
 } from "@/components/ui/phosphor-icons";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -41,62 +30,32 @@ import {
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { SimpleTooltip } from "@/components/ui/tooltip";
-import {
-  ChartContainer,
-  ChartTooltip,
-  ChartTooltipContent,
-  type ChartConfig,
-} from "@/components/ui/chart";
-import { StackTopBar } from "@/components/creed/rounded-bar";
-import { AnimatedIconButton } from "@/components/creed/animated-icon-action";
+import { IntegrationGlyph } from "@/components/creed/brand";
 import { toast } from "sonner";
 import { SearchableSelect } from "@/components/creed/searchable-select";
 import { useCreed } from "@/components/creed/creed-provider";
 import {
   clearSettingsRepoCache,
-  clearSettingsUsageCache,
   hashSettingsMarkdown,
-  loadSettingsAiSettings,
-  loadSettingsAiModels,
   loadSettingsBranches,
   loadSettingsRepos,
-  loadSettingsUsage,
   loadSettingsVersionStatus,
-  setCachedSettingsAiSettings,
-  type AiUsageRange,
-  type AiUsageSummary,
   type BranchOption,
-  type PublicAiSettings,
   type RepoOption,
   type VersionControlStatus,
 } from "@/components/creed/settings-preload";
-import {
-  AI_MODEL_CATALOG,
-  AI_MODEL_QUALITY_META,
-  DEFAULT_AI_MODEL_ID,
-  formatModelCost,
-  type AiModelCatalogItem,
-  type AiModelQuality,
-} from "@/lib/ai/model-catalog";
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
 import {
   accentColorMap,
-  type AgentPermission,
   type IntegrationConnectionStatus,
+  type McpClient,
 } from "@/lib/creed-data";
+import type { SharedDocumentFolder, SharedDocumentSummary } from "@/lib/shared-documents";
+import type { EditPolicyValue } from "@/lib/workspace-settings";
 import { cn } from "@/lib/utils";
 import { RichTextEditor } from "@/components/creed/rich-text-editor";
 
 const GITHUB_CONNECTED_EVENT = "creed:github-connected";
-
-function forceByokSettings(settings: PublicAiSettings): PublicAiSettings {
-  return { ...settings, aiMode: "byok" };
-}
-
-function looksLikeApiKey(value: string) {
-  const trimmed = value.trim();
-  return trimmed.length >= 20 && /^[A-Za-z0-9._-]+$/.test(trimmed);
-}
 
 function formatGitHubConnectError(error: unknown) {
   const message =
@@ -177,25 +136,31 @@ export function SettingsScreen() {
   const {
     state,
     setDisplayName,
-    setSectionPermission,
-    setAllSectionPermissions,
     setVersionControlConfig,
     exportMarkdown,
-    exportActivityJson,
-    exportAllDataJson,
     refreshState,
     restoreSection,
     deleteSection,
   } = useCreed();
   const [nameDraft, setNameDraft] = useState(state.user.name);
   const [archivedDeleteTarget, setArchivedDeleteTarget] = useState<{
+    kind: "section" | "document" | "folder";
     id: string;
     name: string;
   } | null>(null);
   const [expandedArchived, setExpandedArchived] = useState<string | null>(null);
+  const [mcpRemoveTarget, setMcpRemoveTarget] = useState<McpClient | null>(null);
+  const [removingMcpClientId, setRemovingMcpClientId] = useState<string | null>(null);
   const archivedSections = state.sections.filter((section) => section.archived);
-  const [permsOpen, setPermsOpen] = useState(false);
+  const [archivedDocuments, setArchivedDocuments] = useState<SharedDocumentSummary[]>([]);
+  const [archivedFolders, setArchivedFolders] = useState<SharedDocumentFolder[]>([]);
+  const [archivedItemsLoading, setArchivedItemsLoading] = useState(true);
+  const [busyArchivedItemId, setBusyArchivedItemId] = useState<string | null>(null);
   const [connectingGitHub, setConnectingGitHub] = useState(false);
+  const [editPolicy, setEditPolicy] = useState<{ human: EditPolicyValue; agent: EditPolicyValue }>({
+    human: "propose",
+    agent: "propose",
+  });
   const [disconnectingGitHub, setDisconnectingGitHub] = useState(false);
   // Login identities (Google + X) shown in Integrations, loaded live from
   // Supabase so connect / disconnect reflects the real account state.
@@ -208,38 +173,153 @@ export function SettingsScreen() {
   const [branches, setBranches] = useState<BranchOption[]>([]);
   const [versionStatus, setVersionStatus] = useState<VersionControlStatus | null>(null);
   const [githubRefreshTick, setGitHubRefreshTick] = useState(0);
-  const [aiSettings, setAiSettings] = useState<PublicAiSettings>({
-    provider: "openrouter",
-    selectedModelId: DEFAULT_AI_MODEL_ID,
-    keyStatus: "missing",
-    aiMode: "byok",
-  });
-  const [aiKeyDraft, setAiKeyDraft] = useState("");
-  const [aiSaving, setAiSaving] = useState(false);
-  // aiNotice was an inline error string under the API key field. Replaced
-  // by toast notifications - see toast.error/.success calls in the handlers.
-  const [usageRange, setUsageRange] = useState<AiUsageRange>("7d");
-  const [usage, setUsage] = useState<AiUsageSummary | null>(null);
-  const [aiModels, setAiModels] = useState<AiModelCatalogItem[]>(AI_MODEL_CATALOG);
-  const canSaveAiKey = looksLikeApiKey(aiKeyDraft) && !aiSaving;
 
-  // The global control reflects the shared level of all non-hidden sections,
-  // or nothing when they differ (mixed). Hidden sections are ignored here.
-  const uniformPermission: AgentPermission | null = (() => {
-    const perms = state.sections
-      .filter((section) => section.agentPermission !== "hidden")
-      .map((section) => section.agentPermission);
-    return perms.length > 0 && perms.every((perm) => perm === perms[0]) ? perms[0] : null;
-  })();
+  // Archived documents and folders live in Supabase (not in Creed state), so
+  // the Archived card loads them separately and manages restore / delete here.
+  useEffect(() => {
+    let active = true;
+    async function loadArchivedItems() {
+      setArchivedItemsLoading(true);
+      try {
+        const [docsRes, foldersRes] = await Promise.all([
+          fetch("/api/app/documents?archived=true"),
+          fetch("/api/app/document-folders?archived=true"),
+        ]);
+        if (!active) return;
+        if (docsRes.ok) {
+          const payload = (await docsRes.json()) as { documents?: SharedDocumentSummary[] };
+          setArchivedDocuments(payload.documents ?? []);
+        }
+        if (foldersRes.ok) {
+          const payload = (await foldersRes.json()) as { folders?: SharedDocumentFolder[] };
+          setArchivedFolders(payload.folders ?? []);
+        }
+      } catch {
+        // Non-fatal: the card just shows nothing rather than blocking settings.
+      } finally {
+        if (active) setArchivedItemsLoading(false);
+      }
+    }
+    void loadArchivedItems();
+    return () => {
+      active = false;
+    };
+  }, []);
 
-  // Stats for the Data card: gives the export buttons a sense of weight
-  // ("this is everything you've built") without being a dashboard. Rendered
-  // as small mono chips.
-  const dataStats = useMemo(() => {
-    const sectionCount = state.sections.length;
-    const wordCount = exportMarkdown().trim().split(/\s+/).filter(Boolean).length;
-    return { sectionCount, wordCount };
-  }, [state.sections, exportMarkdown]);
+  async function restoreArchivedDocument(id: string, title: string) {
+    if (busyArchivedItemId) return;
+    setBusyArchivedItemId(id);
+    try {
+      const res = await fetch(`/api/app/documents/${encodeURIComponent(id)}/restore`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const payload = (await res.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(payload?.error || "Could not restore document.");
+      }
+      setArchivedDocuments((rows) => rows.filter((row) => row.id !== id));
+      toast.success(`Restored "${title}"`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not restore document.");
+    } finally {
+      setBusyArchivedItemId(null);
+    }
+  }
+
+  async function restoreArchivedFolder(id: string, name: string) {
+    if (busyArchivedItemId) return;
+    setBusyArchivedItemId(id);
+    try {
+      const res = await fetch(`/api/app/document-folders/${encodeURIComponent(id)}/restore`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const payload = (await res.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(payload?.error || "Could not restore folder.");
+      }
+      setArchivedFolders((rows) => rows.filter((row) => row.id !== id));
+      toast.success(`Restored "${name}"`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not restore folder.");
+    } finally {
+      setBusyArchivedItemId(null);
+    }
+  }
+
+  async function deleteArchivedDocument(id: string) {
+    setBusyArchivedItemId(id);
+    try {
+      const res = await fetch(`/api/app/documents/${encodeURIComponent(id)}?permanent=true`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const payload = (await res.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(payload?.error || "Could not delete document.");
+      }
+      setArchivedDocuments((rows) => rows.filter((row) => row.id !== id));
+      toast.success("Document deleted");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not delete document.");
+    } finally {
+      setBusyArchivedItemId(null);
+    }
+  }
+
+  async function deleteArchivedFolder(id: string) {
+    setBusyArchivedItemId(id);
+    try {
+      const res = await fetch(`/api/app/document-folders/${encodeURIComponent(id)}?permanent=true`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const payload = (await res.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(payload?.error || "Could not delete folder.");
+      }
+      setArchivedFolders((rows) => rows.filter((row) => row.id !== id));
+      toast.success("Folder deleted");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not delete folder.");
+    } finally {
+      setBusyArchivedItemId(null);
+    }
+  }
+
+  function confirmDeleteArchived() {
+    if (!archivedDeleteTarget) return;
+    const { kind, id } = archivedDeleteTarget;
+    if (kind === "section") deleteSection(id);
+    else if (kind === "document") void deleteArchivedDocument(id);
+    else void deleteArchivedFolder(id);
+    setArchivedDeleteTarget(null);
+  }
+
+  // Removes a connected MCP agent: revokes its access server-side, then pulls a
+  // fresh roster so the row disappears. Dialog stays open on failure so the user
+  // can retry; the toast carries the reason.
+  async function confirmRemoveMcpClient() {
+    const client = mcpRemoveTarget;
+    if (!client) return;
+    try {
+      setRemovingMcpClientId(client.id);
+      const response = await fetch(`/api/app/mcp/clients/${encodeURIComponent(client.id)}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) {
+        const body = (await response.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(body?.error ?? "Could not remove agent.");
+      }
+      setMcpRemoveTarget(null);
+      await refreshState();
+      toast.success(`Removed ${client.name}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Couldn't remove agent");
+    } finally {
+      setRemovingMcpClientId(null);
+    }
+  }
+
+  const hasArchivedItems =
+    archivedSections.length > 0 || archivedDocuments.length > 0 || archivedFolders.length > 0;
 
   const githubStatus = state.settings.integrations.github.status;
   const githubConnected = githubStatus === "connected";
@@ -359,54 +439,6 @@ export function SettingsScreen() {
   useEffect(() => {
     let cancelled = false;
 
-    async function loadAiSettings() {
-      try {
-        const [settings, models] = await Promise.all([
-          loadSettingsAiSettings(),
-          loadSettingsAiModels(),
-        ]);
-        if (!cancelled && settings) {
-          setAiSettings(forceByokSettings(settings));
-        }
-        if (!cancelled && models.length) {
-          setAiModels(models);
-        }
-      } catch {
-        return;
-      }
-    }
-
-    void loadAiSettings();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadUsage() {
-      try {
-        const loadedUsage = await loadSettingsUsage(usageRange, "byok");
-        if (!cancelled) {
-          setUsage(loadedUsage);
-        }
-      } catch {
-        return;
-      }
-    }
-
-    void loadUsage();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [usageRange, aiSettings.keyStatus]);
-
-  useEffect(() => {
-    let cancelled = false;
-
     async function updateStatus() {
       if (!githubConnected) {
         return;
@@ -445,16 +477,6 @@ export function SettingsScreen() {
     state.settings.versionControl.branch,
     state.settings.versionControl.lastSyncedContentHash,
   ]);
-
-  function downloadFile(filename: string, content: string, type: string) {
-    const blob = new Blob([content], { type });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = filename;
-    link.click();
-    URL.revokeObjectURL(url);
-  }
 
   // Load the user's linked identities so the Google / X rows reflect the real
   // account state, and refresh whenever auth changes (e.g. after a link).
@@ -630,6 +652,51 @@ export function SettingsScreen() {
     }
   }
 
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch("/api/app/workspace-settings", { cache: "no-store" });
+        if (!response.ok) return;
+        const payload = (await response.json()) as {
+          policy?: { human: EditPolicyValue; agent: EditPolicyValue };
+        };
+        if (!cancelled && payload.policy) {
+          setEditPolicy(payload.policy);
+        }
+      } catch {
+        // Non-fatal: the control stays disabled until settings load.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function saveEditPolicy(actor: "human" | "agent", value: EditPolicyValue) {
+    const previous = editPolicy;
+    setEditPolicy((current) => ({ ...current, [actor]: value }));
+    try {
+      const response = await fetch("/api/app/workspace-settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [actor]: value }),
+      });
+      if (!response.ok) {
+        throw new Error("save failed");
+      }
+      const payload = (await response.json()) as {
+        policy?: { human: EditPolicyValue; agent: EditPolicyValue };
+      };
+      if (payload.policy) {
+        setEditPolicy(payload.policy);
+      }
+    } catch {
+      setEditPolicy(previous);
+      toast.error("Couldn't save the edit policy.");
+    }
+  }
+
   function handleRepoChange(value: string) {
     if (!value) {
       setVersionControlConfig({
@@ -667,122 +734,6 @@ export function SettingsScreen() {
       branch: value,
       syncStatus: value ? "unknown" : "not-configured",
     });
-  }
-
-  async function handleSaveAiSettings() {
-    if (!looksLikeApiKey(aiKeyDraft)) {
-      return;
-    }
-
-    try {
-      setAiSaving(true);
-      const response = await fetch("/api/app/ai/settings", {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          apiKey: aiKeyDraft.trim() || undefined,
-          modelId: aiSettings.selectedModelId,
-          aiMode: "byok",
-        }),
-      });
-      const payload = (await response.json()) as {
-        settings?: PublicAiSettings;
-        error?: string;
-      };
-
-      if (!response.ok) {
-        throw new Error(payload.error || "Could not save AI settings.");
-      }
-
-      if (payload.settings) {
-        const settings = forceByokSettings(payload.settings);
-        setAiSettings(settings);
-        setCachedSettingsAiSettings(settings);
-        clearSettingsUsageCache();
-      }
-      setAiKeyDraft("");
-      toast.success("API key saved");
-    } catch {
-      toast.error("Couldn't save API key");
-    } finally {
-      setAiSaving(false);
-    }
-  }
-
-  async function handleClearAiKey() {
-    try {
-      setAiSaving(true);
-      const response = await fetch("/api/app/ai/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          clearApiKey: true,
-          modelId: aiSettings.selectedModelId,
-          aiMode: "byok",
-        }),
-      });
-      const payload = (await response.json()) as {
-        settings?: PublicAiSettings;
-        error?: string;
-      };
-      if (!response.ok) {
-        throw new Error(payload.error || "Could not clear API key.");
-      }
-      if (payload.settings) {
-        const settings = forceByokSettings(payload.settings);
-        setAiSettings(settings);
-        setCachedSettingsAiSettings(settings);
-        clearSettingsUsageCache();
-      }
-      setAiKeyDraft("");
-      toast.success("API key cleared");
-    } catch {
-      toast.error("Couldn't clear API key");
-    } finally {
-      setAiSaving(false);
-    }
-  }
-
-  async function handleModelChange(modelId: string) {
-    setAiSettings((current) => ({
-      ...current,
-      selectedModelId: modelId,
-    }));
-
-    if (aiSettings.keyStatus !== "valid") {
-      return;
-    }
-
-    try {
-      const response = await fetch("/api/app/ai/settings", {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          modelId,
-          aiMode: "byok",
-        }),
-      });
-      const payload = (await response.json()) as {
-        settings?: PublicAiSettings;
-        error?: string;
-      };
-
-      if (!response.ok) {
-        throw new Error(payload.error || "Could not save model.");
-      }
-
-      if (payload.settings) {
-        const settings = forceByokSettings(payload.settings);
-        setAiSettings(settings);
-        setCachedSettingsAiSettings(settings);
-      }
-    } catch {
-      toast.error("Couldn't save model");
-    }
   }
 
   return (
@@ -828,86 +779,41 @@ export function SettingsScreen() {
 
           <section>
             <h2 className="text-[16px] font-medium text-[var(--creed-text-primary)]">
-              Agent edit behaviour
+              Edit policy
             </h2>
-            <div className="mt-4 rounded-[var(--radius-xl)] border border-[var(--creed-border)] bg-[var(--creed-surface)] p-5 pb-4">
+            <div className="mt-4 rounded-[var(--radius-xl)] border border-[var(--creed-border)] bg-[var(--creed-surface)] p-5">
               <div className="flex items-center justify-between gap-5 md:items-start">
                 <div>
                   <div className="text-[15px] font-medium text-[var(--creed-text-primary)]">
-                    All sections
+                    People
                   </div>
                   <div className="mt-2 hidden max-w-xl text-[14px] leading-7 text-[var(--creed-text-secondary)] md:block">
-                    Set every section at once, and the default for new ones.
+                    How members&apos; document edits are handled: not at all, as proposals that need
+                    approval, or applied directly.
                   </div>
                 </div>
-                <SectionPermissionControl
-                  value={uniformPermission}
-                  onChange={(permission) => {
-                    if (permission !== "hidden") {
-                      setAllSectionPermissions(permission);
-                    }
-                  }}
-                  layoutGroup="all-sections"
-                  options={GLOBAL_PERMISSION_OPTIONS}
+                <EditPolicyControl
+                  value={editPolicy.human}
+                  layoutGroup="edit-policy-human"
+                  onChange={(value) => void saveEditPolicy("human", value)}
                 />
               </div>
 
-              <div className="mt-5 border-t border-[var(--creed-border)] pt-4">
-                <button
-                  type="button"
-                  onClick={() => setPermsOpen((open) => !open)}
-                  // -my-2 py-2 keeps the text where it is but expands the
-                  // clickable box by 16px vertically (the bare row was too thin
-                  // a target).
-                  className="group -my-2 flex w-full items-center justify-between py-2 text-left"
-                >
-                  <span className="text-[14px] font-medium text-[var(--creed-text-primary)]">
-                    Per-section permissions
-                  </span>
-                  <ChevronDown
-                    className={cn(
-                      // Match the other dropdown chevrons: tertiary by default,
-                      // primary (white in dark) on hover.
-                      "h-4 w-4 shrink-0 text-[var(--creed-text-tertiary)] transition-all duration-200 group-hover:text-[var(--creed-text-primary)]",
-                      permsOpen && "rotate-180"
-                    )}
-                  />
-                </button>
-                <AnimatePresence initial={false}>
-                  {permsOpen ? (
-                    <motion.div
-                      initial={{ height: 0, opacity: 0, y: -8 }}
-                      animate={{ height: "auto", opacity: 1, y: 0 }}
-                      exit={{ height: 0, opacity: 0, y: -8 }}
-                      transition={{ duration: 0.2, ease: "easeOut" }}
-                      className="overflow-hidden"
-                    >
-                      <div className="mt-4 space-y-1">
-                        {state.sections.map((section) => (
-                          <div
-                            key={section.id}
-                            className="flex items-center justify-between gap-3 rounded-[10px] py-1.5"
-                          >
-                            <div className="flex min-w-0 items-center gap-2.5">
-                              <span
-                                className="h-2.5 w-2.5 shrink-0 rounded-[3px]"
-                                style={{ backgroundColor: accentColorMap[section.accent] }}
-                              />
-                              <span className="truncate text-[14px] text-[var(--creed-text-primary)]">
-                                {section.name}
-                              </span>
-                            </div>
-                            <SectionPermissionControl
-                              value={section.agentPermission}
-                              onChange={(permission) => setSectionPermission(section.id, permission)}
-                              layoutGroup={section.id}
-                            />
-                          </div>
-                        ))}
-                      </div>
-                    </motion.div>
-                  ) : null}
-                </AnimatePresence>
+              <div className="mt-5 flex items-center justify-between gap-5 border-t border-[var(--creed-border)] pt-5 md:items-start">
+                <div>
+                  <div className="text-[15px] font-medium text-[var(--creed-text-primary)]">
+                    Agents
+                  </div>
+                  <div className="mt-2 hidden max-w-xl text-[14px] leading-7 text-[var(--creed-text-secondary)] md:block">
+                    How AI and connected agents&apos; document edits are handled. Set to Propose so
+                    agent changes wait for a member to approve them.
+                  </div>
+                </div>
+                <EditPolicyControl
+                  value={editPolicy.agent}
+                  layoutGroup="edit-policy-agent"
+                  onChange={(value) => void saveEditPolicy("agent", value)}
+                />
               </div>
             </div>
           </section>
@@ -915,6 +821,65 @@ export function SettingsScreen() {
           <Separator className="my-10 bg-[var(--creed-border)]" />
 
           <section>
+            <h2 className="text-[16px] font-medium text-[var(--creed-text-primary)]">
+              MCP agents
+            </h2>
+            <div className="mt-4 rounded-[var(--radius-xl)] border border-[var(--creed-border)] bg-[var(--creed-surface)] p-4 md:p-5">
+              <p className="text-[14px] leading-7 text-[var(--creed-text-secondary)]">
+                Agents connected to your Creed over MCP. Removing an agent revokes
+                its access and clears it from your connection history. It has to
+                reauthorize in the browser to connect again.
+              </p>
+              {state.mcpClients.length === 0 ? (
+                <p className="mt-4 text-[14px] text-[var(--creed-text-secondary)]">
+                  No agents connected yet.
+                </p>
+              ) : (
+                <ul className="mt-4 space-y-2.5">
+                  {state.mcpClients.map((client) => (
+                    <li
+                      key={client.id}
+                      className="flex items-center justify-between gap-4 rounded-[var(--radius-md)] border border-[var(--creed-border)] px-3 py-2.5"
+                    >
+                      <div className="flex min-w-0 items-center gap-3">
+                        <IntegrationGlyph kind={client.icon} />
+                        <div className="min-w-0">
+                          <div className="truncate text-[14px] font-medium text-[var(--creed-text-primary)]">
+                            {client.name}
+                          </div>
+                          {client.lastUsed ? (
+                            <div className="mt-0.5 text-[12px] text-[var(--creed-text-secondary)]">
+                              Last seen {client.lastUsed}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="shrink-0 rounded-md border-[var(--creed-border)] text-[var(--creed-text-secondary)] hover:text-[var(--creed-text-primary)]"
+                        disabled={removingMcpClientId === client.id}
+                        onClick={() => setMcpRemoveTarget(client)}
+                      >
+                        {removingMcpClientId === client.id ? (
+                          <LoaderCircle className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <>
+                            <Unplug className="h-4 w-4" />
+                            Remove
+                          </>
+                        )}
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </section>
+
+          <Separator className="my-10 hidden bg-[var(--creed-border)]" />
+
+          <section className="hidden">
             <h2 className="text-[16px] font-medium text-[var(--creed-text-primary)]">
               Integrations
             </h2>
@@ -993,78 +958,6 @@ export function SettingsScreen() {
           <Separator className="my-10 hidden bg-[var(--creed-border)]" />
 
           <section className="hidden">
-            <div className="flex items-center justify-between gap-4">
-              <h2 className="text-[16px] font-medium text-[var(--creed-text-primary)]">
-                Models
-              </h2>
-            </div>
-            <div className="mt-4 rounded-[var(--radius-xl)] border border-[var(--creed-border)] bg-[var(--creed-surface)] p-5">
-              <div className="grid gap-5 md:grid-cols-[1.1fr_0.9fr] md:items-stretch">
-                <div className="flex flex-col gap-4">
-                  <div>
-                    <label className="mb-2 block text-[13px] font-medium text-[var(--creed-text-secondary)]">
-                      OpenRouter API key
-                    </label>
-                    <Input
-                      type="password"
-                      value={aiKeyDraft}
-                      onChange={(event) => {
-                        setAiKeyDraft(event.target.value);
-                      }}
-                      placeholder={
-                        aiSettings.keyLastFour
-                          ? `Saved key ending in ${aiSettings.keyLastFour}`
-                          : "sk-or-..."
-                      }
-                      className="h-11 rounded-xl border-[var(--creed-border)] bg-[var(--creed-surface)] px-4 text-[14px]"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="mb-2 block text-[13px] font-medium text-[var(--creed-text-secondary)]">
-                      Model
-                    </label>
-                    <ModelSelect
-                      value={aiSettings.selectedModelId}
-                      onChange={(modelId) => void handleModelChange(modelId)}
-                      models={aiModels}
-                    />
-                  </div>
-
-                  <div className="mt-auto flex items-center justify-between gap-2 pt-1">
-                    <Button
-                      variant="ghost"
-                      className="rounded-md px-3 text-[var(--creed-text-secondary)] hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)]"
-                      onClick={() => {
-                        if (aiSettings.keyLastFour) {
-                          void handleClearAiKey();
-                        } else {
-                          setAiKeyDraft("");
-                        }
-                      }}
-                      disabled={aiSaving || (!aiKeyDraft && !aiSettings.keyLastFour)}
-                    >
-                      Clear
-                    </Button>
-                    <Button
-                      className="rounded-md bg-[var(--creed-text-primary)] px-4 text-[var(--creed-button-primary-fg)] hover:bg-[var(--creed-button-primary-hover)]"
-                      onClick={() => void handleSaveAiSettings()}
-                      disabled={!canSaveAiKey}
-                    >
-                      Save API key
-                      {aiSaving ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
-                    </Button>
-                  </div>
-                </div>
-
-                <UsageCard usage={usage} range={usageRange} onRangeChange={setUsageRange} />
-              </div>
-            </div>
-          </section>
-
-          <Separator className="my-10 bg-[var(--creed-border)]" />
-
-          <section>
             <h2 className="text-[16px] font-medium text-[var(--creed-text-primary)]">
               Version control
             </h2>
@@ -1199,13 +1092,19 @@ export function SettingsScreen() {
               Archived
             </h2>
             <div className="mt-4 rounded-[var(--radius-xl)] border border-[var(--creed-border)] bg-[var(--creed-surface)] p-5">
-              {archivedSections.length === 0 ? (
+              {!hasArchivedItems && !archivedItemsLoading ? (
                 <p className="text-[14px] leading-7 text-[var(--creed-text-secondary)]">
-                  Nothing archived. Archived sections show up here, ready to restore.
+                  Nothing archived. Archived sections, documents, and folders show
+                  up here, ready to restore.
                 </p>
               ) : (
-                <div className="space-y-2.5">
-                  {archivedSections.map((section) => {
+                <div className="space-y-6">
+                  {archivedSections.length > 0 && (
+                    <div className="space-y-2.5">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-[var(--creed-text-tertiary)]">
+                        Sections
+                      </p>
+                      {archivedSections.map((section) => {
                     const expanded = expandedArchived === section.id;
                     return (
                       <div
@@ -1251,7 +1150,11 @@ export function SettingsScreen() {
                             <Button
                               className="rounded-md bg-[#DC2626] text-white hover:bg-[#B91C1C] hover:text-white"
                               onClick={() =>
-                                setArchivedDeleteTarget({ id: section.id, name: section.name })
+                                setArchivedDeleteTarget({
+                                  kind: "section",
+                                  id: section.id,
+                                  name: section.name,
+                                })
                               }
                             >
                               Delete
@@ -1284,66 +1187,118 @@ export function SettingsScreen() {
                   })}
                 </div>
               )}
-            </div>
-          </section>
-
-          <Separator className="my-10 bg-[var(--creed-border)]" />
-
-          <section>
-            <h2 className="text-[16px] font-medium text-[var(--creed-text-primary)]">
-              Data
-            </h2>
-            <div className="mt-4 rounded-[var(--radius-xl)] border border-[var(--creed-border)] bg-[var(--creed-surface)] p-5">
-              <p className="text-[14px] leading-7 text-[var(--creed-text-secondary)]">
-                <span className="inline-flex items-center rounded-md bg-[var(--creed-surface-raised)] px-2 py-0.5 align-middle font-mono text-[13px] text-[var(--creed-text-primary)]">
-                  {dataStats.wordCount.toLocaleString()}
-                </span>{" "}
-                {dataStats.wordCount === 1 ? "word" : "words"} across{" "}
-                <span className="inline-flex items-center rounded-md bg-[var(--creed-surface-raised)] px-2 py-0.5 align-middle font-mono text-[13px] text-[var(--creed-text-primary)]">
-                  {dataStats.sectionCount.toLocaleString()}
-                </span>{" "}
-                {dataStats.sectionCount === 1 ? "section" : "sections"}.
-              </p>
-              <div className="mt-4 flex flex-wrap gap-3">
-                <AnimatedIconButton
-                  icon={Download}
-                  variant="outline"
-                  className="rounded-md border-[var(--creed-border)]"
-                  onClick={() =>
-                    downloadFile("creed.md", exportMarkdown(), "text/markdown;charset=utf-8")
-                  }
-                >
-                  Export Creed as markdown
-                </AnimatedIconButton>
-                <AnimatedIconButton
-                  icon={Download}
-                  variant="outline"
-                  className="rounded-md border-[var(--creed-border)]"
-                  onClick={() =>
-                    downloadFile(
-                      "creed-activity.json",
-                      exportActivityJson(),
-                      "application/json;charset=utf-8"
-                    )
-                  }
-                >
-                  Export activity log
-                </AnimatedIconButton>
-                <AnimatedIconButton
-                  icon={Download}
-                  variant="outline"
-                  className="rounded-md border-[var(--creed-border)]"
-                  onClick={() =>
-                    downloadFile(
-                      "creed-data.json",
-                      exportAllDataJson(),
-                      "application/json;charset=utf-8"
-                    )
-                  }
-                >
-                  Export all data
-                </AnimatedIconButton>
-              </div>
+                  {archivedDocuments.length > 0 && (
+                    <div className="space-y-2.5">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-[var(--creed-text-tertiary)]">
+                        Documents
+                      </p>
+                      {archivedDocuments.map((document) => (
+                        <div
+                          key={document.id}
+                          className="flex items-center justify-between gap-4 rounded-[var(--radius-lg)] border border-[var(--creed-border)] px-4 py-3"
+                        >
+                          <span className="flex min-w-0 flex-1 items-center gap-2.5">
+                            <FileText
+                              className="h-4 w-4 shrink-0 text-[var(--creed-text-tertiary)]"
+                              strokeWidth={1.8}
+                            />
+                            <span className="truncate text-[14px] font-medium text-[var(--creed-text-primary)]">
+                              {document.title}
+                            </span>
+                            {document.path ? (
+                              <span className="truncate text-[12px] text-[var(--creed-text-tertiary)]">
+                                {document.path}
+                              </span>
+                            ) : null}
+                          </span>
+                          <div className="flex shrink-0 items-center gap-2">
+                            <Button
+                              variant="outline"
+                              className="rounded-md border-[var(--creed-border)]"
+                              disabled={busyArchivedItemId === document.id}
+                              onClick={() => void restoreArchivedDocument(document.id, document.title)}
+                            >
+                              {busyArchivedItemId === document.id ? (
+                                <LoaderCircle className="h-4 w-4 animate-spin" />
+                              ) : (
+                                "Restore"
+                              )}
+                            </Button>
+                            <Button
+                              className="rounded-md bg-[#DC2626] text-white hover:bg-[#B91C1C] hover:text-white"
+                              disabled={busyArchivedItemId === document.id}
+                              onClick={() =>
+                                setArchivedDeleteTarget({
+                                  kind: "document",
+                                  id: document.id,
+                                  name: document.title,
+                                })
+                              }
+                            >
+                              Delete
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {archivedFolders.length > 0 && (
+                    <div className="space-y-2.5">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-[var(--creed-text-tertiary)]">
+                        Folders
+                      </p>
+                      {archivedFolders.map((folder) => (
+                        <div
+                          key={folder.id}
+                          className="flex items-center justify-between gap-4 rounded-[var(--radius-lg)] border border-[var(--creed-border)] px-4 py-3"
+                        >
+                          <span className="flex min-w-0 flex-1 items-center gap-2.5">
+                            <Folder
+                              className="h-4 w-4 shrink-0 text-[var(--creed-text-tertiary)]"
+                              strokeWidth={1.8}
+                            />
+                            <span className="truncate text-[14px] font-medium text-[var(--creed-text-primary)]">
+                              {folder.name}
+                            </span>
+                            {folder.path ? (
+                              <span className="truncate text-[12px] text-[var(--creed-text-tertiary)]">
+                                {folder.path}
+                              </span>
+                            ) : null}
+                          </span>
+                          <div className="flex shrink-0 items-center gap-2">
+                            <Button
+                              variant="outline"
+                              className="rounded-md border-[var(--creed-border)]"
+                              disabled={busyArchivedItemId === folder.id}
+                              onClick={() => void restoreArchivedFolder(folder.id, folder.name)}
+                            >
+                              {busyArchivedItemId === folder.id ? (
+                                <LoaderCircle className="h-4 w-4 animate-spin" />
+                              ) : (
+                                "Restore"
+                              )}
+                            </Button>
+                            <Button
+                              className="rounded-md bg-[#DC2626] text-white hover:bg-[#B91C1C] hover:text-white"
+                              disabled={busyArchivedItemId === folder.id}
+                              onClick={() =>
+                                setArchivedDeleteTarget({
+                                  kind: "folder",
+                                  id: folder.id,
+                                  name: folder.name,
+                                })
+                              }
+                            >
+                              Delete
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </section>
 
@@ -1358,7 +1313,13 @@ export function SettingsScreen() {
       >
         <DialogContent className="rounded-[var(--radius-xl)] border-[var(--creed-border)] bg-[var(--creed-surface)]">
           <DialogHeader>
-            <DialogTitle>Delete archived section</DialogTitle>
+            <DialogTitle>
+              {archivedDeleteTarget?.kind === "document"
+                ? "Delete archived document"
+                : archivedDeleteTarget?.kind === "folder"
+                  ? "Delete archived folder"
+                  : "Delete archived section"}
+            </DialogTitle>
             <DialogDescription>
               This permanently deletes &ldquo;{archivedDeleteTarget?.name}&rdquo; and its history.
               This can&apos;t be undone.
@@ -1374,12 +1335,48 @@ export function SettingsScreen() {
             </Button>
             <Button
               className="rounded-md bg-[#DC2626] px-4 text-white hover:bg-[#B91C1C] hover:text-white"
-              onClick={() => {
-                if (archivedDeleteTarget) deleteSection(archivedDeleteTarget.id);
-                setArchivedDeleteTarget(null);
-              }}
+              onClick={confirmDeleteArchived}
             >
               Delete permanently
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={mcpRemoveTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setMcpRemoveTarget(null);
+        }}
+      >
+        <DialogContent className="rounded-[var(--radius-xl)] border-[var(--creed-border)] bg-[var(--creed-surface)]">
+          <DialogHeader>
+            <DialogTitle>Remove MCP agent</DialogTitle>
+            <DialogDescription>
+              This revokes &ldquo;{mcpRemoveTarget?.name}&rdquo; access to your Creed and
+              clears it from your connection history. The agent has to reauthorize
+              in the browser to connect again.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex-row items-center justify-between border-t-[var(--creed-border)] bg-[var(--creed-surface)] sm:justify-between">
+            <Button
+              variant="ghost"
+              className="rounded-md"
+              disabled={removingMcpClientId !== null}
+              onClick={() => setMcpRemoveTarget(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="rounded-md bg-[#DC2626] px-4 text-white hover:bg-[#B91C1C] hover:text-white"
+              disabled={removingMcpClientId !== null}
+              onClick={() => void confirmRemoveMcpClient()}
+            >
+              {removingMcpClientId !== null ? (
+                <LoaderCircle className="h-4 w-4 animate-spin" />
+              ) : (
+                "Remove agent"
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1526,208 +1523,6 @@ function IntegrationRow({
   );
 }
 
-function ModelSelect({
-  value,
-  onChange,
-  models,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  models: AiModelCatalogItem[];
-}) {
-  return (
-    <SearchableSelect
-      value={value}
-      onChange={onChange}
-      placeholder="Choose a model"
-      searchPlaceholder="Search models..."
-      options={models.map((model) => ({
-        key: model.id,
-        value: model.id,
-        label: model.name,
-        description: `${model.provider} · ${AI_MODEL_QUALITY_META[model.quality].label} · ${formatModelCost(model, 1)}`,
-        search: `${model.name} ${model.provider} ${model.id} ${AI_MODEL_QUALITY_META[model.quality].label}`,
-      }))}
-      renderOption={(option) => {
-        const model = models.find((item) => item.id === option.value) ?? models[0];
-        const quality = AI_MODEL_QUALITY_META[model.quality];
-
-        return (
-          <div className="flex min-w-0 items-center gap-3">
-            <span className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ backgroundColor: quality.color }} />
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-[14px] font-medium text-[var(--creed-text-primary)]">
-                {model.name}
-              </div>
-              <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-[var(--creed-text-secondary)]">
-                <span>{model.provider}</span>
-                <span>·</span>
-                <span>{quality.label}</span>
-                <span>·</span>
-                <span>{formatModelCost(model, 1)}</span>
-              </div>
-            </div>
-          </div>
-        );
-      }}
-    />
-  );
-}
-
-function UsageCard({
-  usage,
-  range,
-  onRangeChange,
-}: {
-  usage: AiUsageSummary | null;
-  range: AiUsageRange;
-  onRangeChange: (range: AiUsageRange) => void;
-}) {
-  const total = usage?.totalCostUsd ?? 0;
-
-  // Quality tiers present in the range, in fixed order. Each day's cost is
-  // stacked by tier - same recharts pattern as the /connections charts.
-  const qualityOrder: AiModelQuality[] = ["excellent", "good", "weak", "uncertain"];
-  const present = qualityOrder.filter((quality) =>
-    (usage?.days ?? []).some((day) => day.segments.some((s) => s.quality === quality && s.costUsd > 0))
-  );
-  const chartData = (usage?.days ?? [])
-    .map((day) => {
-      const row: Record<string, number | string> = { date: day.date };
-      for (const quality of present) row[quality] = 0;
-      for (const segment of day.segments) {
-        if (present.includes(segment.quality)) {
-          row[segment.quality] = (Number(row[segment.quality]) || 0) + segment.costUsd;
-        }
-      }
-      return row;
-    })
-    // Only plot days that actually have spend.
-    .filter((row) => present.reduce((sum, quality) => sum + Number(row[quality] ?? 0), 0) > 0);
-  const chartConfig: ChartConfig = {};
-  present.forEach((quality) => {
-    chartConfig[quality] = { label: AI_MODEL_QUALITY_META[quality].label, color: AI_MODEL_QUALITY_META[quality].color };
-  });
-
-  return (
-    <div className="rounded-[var(--radius-lg)] border border-[var(--creed-border)] bg-[var(--creed-surface)] p-4">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <div className="text-[13px] font-medium text-[var(--creed-text-secondary)]">
-            Estimated spend
-          </div>
-          <div className="mt-2 text-[30px] font-medium tracking-[-0.04em] text-[var(--creed-text-primary)]">
-            ${total.toFixed(total < 10 ? 2 : 0)}
-          </div>
-        </div>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              className="inline-flex h-8 items-center gap-2 rounded-md border border-[var(--creed-border)] bg-[var(--creed-surface)] px-3 text-sm text-[var(--creed-text-primary)] transition-colors duration-150 hover:bg-[var(--creed-surface-raised)]"
-            >
-              {range}
-              <ChevronDown className="h-3.5 w-3.5 text-[var(--creed-text-secondary)]" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent
-            align="end"
-            className="min-w-24 space-y-1 border-[var(--creed-border)] bg-[var(--creed-surface)] p-1.5"
-          >
-            {(["7d", "30d", "90d"] as AiUsageRange[]).map((item) => (
-              <DropdownMenuItem
-                key={item}
-                onSelect={() => onRangeChange(item)}
-                className={cn(
-                  "flex items-center justify-between gap-5 rounded-lg px-3 py-2 text-sm",
-                  range === item && "bg-[var(--creed-surface-selected)] font-medium"
-                )}
-              >
-                <span>{item}</span>
-                {range === item ? (
-                  <Check className="h-3.5 w-3.5 shrink-0 text-[var(--creed-text-primary)]" />
-                ) : null}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
-
-      <div className="relative mt-5 h-[120px] w-full">
-        <AnimatePresence initial={false}>
-          <motion.div
-            // Cross-fade between states on timeframe change. The populated
-            // chart keeps a stable key so recharts morphs its bars across
-            // ranges; the empty state is keyed per-range so it re-animates
-            // (and updates its caption) when you switch the timeframe.
-            key={chartData.length > 0 ? "chart" : `empty-${range}`}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-            className="absolute inset-0"
-          >
-            {chartData.length > 0 ? (
-              <ChartContainer config={chartConfig} className="aspect-auto h-full w-full">
-                <BarChart data={chartData} margin={{ left: 4, right: 4, top: 8, bottom: 0 }}>
-                  <CartesianGrid vertical={false} strokeDasharray="3 3" />
-                  <XAxis dataKey="date" hide />
-                  <YAxis hide />
-                  <ChartTooltip
-                    content={
-                      <ChartTooltipContent
-                        labelFormatter={(value) => formatUsageDate(String(value))}
-                        formatter={(value, name, item) => (
-                          <div className="flex w-full items-center justify-between gap-3">
-                            <span className="flex items-center gap-1.5 text-[var(--creed-text-secondary)]">
-                              <span
-                                className="h-2.5 w-2.5 rounded-[2px]"
-                                style={{ backgroundColor: item.color ?? item.payload?.fill }}
-                              />
-                              {chartConfig[String(name)]?.label ?? name}
-                            </span>
-                            <span className="font-mono text-[var(--creed-text-primary)]">
-                              ${Number(value).toFixed(2)}
-                            </span>
-                          </div>
-                        )}
-                      />
-                    }
-                  />
-                  {present.map((quality) => (
-                    <Bar
-                      key={quality}
-                      dataKey={quality}
-                      stackId="cost"
-                      fill={`var(--color-${quality})`}
-                      shape={<StackTopBar orderedKeys={present} dataKey={quality} />}
-                    />
-                  ))}
-                </BarChart>
-              </ChartContainer>
-            ) : (
-              <div className="relative flex h-full items-center justify-center">
-                {/* Faint zero baseline echoing the chart grid, so the empty
-                    state reads as a chart at $0 rather than a bare message. */}
-                <div className="absolute inset-x-0 bottom-0 border-t border-dashed border-[var(--creed-border)]" />
-                <span className="text-[12px] text-[var(--creed-text-tertiary)]">
-                  No spend in the last {range.replace("d", " days")}
-                </span>
-              </div>
-            )}
-          </motion.div>
-        </AnimatePresence>
-      </div>
-    </div>
-  );
-}
-
-function formatUsageDate(value: string) {
-  const date = new Date(`${value}T00:00:00Z`);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
-}
-
 function GoogleMark({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true" className={className}>
@@ -1767,43 +1562,52 @@ function GitHubMark({ className }: { className?: string }) {
   );
 }
 
-type AnimatedIconComponent = ComponentType<{
-  size?: number;
-  className?: string;
-}>;
-
-const PERMISSION_OPTIONS: Array<{
-  value: AgentPermission;
-  label: string;
-  icon: AnimatedIconComponent;
-  color: string;
-}> = [
-  { value: "hidden", label: "Hidden from agent", icon: EyeOff, color: "#DC2626" },
-  { value: "read-only", label: "Read-only", icon: Eye, color: "#EAB308" },
-  { value: "propose", label: "Propose (needs approval)", icon: ShieldCheck, color: "#16A34A" },
-  { value: "direct", label: "Direct edit", icon: PenTool, color: "#2563EB" },
+const EDIT_POLICY_OPTIONS = [
+  {
+    value: "cant-edit" as const,
+    label: "Can't edit",
+    description: "Cannot change documents at all.",
+    icon: EyeOff,
+    color: "#DC2626",
+  },
+  {
+    value: "propose" as const,
+    label: "Propose",
+    description: "Edits become proposals that a member approves.",
+    icon: ShieldCheck,
+    color: "#16A34A",
+  },
+  {
+    value: "direct" as const,
+    label: "Direct edit",
+    description: "Edits apply immediately.",
+    icon: PenTool,
+    color: "#2563EB",
+  },
 ];
 
-// The global control reuses the same control without the "hidden" option.
-const GLOBAL_PERMISSION_OPTIONS = PERMISSION_OPTIONS.filter((option) => option.value !== "hidden");
+// Compile-time guard (zero runtime cost): every option's `value` must stay
+// within the canonical EditPolicyValue union imported from lib/workspace-settings,
+// so this UI can never drift from the API/data-model definition.
+EDIT_POLICY_OPTIONS satisfies readonly { value: EditPolicyValue }[];
 
-// One compact segment in the permission control.
-function PermissionSegment({
+// One compact icon segment with a hover tooltip describing the option. The
+// selected segment fills with its colour; the highlight slides between segments
+// via a shared layoutId scoped to the row (People vs Agents).
+function EditPolicySegment({
   option,
   selected,
   layoutGroup,
-  muted = false,
   onSelect,
 }: {
-  option: (typeof PERMISSION_OPTIONS)[number];
+  option: (typeof EDIT_POLICY_OPTIONS)[number];
   selected: boolean;
   layoutGroup: string;
-  muted?: boolean;
   onSelect: () => void;
 }) {
   const Icon = option.icon;
   return (
-    <SimpleTooltip label={option.label}>
+    <SimpleTooltip label={`${option.label} - ${option.description}`}>
       <button
         type="button"
         aria-label={option.label}
@@ -1813,7 +1617,7 @@ function PermissionSegment({
       >
         {selected ? (
           <motion.span
-            layoutId={`perm-highlight-${layoutGroup}`}
+            layoutId={`edit-policy-highlight-${layoutGroup}`}
             className="absolute inset-0 rounded-[7px]"
             style={{ backgroundColor: option.color }}
             transition={{ type: "spring", stiffness: 520, damping: 40 }}
@@ -1821,17 +1625,11 @@ function PermissionSegment({
         ) : null}
         <Icon
           size={14}
-          // pointer-events-none so the whole button is the click/hover target,
-          // not just the 14px glyph. The icon brightens on hover via group-hover
-          // (the button's hover), since its own :hover can't fire with pointer
-          // events disabled.
           className={cn(
             "pointer-events-none relative inline-flex h-3.5 w-3.5 items-center justify-center transition-colors duration-150",
             selected
               ? "text-white"
-              : muted
-                ? "text-[var(--creed-text-tertiary)]"
-                : "text-[var(--creed-text-tertiary)] group-hover:text-[var(--creed-text-primary)]"
+              : "text-[var(--creed-text-tertiary)] group-hover:text-[var(--creed-text-primary)]"
           )}
         />
       </button>
@@ -1839,40 +1637,27 @@ function PermissionSegment({
   );
 }
 
-// Compact icon-segmented control. The selected segment fills with its level
-// colour and the highlight slides between segments via a shared layoutId.
-// `layoutGroup` scopes that animation to one row so highlights don't fly
-// between sections.
-function SectionPermissionControl({
+function EditPolicyControl({
   value,
   onChange,
   layoutGroup,
-  options = PERMISSION_OPTIONS,
 }: {
-  value: AgentPermission | null;
-  onChange: (permission: AgentPermission) => void;
+  value: EditPolicyValue | null;
+  onChange: (value: EditPolicyValue) => void;
   layoutGroup: string;
-  options?: typeof PERMISSION_OPTIONS;
 }) {
   return (
-    <div
-      className={cn(
-        "inline-flex shrink-0 items-center gap-0.5 rounded-[10px] border border-[var(--creed-border)] bg-[var(--creed-surface)] p-0.5 transition-opacity duration-150",
-        // No shared level (sections differ): grey the control to read as
-        // "mixed / not applied", but it stays clickable to set one level.
-        value === null && "opacity-45"
-      )}
-    >
-      {options.map((option) => (
-        <PermissionSegment
+    <div className="inline-flex shrink-0 items-center gap-0.5 rounded-[10px] border border-[var(--creed-border)] bg-[var(--creed-surface)] p-0.5">
+      {EDIT_POLICY_OPTIONS.map((option) => (
+        <EditPolicySegment
           key={option.value}
           option={option}
           selected={value === option.value}
           layoutGroup={layoutGroup}
-          muted={value === null}
           onSelect={() => onChange(option.value)}
         />
       ))}
     </div>
   );
 }
+

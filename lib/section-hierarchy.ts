@@ -65,6 +65,50 @@ export function canOutdentSection<T extends Depthed>(sections: T[], index: numbe
   return sectionDepth(sections[index]) > 0;
 }
 
+// Whether a section can hold a child one level deeper. This is the single
+// gate for the "New subsection" slash command and any UI that offers nesting:
+// a section already at MAX_SECTION_DEPTH has nowhere deeper to put a child.
+export function canNestUnder(section: Depthed): boolean {
+  return sectionDepth(section) < MAX_SECTION_DEPTH;
+}
+
+// Insert `newSection` relative to the section identified by `afterId`.
+//
+//   mode "sibling" - placed after the anchor's ENTIRE subtree at the anchor's
+//                    own depth, so an existing parent keeps its children and
+//                    the new row reads as a true peer.
+//   mode "child"   - placed immediately after the anchor as its first child,
+//                    one level deeper (clamped to MAX_SECTION_DEPTH).
+//
+// With no anchor (or an unknown one) the section is appended at depth 0. The
+// whole list is normalized afterwards so the result is always a valid tree.
+export function insertSectionRelativeTo<T extends Depthed & { id: string }>(
+  sections: T[],
+  afterId: string | null | undefined,
+  newSection: T,
+  mode: "sibling" | "child"
+): T[] {
+  const index = afterId ? sections.findIndex((section) => section.id === afterId) : -1;
+  if (index === -1) {
+    return normalizeSectionDepths([...sections, { ...newSection, depth: 0 }]);
+  }
+
+  const anchorDepth = sectionDepth(sections[index]);
+  const next = [...sections];
+
+  if (mode === "child") {
+    const childDepth = Math.min(MAX_SECTION_DEPTH, anchorDepth + 1);
+    next.splice(index + 1, 0, { ...newSection, depth: childDepth });
+  } else {
+    // Skip past the anchor's contiguous descendants so a nested subtree stays
+    // attached to its parent instead of being re-parented under the new row.
+    const count = descendantCount(sections, index);
+    next.splice(index + 1 + count, 0, { ...newSection, depth: anchorDepth });
+  }
+
+  return normalizeSectionDepths(next);
+}
+
 // Shift a section and its contiguous descendants by `delta`, then normalize the
 // whole list so the result is always a valid tree.
 export function shiftSubtreeDepth<T extends Depthed>(

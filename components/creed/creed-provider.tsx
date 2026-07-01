@@ -44,7 +44,7 @@ import {
   type ProposalDraft,
 } from "@/lib/creed-data";
 import { normalizeRichTextInput } from "@/lib/rich-text";
-import { canIndentSection, canOutdentSection, normalizeSectionDepths, shiftSubtreeDepth } from "@/lib/section-hierarchy";
+import { canIndentSection, canOutdentSection, insertSectionRelativeTo, normalizeSectionDepths, shiftSubtreeDepth } from "@/lib/section-hierarchy";
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
 import { toast } from "sonner";
 
@@ -55,7 +55,7 @@ type CreedContextValue = {
   updateRichTextSection: (sectionId: string, content: string) => void;
   reorderSections: (sectionIds: string[]) => void;
   addSection: (name: string, starter?: string) => CreedSection;
-  addSectionAfter: (afterSectionId: string, name: string, starter?: string) => void;
+  addSectionAfter: (afterSectionId: string, name: string, starter?: string, mode?: "sibling" | "child") => void;
   indentSection: (sectionId: string) => void;
   outdentSection: (sectionId: string) => void;
   renameSection: (sectionId: string, name: string) => void;
@@ -82,8 +82,6 @@ type CreedContextValue = {
   claimOnboardingPreview: (sections: CreedSection[]) => Promise<void>;
   signOut: () => Promise<void>;
   exportMarkdown: () => string;
-  exportActivityJson: () => string;
-  exportAllDataJson: () => string;
 };
 
 const CreedContext = createContext<CreedContextValue | null>(null);
@@ -597,7 +595,12 @@ export function CreedProvider({
     return newSection;
   }
 
-  function addSectionAfter(afterSectionId: string, name: string, starter?: string) {
+  function addSectionAfter(
+    afterSectionId: string,
+    name: string,
+    starter?: string,
+    mode: "sibling" | "child" = "sibling"
+  ) {
     const trimmedName = name.trim() || "New section";
     const newSection: CreedSection = {
       id: uniqueLocalId("section"),
@@ -613,19 +616,14 @@ export function CreedProvider({
       lastEditedLabel: "just now",
     };
 
-    commitState((current) => {
-      const index = current.sections.findIndex((section) => section.id === afterSectionId);
-      const nextSections = [...current.sections];
-      // New sections land as a sibling of the one they're added after (same
-      // depth), which is the least surprising place in a nested list.
-      const anchorDepth = index === -1 ? 0 : current.sections[index]?.depth ?? 0;
-      nextSections.splice(index + 1, 0, { ...newSection, depth: anchorDepth });
-
-      return nextMutationTick({
+    commitState((current) =>
+      nextMutationTick({
         ...current,
-        sections: normalizeSectionDepths(nextSections),
-      });
-    });
+        // "sibling" lands the new row after the anchor's whole subtree at the
+        // same depth; "child" nests it one level deeper as the first child.
+        sections: insertSectionRelativeTo(current.sections, afterSectionId, newSection, mode),
+      })
+    );
   }
 
   function renameSection(sectionId: string, name: string) {
@@ -934,14 +932,24 @@ export function CreedProvider({
           const newSectionDraft = proposal.draft;
           const newSection = createSectionFromProposalDraft(proposal);
           if (!newSection) continue;
-          const insertAfterId = newSectionDraft.insertAfterSectionId;
-          const insertAfterIndex = insertAfterId
-            ? nextSections.findIndex((section) => section.id === insertAfterId)
-            : -1;
-          if (insertAfterIndex === -1) {
-            nextSections.push(newSection);
+          // Nesting: `parentSectionId` makes the new row the parent's first
+          // child (one level deeper); otherwise `insertAfterSectionId` places
+          // it as a sibling after that section's whole subtree. Both go
+          // through the shared hierarchy helper so depth stays valid.
+          if (newSectionDraft.parentSectionId) {
+            nextSections = insertSectionRelativeTo(
+              nextSections,
+              newSectionDraft.parentSectionId,
+              newSection,
+              "child"
+            );
           } else {
-            nextSections.splice(insertAfterIndex + 1, 0, newSection);
+            nextSections = insertSectionRelativeTo(
+              nextSections,
+              newSectionDraft.insertAfterSectionId,
+              newSection,
+              "sibling"
+            );
           }
           nextRevisions = bumpSectionRevisionMap(nextRevisions, newSection.id);
         } else if (proposal.draft.kind === "delete-section") {
@@ -1209,14 +1217,6 @@ export function CreedProvider({
     return buildVisibleCreedMarkdown(state.sections);
   }
 
-  function exportActivityJson() {
-    return JSON.stringify(state.activity, null, 2);
-  }
-
-  function exportAllDataJson() {
-    return JSON.stringify(state, null, 2);
-  }
-
   const contextValue = useMemo<CreedContextValue>(
     () => ({
       state,
@@ -1252,8 +1252,6 @@ export function CreedProvider({
       claimOnboardingPreview,
       signOut,
       exportMarkdown,
-      exportActivityJson,
-      exportAllDataJson,
     }),
     [
       state,
@@ -1289,8 +1287,6 @@ export function CreedProvider({
       claimOnboardingPreview,
       signOut,
       exportMarkdown,
-      exportActivityJson,
-      exportAllDataJson,
     ]
   );
 

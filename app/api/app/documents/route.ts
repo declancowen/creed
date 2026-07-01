@@ -2,14 +2,21 @@ import { NextResponse } from "next/server";
 import { apiResultErrorResponse, requireApiAuth, requireApiJson } from "@/lib/api-auth";
 import { documentMetadataPatchFromRecord } from "@/lib/document-properties";
 import { recordDocumentActivity } from "@/lib/document-collaboration";
-import { createSharedDocument, listSharedDocuments } from "@/lib/shared-documents";
+import {
+  createSharedDocument,
+  listArchivedSharedDocuments,
+  listSharedDocuments,
+} from "@/lib/shared-documents";
 import { getSupabaseAdminClient } from "@/lib/supabase/admin";
 
-export async function GET() {
+export async function GET(request: Request) {
   const auth = await requireApiAuth();
   if (auth instanceof NextResponse) return auth;
 
-  const documents = await listSharedDocuments(auth.supabase);
+  const archived = new URL(request.url).searchParams.get("archived") === "true";
+  const documents = archived
+    ? await listArchivedSharedDocuments(auth.supabase)
+    : await listSharedDocuments(auth.supabase);
   return NextResponse.json({ documents });
 }
 

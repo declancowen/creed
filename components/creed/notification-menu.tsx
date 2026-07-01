@@ -20,7 +20,7 @@ async function readNotifications() {
   return payload.notifications ?? [];
 }
 
-export function NotificationMenu() {
+export function NotificationMenu({ iconOnly = false }: { iconOnly?: boolean }) {
   const router = useRouter();
   const [notifications, setNotifications] = useState<DocumentNotification[]>([]);
   const [loading, setLoading] = useState(false);
@@ -69,13 +69,23 @@ export function NotificationMenu() {
           type="button"
           variant="ghost"
           size="icon"
-          className="relative h-8 w-8 rounded-[10px] lg:h-8 lg:w-full lg:justify-start lg:gap-3 lg:px-2"
+          className={cn(
+            "relative h-8 w-8 rounded-[10px]",
+            !iconOnly && "lg:h-8 lg:w-full lg:justify-start lg:gap-3 lg:px-2"
+          )}
           aria-label="Notifications"
         >
           {loading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Bell className="h-4 w-4" />}
-          <span className="hidden text-[14px] font-medium lg:inline">Notifications</span>
+          {!iconOnly ? (
+            <span className="hidden text-[14px] font-medium lg:inline">Notifications</span>
+          ) : null}
           {unreadCount > 0 ? (
-            <span className="absolute right-0.5 top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-[#DC2626] px-1 text-[10px] font-semibold leading-none text-white lg:right-2">
+            <span
+              className={cn(
+                "absolute right-0.5 top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-[#DC2626] px-1 text-[10px] font-semibold leading-none text-white",
+                !iconOnly && "lg:right-2"
+              )}
+            >
               {unreadCount > 9 ? "9+" : unreadCount}
             </span>
           ) : null}

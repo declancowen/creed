@@ -2,6 +2,7 @@
 
 import type { ComponentType, CSSProperties, ReactNode } from "react";
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Extension, type Editor, type Range } from "@tiptap/core";
 import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -24,14 +25,32 @@ import {
   Link2,
   List,
   ListOrdered,
+  LoaderCircle,
   MessageSquareQuote,
   Minus,
   Pilcrow,
   PlusSquare,
   Strikethrough,
   Tag,
+  TreeStructure,
+  FileText,
+  Folder,
 } from "@/components/ui/phosphor-icons";
 import { InlineTagMark } from "@/components/creed/extensions/inline-tag";
+import { MermaidBlock } from "@/components/creed/extensions/mermaid-block";
+import {
+  DocReferenceCard,
+  DocReferenceInline,
+} from "@/components/creed/extensions/doc-reference";
+import {
+  ensureReferenceIndex,
+  searchReferences,
+  type DocumentReferenceEntry,
+} from "@/lib/document-reference-index";
+import {
+  CommentHighlight,
+  commentHighlightPluginKey,
+} from "@/components/creed/extensions/comment-highlight";
 import {
   Dialog,
   DialogContent,
@@ -42,9 +61,13 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import type { WorkspaceUser } from "@/lib/document-collaboration";
+import { MentionText } from "@/components/creed/mention-text";
+import { MentionTextarea } from "@/components/creed/mention-textarea";
 import { cn } from "@/lib/utils";
 
 const slashPluginKey = new PluginKey("creedSlashCommand");
+const mentionPluginKey = new PluginKey("creedReferenceMention");
 
 // Pre-bundled curated language set: js/ts/jsx/tsx, python, ruby, go, rust,
 // java, c/cpp, cs, php, swift, kotlin, json, yaml, bash, sql, html, css,
@@ -68,6 +91,17 @@ type SlashMenuState = {
   bottomOffset?: number;
 };
 
+// The `@` reference search menu shares the slash menu's positioning maths but
+// carries resolved document/folder entries instead of editor commands.
+type MentionMenuState = {
+  query: string;
+  items: DocumentReferenceEntry[];
+  x: number;
+  y: number;
+  placeAbove: boolean;
+  bottomOffset?: number;
+};
+
 type SelectionToolbarState = {
   // Viewport-relative position; toolbar is rendered with `position: fixed` so
   // it isn't affected by parent transforms or scroll containers.
@@ -75,6 +109,32 @@ type SelectionToolbarState = {
   y: number;
   /** When true, the toolbar sits below the selection (selection hugs viewport top). */
   placeBelow: boolean;
+};
+
+// Anchored composer that appears when the user clicks the comment button in
+// the selection toolbar. It holds the captured quote and a fixed viewport
+// position so it survives the selection being lost once the editor blurs.
+type CommentDraftState = {
+  quote: string;
+  x: number;
+  y: number;
+  placeBelow: boolean;
+};
+
+// A comment surfaced inside the editor: enough to highlight the anchored text,
+// show a hover preview, and route clicks back to the sidebar thread.
+export type EditorCommentAnchor = {
+  id: string;
+  quote: string;
+  body: string;
+  authorLabel: string;
+  status: "open" | "resolved";
+};
+
+type CommentHoverState = {
+  id: string;
+  x: number;
+  y: number;
 };
 
 type RichTextEditorProps = {
@@ -85,7 +145,34 @@ type RichTextEditorProps = {
   accentColor?: string;
   density?: "default" | "continuation";
   onChange: (content: string) => void;
-  onAddSectionAfter?: () => void;
+  onAddSectionAfter?: (mode: "sibling" | "child") => void;
+  // Whether this section can still hold a nested child (its depth is below
+  // MAX_SECTION_DEPTH). Gates the "New subsection" slash command so the menu
+  // never offers a nesting level the tree can't represent.
+  canAddSubsection?: boolean;
+  // Workspace members available to @mention from the in-editor comment
+  // composer. Only supplied in document mode.
+  commentUsers?: WorkspaceUser[];
+  // Creates a comment anchored to the current text selection. When provided,
+  // the selection toolbar shows a comment button. Resolves once the comment
+  // has been persisted so the popup can close.
+  onCreateComment?: (input: {
+    quote: string;
+    body: string;
+    mentionedUserIds: string[];
+  }) => Promise<void> | void;
+  // Comments anchored inside this section - painted as highlights and shown on
+  // hover. Empty outside document mode.
+  comments?: EditorCommentAnchor[];
+  // The comment currently focused in the sidebar; its highlight is emphasised
+  // and scrolled into view.
+  activeCommentId?: string | null;
+  // Fired when a highlight is clicked, routing the user to the sidebar thread.
+  onSelectComment?: (commentId: string) => void;
+  // Enables document/folder references: the `@` search, the "Reference
+  // document" slash command, and the inline-chip / full-width-card nodes. Only
+  // turned on in the shared document workspace.
+  enableReferences?: boolean;
 };
 
 // Convert a CSS color value (hex or CSS variable reference) into an
@@ -159,6 +246,13 @@ export function RichTextEditor({
   density = "default",
   onChange,
   onAddSectionAfter,
+  canAddSubsection = false,
+  commentUsers = [],
+  onCreateComment,
+  comments = [],
+  activeCommentId = null,
+  onSelectComment,
+  enableReferences = false,
 }: RichTextEditorProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   // Track the most recent HTML we emitted so the content-sync effect can
@@ -166,14 +260,49 @@ export function RichTextEditor({
   // with the same string we just sent it. Without this every keystroke
   // serializes the entire ProseMirror doc twice.
   const lastEmittedHtmlRef = useRef<string | null>(content);
+  // A short history of HTML strings this editor has emitted (or been given as
+  // initial content). The content-sync effect uses it to distinguish a genuine
+  // external content change from a *stale echo* of our own state - the parent
+  // re-rendering with a value we already moved past while an onChange (deferred
+  // via startTransition) is still in flight. Applying such an echo would revert
+  // a just-inserted node (e.g. a document reference chip) until the transition
+  // committed, causing it to flicker/disappear. Bounded so it can't grow.
+  const emittedHtmlHistoryRef = useRef<string[]>([content]);
   const slashItemsRef = useRef<SlashCommand[]>([]);
   const slashIndexRef = useRef(0);
   const slashSelectRef = useRef<((item: SlashCommand) => void) | null>(null);
   const [slashState, setSlashState] = useState<SlashMenuState | null>(null);
   const [slashIndex, setSlashIndex] = useState(0);
+  const mentionItemsRef = useRef<DocumentReferenceEntry[]>([]);
+  const mentionIndexRef = useRef(0);
+  const mentionSelectRef = useRef<((item: DocumentReferenceEntry) => void) | null>(null);
+  const [mentionState, setMentionState] = useState<MentionMenuState | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
   const [selectionToolbar, setSelectionToolbar] = useState<SelectionToolbarState | null>(null);
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
   const [linkDraft, setLinkDraft] = useState("");
+  const [commentDraft, setCommentDraft] = useState<CommentDraftState | null>(null);
+  const [commentBody, setCommentBody] = useState("");
+  const [savingComment, setSavingComment] = useState(false);
+  const [commentHover, setCommentHover] = useState<CommentHoverState | null>(null);
+  const commentHoverTimer = useRef<number | null>(null);
+  const commentsEnabled = Boolean(onCreateComment);
+  const router = useRouter();
+  // Stable navigation callback handed to the reference node views so a click
+  // on a chip / card routes via the SPA router instead of a full page load.
+  const openReference = useCallback(
+    (href: string) => {
+      router.push(href);
+    },
+    [router]
+  );
+  // Load the reference index up-front (idempotent) so the `@` menu has data by
+  // the time the user opens it.
+  useEffect(() => {
+    if (enableReferences) {
+      void ensureReferenceIndex();
+    }
+  }, [enableReferences]);
   const editorThemeStyle = useMemo(
     () =>
       ({
@@ -286,6 +415,29 @@ export function RichTextEditor({
             true
           ),
       },
+      ...(enableReferences
+        ? [
+            {
+              title: "Reference document",
+              description: "Link a document or folder",
+              icon: FileText,
+              keywords: ["reference", "link", "document", "folder", "mention", "@"],
+              run: (editor: Editor, range: Range) => {
+                // Delete the slash range and drop an `@` so the reference
+                // search menu opens - one code path for `/` and `@`.
+                editor.chain().focus().deleteRange(range).insertContent("@").run();
+              },
+            },
+          ]
+        : []),
+      {
+        title: "Mermaid diagram",
+        description: "Flowchart or diagram",
+        icon: TreeStructure,
+        keywords: ["mermaid", "diagram", "flowchart", "sequence", "graph", "chart", "visualize", "visualization"],
+        run: (editor, range) =>
+          editor.chain().focus().deleteRange(range).setMermaidBlock().run(),
+      },
       {
         title: "Callout",
         description: "Highlighted note",
@@ -321,14 +473,28 @@ export function RichTextEditor({
         title: "New section",
         description: "Add section below",
         icon: PlusSquare,
-        keywords: ["new section", "add section", "insert section"],
+        keywords: ["new section", "add section", "insert section", "sibling"],
         run: (editor, range) => {
           editor.chain().focus().deleteRange(range).run();
-          onAddSectionAfter?.();
+          onAddSectionAfter?.("sibling");
         },
       },
+      ...(canAddSubsection
+        ? [
+            {
+              title: "New subsection",
+              description: "Add nested section",
+              icon: TreeStructure,
+              keywords: ["new subsection", "add subsection", "nested", "child", "indent"],
+              run: (editor: Editor, range: Range) => {
+                editor.chain().focus().deleteRange(range).run();
+                onAddSectionAfter?.("child");
+              },
+            },
+          ]
+        : []),
     ],
-    [onAddSectionAfter]
+    [onAddSectionAfter, canAddSubsection, enableReferences]
   );
 
   // We mirror the slash items + active index into refs *synchronously*
@@ -478,6 +644,157 @@ export function RichTextEditor({
     [commands, updateSlashMenu]
   );
 
+  // ---- Reference `@` search menu ----------------------------------------
+  // Mirrors the slash command plumbing but selects a document/folder to embed
+  // as an inline chip. Synchronous refs keep Enter picking from the freshest
+  // filtered list (see the slash comment above for the race this avoids).
+  useEffect(() => {
+    mentionIndexRef.current = mentionIndex;
+  }, [mentionIndex]);
+
+  const updateMentionMenu = useCallback(
+    (props: SuggestionProps<DocumentReferenceEntry, DocumentReferenceEntry>) => {
+      mentionItemsRef.current = props.items;
+      if (readOnly || !containerRef.current || !props.clientRect) {
+        setMentionState(null);
+        return;
+      }
+
+      const clientRect = props.clientRect();
+      const containerRect = containerRef.current.getBoundingClientRect();
+      if (!clientRect) {
+        setMentionState(null);
+        return;
+      }
+
+      const estimatedMenuHeight = Math.min(Math.max(props.items.length, 1) * 52 + 44, 360);
+      const viewportBottomSpace = window.innerHeight - clientRect.bottom;
+      const placeAbove = viewportBottomSpace < estimatedMenuHeight + 24;
+
+      setMentionState({
+        query: props.query,
+        items: props.items,
+        x: clientRect.left - containerRect.left,
+        y: placeAbove
+          ? clientRect.top - containerRect.top - 10
+          : clientRect.bottom - containerRect.top + 10,
+        placeAbove,
+        bottomOffset: placeAbove
+          ? Math.max(containerRect.height - (clientRect.top - containerRect.top - 10), 0)
+          : undefined,
+      });
+    },
+    [readOnly]
+  );
+
+  function handleMentionKeyDown({ event, view }: SuggestionKeyDownProps) {
+    const items = mentionItemsRef.current;
+    if (!items.length) {
+      if (event.key === "Escape") {
+        exitSuggestion(view, mentionPluginKey);
+        return true;
+      }
+      return false;
+    }
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setMentionIndex((current) => (current + 1) % items.length);
+      return true;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setMentionIndex((current) => (current === 0 ? items.length - 1 : current - 1));
+      return true;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const safeIndex = Math.min(mentionIndexRef.current, items.length - 1);
+      const item = items[Math.max(safeIndex, 0)];
+      if (item) {
+        mentionSelectRef.current?.(item);
+      }
+      return true;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      exitSuggestion(view, mentionPluginKey);
+      return true;
+    }
+    return false;
+  }
+
+  function selectMentionItem(item: DocumentReferenceEntry) {
+    mentionSelectRef.current?.(item);
+  }
+
+  const mentionExtension = useMemo(
+    () =>
+      Extension.create({
+        name: "reference-mention",
+        addProseMirrorPlugins() {
+          return [
+            Suggestion<DocumentReferenceEntry, DocumentReferenceEntry>({
+              editor: this.editor,
+              pluginKey: mentionPluginKey,
+              char: "@",
+              allowSpaces: true,
+              startOfLine: false,
+              items: ({ query }) => searchReferences(query),
+              command: ({ editor, range, props }) => {
+                // Insert the chip in place of the `@query` and continue typing
+                // after it with a trailing space.
+                editor
+                  .chain()
+                  .focus()
+                  .deleteRange(range)
+                  .insertDocReferenceInline({ refKind: props.kind, refSlug: props.slug })
+                  .insertContent(" ")
+                  .run();
+              },
+              render: () => ({
+                onStart: (props) => {
+                  mentionSelectRef.current = props.command;
+                  setMentionIndex(0);
+                  void ensureReferenceIndex();
+                  updateMentionMenu(props);
+                },
+                onUpdate: (props) => {
+                  mentionSelectRef.current = props.command;
+                  setMentionIndex((current) =>
+                    props.items.length === 0 ? 0 : Math.min(current, props.items.length - 1)
+                  );
+                  updateMentionMenu(props);
+                },
+                onKeyDown: (props) => handleMentionKeyDown(props),
+                onExit: () => {
+                  mentionSelectRef.current = null;
+                  setMentionIndex(0);
+                  setMentionState(null);
+                },
+              }),
+            }),
+          ];
+        },
+      }),
+    [updateMentionMenu]
+  );
+
+  // Extensions enabling document/folder references. Registered only in the
+  // shared document workspace so the personal-context profile editor stays
+  // free of workspace-document coupling.
+  const referenceExtensions = useMemo(
+    () =>
+      enableReferences
+        ? [
+            DocReferenceInline.configure({ onOpen: openReference }),
+            DocReferenceCard.configure({ onOpen: openReference }),
+            mentionExtension,
+          ]
+        : [],
+    [enableReferences, openReference, mentionExtension]
+  );
+
   const editor = useEditor({
     immediatelyRender: false,
     editable: !readOnly,
@@ -526,7 +843,10 @@ export function RichTextEditor({
         placeholder,
       }),
       InlineTagMark,
+      MermaidBlock,
+      CommentHighlight,
       slashCommandExtension,
+      ...referenceExtensions,
     ],
     content,
     editorProps: {
@@ -587,6 +907,9 @@ export function RichTextEditor({
     onUpdate({ editor }) {
       const html = editor.getHTML();
       lastEmittedHtmlRef.current = html;
+      const history = emittedHtmlHistoryRef.current;
+      history.push(html);
+      if (history.length > 8) history.shift();
       // Push the parent state update into a transition so React doesn't block
       // the keystroke's paint on the resulting cascade of re-renders.
       // Persistence is already debounced downstream (see creed-provider).
@@ -697,6 +1020,56 @@ export function RichTextEditor({
     setLinkDialogOpen(false);
   }
 
+  function openCommentComposer() {
+    if (!editor || !commentsEnabled) {
+      return;
+    }
+    const { from, to } = editor.state.selection;
+    const quote = editor.state.doc.textBetween(from, to, " ").trim();
+    if (!quote) {
+      return;
+    }
+    // Reuse the selection toolbar's computed position so the composer opens
+    // exactly where the user is looking. Fall back to a centred spot.
+    const anchor = selectionToolbar ?? {
+      x: window.innerWidth / 2,
+      y: window.innerHeight / 2,
+      placeBelow: true,
+    };
+    setCommentBody("");
+    setCommentDraft({ quote, x: anchor.x, y: anchor.y, placeBelow: anchor.placeBelow });
+    setSelectionToolbar(null);
+  }
+
+  function closeCommentComposer() {
+    setCommentDraft(null);
+    setCommentBody("");
+  }
+
+  async function submitComment() {
+    if (!commentDraft || !onCreateComment || !commentBody.trim()) {
+      return;
+    }
+    // Mentions are derived from the body text: any workspace member whose
+    // "@Label" appears in the comment is mentioned. The @-autocomplete simply
+    // inserts that text, so deleting it un-mentions the person.
+    const body = commentBody.trim();
+    const mentionedUserIds = commentUsers
+      .filter((user) => user.label && body.includes(`@${user.label}`))
+      .map((user) => user.id);
+    try {
+      setSavingComment(true);
+      await onCreateComment({
+        quote: commentDraft.quote,
+        body,
+        mentionedUserIds,
+      });
+      closeCommentComposer();
+    } finally {
+      setSavingComment(false);
+    }
+  }
+
   // Reposition the bubble menu on scroll/resize so it stays glued to the
   // selection when the page or any scroll container moves under it.
   useEffect(() => {
@@ -735,6 +1108,90 @@ export function RichTextEditor({
     };
   }, [editor]);
 
+  // Push comment anchors + the active id into the highlight plugin whenever
+  // they change. This is a meta-only transaction (no doc change) so it never
+  // triggers onChange / a save.
+  useEffect(() => {
+    if (!editor) return;
+    editor.view.dispatch(
+      editor.state.tr.setMeta(commentHighlightPluginKey, {
+        anchors: comments.map((comment) => ({ id: comment.id, quote: comment.quote })),
+        activeId: activeCommentId ?? null,
+      })
+    );
+  }, [editor, comments, activeCommentId]);
+
+  // Hover + click behaviour on comment highlights. Delegated on the editor DOM
+  // so it works for every decorated span without per-span listeners.
+  useEffect(() => {
+    if (!editor) return;
+    const dom = editor.view.dom as HTMLElement;
+
+    function clearHoverTimer() {
+      if (commentHoverTimer.current !== null) {
+        window.clearTimeout(commentHoverTimer.current);
+        commentHoverTimer.current = null;
+      }
+    }
+
+    function findCommentId(target: EventTarget | null): string | null {
+      if (!(target instanceof HTMLElement)) return null;
+      const el = target.closest("[data-comment-id]");
+      return el?.getAttribute("data-comment-id") ?? null;
+    }
+
+    function onOver(event: MouseEvent) {
+      const id = findCommentId(event.target);
+      if (!id) return;
+      const el = (event.target as HTMLElement).closest("[data-comment-id]");
+      if (!el) return;
+      clearHoverTimer();
+      const rect = el.getBoundingClientRect();
+      setCommentHover({ id, x: rect.left + rect.width / 2, y: rect.top });
+    }
+
+    function onOut(event: MouseEvent) {
+      const id = findCommentId(event.target);
+      if (!id) return;
+      // Give the pointer a moment to reach the hover card before dismissing.
+      clearHoverTimer();
+      commentHoverTimer.current = window.setTimeout(() => setCommentHover(null), 160);
+    }
+
+    function onClick(event: MouseEvent) {
+      const id = findCommentId(event.target);
+      if (id && onSelectComment) {
+        onSelectComment(id);
+      }
+    }
+
+    dom.addEventListener("mouseover", onOver);
+    dom.addEventListener("mouseout", onOut);
+    dom.addEventListener("click", onClick);
+    return () => {
+      dom.removeEventListener("mouseover", onOver);
+      dom.removeEventListener("mouseout", onOut);
+      dom.removeEventListener("click", onClick);
+      clearHoverTimer();
+    };
+  }, [editor, onSelectComment]);
+
+  // When the sidebar focuses a comment that lives in this section, scroll its
+  // highlight into view so selecting a thread navigates to the text.
+  useEffect(() => {
+    if (!editor || !activeCommentId) return;
+    if (!comments.some((comment) => comment.id === activeCommentId)) return;
+    const container = containerRef.current;
+    if (!container) return;
+    const raf = window.requestAnimationFrame(() => {
+      const el = container.querySelector(
+        `[data-comment-id="${CSS.escape(activeCommentId)}"]`
+      );
+      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [editor, activeCommentId, comments]);
+
   useEffect(() => {
     if (!editor) {
       return;
@@ -747,9 +1204,22 @@ export function RichTextEditor({
       return;
     }
 
+    // Stale echo guard: the parent handed us a value we previously emitted (or
+    // our initial content) that is now behind the live document - typically an
+    // in-flight onChange from a just-applied edit. Re-applying it would clobber
+    // the newer editor state (e.g. delete a reference chip the user just
+    // inserted), so treat it as a no-op and let the latest onChange settle.
+    if (emittedHtmlHistoryRef.current.includes(content)) {
+      editor.setEditable(!readOnly);
+      return;
+    }
+
     if (editor.getHTML() !== content) {
       editor.commands.setContent(content, { emitUpdate: false });
       lastEmittedHtmlRef.current = content;
+      const history = emittedHtmlHistoryRef.current;
+      history.push(content);
+      if (history.length > 8) history.shift();
     }
 
     editor.setEditable(!readOnly);
@@ -842,9 +1312,51 @@ export function RichTextEditor({
             >
               <Link2 className="h-3.5 w-3.5" />
             </ToolbarButton>
+            {commentsEnabled ? (
+              <>
+                <ToolbarDivider />
+                <ToolbarButton
+                  onClick={openCommentComposer}
+                  label="Comment"
+                >
+                  <MessageSquareQuote className="h-3.5 w-3.5" />
+                </ToolbarButton>
+              </>
+            ) : null}
           </motion.div>
         ) : null}
       </AnimatePresence>
+
+      <CommentComposerPopover
+        draft={commentDraft}
+        body={commentBody}
+        users={commentUsers}
+        saving={savingComment}
+        onBodyChange={setCommentBody}
+        onSubmit={() => void submitComment()}
+        onClose={closeCommentComposer}
+      />
+
+      <CommentHoverCard
+        hover={commentHover}
+        comment={
+          commentHover
+            ? comments.find((comment) => comment.id === commentHover.id) ?? null
+            : null
+        }
+        mentionLabels={commentUsers.map((user) => user.label)}
+        onOpenThread={(id) => {
+          setCommentHover(null);
+          onSelectComment?.(id);
+        }}
+        onPointerEnter={() => {
+          if (commentHoverTimer.current !== null) {
+            window.clearTimeout(commentHoverTimer.current);
+            commentHoverTimer.current = null;
+          }
+        }}
+        onPointerLeave={() => setCommentHover(null)}
+      />
 
       <EditorContent editor={editor} />
 
@@ -934,6 +1446,51 @@ export function RichTextEditor({
           </motion.div>
         ) : null}
       </AnimatePresence>
+
+      <AnimatePresence>
+        {mentionState && mentionState.items.length > 0 ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.12, ease: "easeOut" }}
+            className="absolute z-30 w-[280px] overflow-hidden rounded-xl border border-[var(--creed-border)] bg-[var(--creed-surface)] p-1 shadow-[0_8px_24px_rgba(28,28,26,0.08)]"
+            style={{
+              left: mentionState.x,
+              top: mentionState.placeAbove ? undefined : mentionState.y,
+              bottom: mentionState.placeAbove ? mentionState.bottomOffset : undefined,
+            }}
+          >
+            {mentionState.items.map((item, index) => {
+              const Icon = item.kind === "folder" ? Folder : FileText;
+              const isActive = index === mentionIndex;
+              const secondary = item.kind === "folder" ? "Folder" : item.path || "Document";
+
+              return (
+                <button
+                  key={`${sectionId}-${item.kind}-${item.slug}`}
+                  type="button"
+                  data-active={isActive}
+                  className="editor-command-item flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-[var(--creed-text-primary)] transition-colors duration-100"
+                  onMouseEnter={() => setMentionIndex(index)}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    selectMentionItem(item);
+                  }}
+                >
+                  <Icon className="h-3.5 w-3.5 shrink-0 text-[var(--creed-text-tertiary)]" />
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate font-medium">{item.title}</span>
+                    <span className="truncate text-[11px] text-[var(--creed-text-tertiary)]">
+                      {secondary}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </div>
   );
 }
@@ -971,3 +1528,145 @@ function ToolbarButton({
 function ToolbarDivider() {
   return <span aria-hidden className="mx-0.5 h-4 w-px bg-[var(--creed-border)]" />;
 }
+
+// Anchored popup composer for creating a comment against the current text
+// selection. Rendered with `position: fixed` like the selection toolbar so it
+// is unaffected by scroll containers or parent transforms. Mentions are typed
+// inline with `@` autocomplete; there's no quote preview because the anchored
+// text stays highlighted in the document instead.
+function CommentComposerPopover({
+  draft,
+  body,
+  users,
+  saving,
+  onBodyChange,
+  onSubmit,
+  onClose,
+}: {
+  draft: CommentDraftState | null;
+  body: string;
+  users: WorkspaceUser[];
+  saving: boolean;
+  onBodyChange: (value: string) => void;
+  onSubmit: () => void;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    if (!draft) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [draft, onClose]);
+
+  return (
+    <AnimatePresence>
+      {draft ? (
+        <>
+          {/* Click-away scrim - transparent so the document stays visible. */}
+          <div className="fixed inset-0 z-40" onMouseDown={onClose} />
+          <motion.div
+            initial={{ opacity: 0, y: draft.placeBelow ? -4 : 4, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: draft.placeBelow ? -4 : 4, scale: 0.98 }}
+            transition={{ duration: 0.14, ease: [0.22, 1, 0.36, 1] }}
+            className={cn(
+              "fixed z-50 w-[320px] max-w-[calc(100vw-16px)] -translate-x-1/2 rounded-xl border border-[var(--creed-border)] bg-[var(--creed-surface)] p-3 text-[var(--creed-text-primary)] shadow-[0_12px_40px_rgba(28,28,26,0.16)]",
+              draft.placeBelow ? "translate-y-2" : "-translate-y-[calc(100%+8px)]"
+            )}
+            style={{ left: draft.x, top: draft.y }}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <MentionTextarea
+              value={body}
+              onChange={onBodyChange}
+              users={users}
+              placeholder="Add a comment. Type @ to mention someone."
+              autoFocus
+              className="min-h-20"
+              onSubmit={onSubmit}
+            />
+
+            <div className="mt-3 flex items-center justify-end gap-2">
+              <Button variant="ghost" size="sm" className="h-8 px-3 text-[13px]" onClick={onClose}>
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                className="h-8 px-3 text-[13px]"
+                disabled={saving || !body.trim()}
+                onClick={onSubmit}
+              >
+                {saving ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
+                Add comment
+              </Button>
+            </div>
+          </motion.div>
+        </>
+      ) : null}
+    </AnimatePresence>
+  );
+}
+
+// Small hover preview shown when the pointer rests on a comment highlight in
+// the document. Clicking it opens the full thread in the sidebar.
+function CommentHoverCard({
+  hover,
+  comment,
+  mentionLabels,
+  onOpenThread,
+  onPointerEnter,
+  onPointerLeave,
+}: {
+  hover: CommentHoverState | null;
+  comment: EditorCommentAnchor | null;
+  mentionLabels: string[];
+  onOpenThread: (id: string) => void;
+  onPointerEnter: () => void;
+  onPointerLeave: () => void;
+}) {
+  return (
+    <AnimatePresence>
+      {hover && comment ? (
+        <motion.button
+          type="button"
+          initial={{ opacity: 0, y: 4, scale: 0.98 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: 4, scale: 0.98 }}
+          transition={{ duration: 0.12, ease: [0.22, 1, 0.36, 1] }}
+          className="fixed z-50 w-[280px] max-w-[calc(100vw-16px)] -translate-x-1/2 -translate-y-[calc(100%+8px)] rounded-xl border border-[var(--creed-border)] bg-[var(--creed-surface)] p-3 text-left shadow-[0_12px_40px_rgba(28,28,26,0.16)]"
+          style={{ left: hover.x, top: hover.y }}
+          onMouseEnter={onPointerEnter}
+          onMouseLeave={onPointerLeave}
+          onClick={() => onOpenThread(comment.id)}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span className="truncate text-[13px] font-medium text-[var(--creed-text-primary)]">
+              {comment.authorLabel}
+            </span>
+            <span
+              className={cn(
+                "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold",
+                comment.status === "resolved"
+                  ? "bg-[#F1F5F9] text-[#475569]"
+                  : "bg-[#FEF3C7] text-[#92400E]"
+              )}
+            >
+              {comment.status === "resolved" ? "Resolved" : "Open"}
+            </span>
+          </div>
+          <p className="mt-1.5 line-clamp-3 whitespace-pre-wrap text-[12px] leading-5 text-[var(--creed-text-secondary)]">
+            <MentionText text={comment.body} mentionLabels={mentionLabels} />
+          </p>
+          <span className="mt-2 inline-block text-[11px] font-medium text-[var(--creed-accent)]">
+            Open thread
+          </span>
+        </motion.button>
+      ) : null}
+    </AnimatePresence>
+  );
+}
+

@@ -5,6 +5,7 @@ import { isSupabaseAdminConfigured } from "@/lib/supabase/env";
 export type AuditAction =
   | "tokens.rotated"
   | "mcp.token_rotated"
+  | "mcp.client.removed"
   | "github.connected"
   | "github.disconnected"
   | "account.deleted"

@@ -5,7 +5,7 @@ import { isSupabaseConfigured } from "@/lib/supabase/env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = {
-  title: "Finish sign-in | Creed",
+  title: "Finish sign-in",
   description: "Finish setting up your Creed sign-in.",
 };
 

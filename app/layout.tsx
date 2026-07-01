@@ -25,16 +25,16 @@ const geistMono = Geist_Mono({
 const SITE_DESCRIPTION =
   "Creed is one personal context file that every AI reads before it answers. Written once, kept current by your agents, and portable across every tool you use.";
 
-// `title.default` is the brand title used by any page that doesn't set its
-// own. `title.template`
-// suffixes per-page titles, so individual pages set a bare title ("Pricing")
-// and get "Pricing | Creed" automatically. A page that wants an exact title
-// uses `title: { absolute: "..." }`.
+// The browser tab title is intentionally brand-free: `title.default` is empty
+// for pages that set no title, and `title.template` is a bare "%s" so a
+// page-specific title ("Pricing") is shown verbatim with no " | Creed" suffix.
+// A page that wants an exact title can still use `title: { absolute: "..." }`.
+// (Social/link-preview titles in openGraph/twitter below still carry the brand.)
 export const metadata: Metadata = {
   metadataBase: new URL(getSiteUrl()),
   title: {
-    default: "Creed - the personal context file every AI reads",
-    template: "%s | Creed",
+    default: "",
+    template: "%s",
   },
   description: SITE_DESCRIPTION,
   icons: {
@@ -43,12 +43,12 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     siteName: "Creed",
-    title: "Creed - the personal context file every AI reads",
+    title: "Creed",
     description: SITE_DESCRIPTION,
   },
   twitter: {
     card: "summary_large_image",
-    title: "Creed - the personal context file every AI reads",
+    title: "Creed",
     description: SITE_DESCRIPTION,
   },
 };

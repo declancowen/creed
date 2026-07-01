@@ -2,6 +2,7 @@
 // is derived from this array so the runtime list (used by validators and by
 // the agent contract docs) can never drift from the compile-time type.
 import { MAX_SECTION_DEPTH, normalizeSectionDepths } from "./section-hierarchy.ts";
+import { referenceToken, isDocReferenceKind } from "./document-reference.ts";
 
 // The order the accent picker renders cells in. Sorted along a colour
 // wheel - warm → cool → neutral - so the grid reads as a coherent
@@ -289,7 +290,13 @@ export type NewSectionProposalDraft = {
   name: string;
   accent?: AccentKey;
   template?: SectionTemplate;
+  // Sibling placement: the new section lands after this section (and its
+  // subtree) at the same depth. Ignored when `parentSectionId` is set.
   insertAfterSectionId?: string;
+  // Nesting placement: when set, the new section becomes the FIRST child of
+  // this section, one level deeper (clamped to MAX_SECTION_DEPTH = 2). Use
+  // this to create a subsection. Takes precedence over insertAfterSectionId.
+  parentSectionId?: string;
   contentHtml?: string;
   contentMarkdown?: string;
 };
@@ -383,6 +390,7 @@ export function normalizeLegacyProposalDraft(draft: ProposalDraft | { kind?: str
       accent: typeof raw.accent === "string" ? (raw.accent as AccentKey) : undefined,
       template: typeof raw.template === "string" ? (raw.template as SectionTemplate) : undefined,
       insertAfterSectionId: stringField("insertAfterSectionId"),
+      parentSectionId: stringField("parentSectionId"),
       contentHtml: stringField("contentHtml"),
       contentMarkdown: stringField("contentMarkdown"),
     };
@@ -1072,6 +1080,28 @@ const collaborationRules: HiddenInstructionContract = {
 export function sectionToMarkdown(section: CreedSection) {
   let text = section.content;
 
+  // Document/folder references first: convert the chip (inline span) and card
+  // (block div) nodes back to their Markdown tokens before any generic tag
+  // stripping runs, otherwise stripTags would erase them. Attribute order is
+  // not guaranteed by the serializer, so we pull kind/slug out of the matched
+  // tag rather than relying on positional capture groups.
+  const referenceTokenFromTag = (tag: string, form: "inline" | "card") => {
+    const kind = /data-ref-kind="([^"]*)"/.exec(tag)?.[1] ?? "doc";
+    const slug = /data-ref-slug="([^"]*)"/.exec(tag)?.[1] ?? "";
+    if (!slug) return "";
+    const safeKind = isDocReferenceKind(kind) ? kind : "doc";
+    const token = referenceToken(safeKind, slug, form);
+    return form === "card" ? `\n\n${token}\n\n` : token;
+  };
+  text = text.replace(
+    /<span\b[^>]*\bdata-doc-ref="inline"[^>]*><\/span>/g,
+    (tag) => referenceTokenFromTag(tag, "inline")
+  );
+  text = text.replace(
+    /<div\b[^>]*\bdata-doc-ref="card"[^>]*><\/div>/g,
+    (tag) => referenceTokenFromTag(tag, "card")
+  );
+
   // Inline tag marks first so we don't strip them in the generic tag
   // stripper below.
   text = text.replace(
@@ -1107,6 +1137,16 @@ export function sectionToMarkdown(section: CreedSection) {
   text = text.replace(/<(?:s|del|strike)\b[^>]*>([\s\S]*?)<\/(?:s|del|strike)>/g, "~~$1~~");
   text = text.replace(/<mark\b[^>]*>([\s\S]*?)<\/mark>/g, "==$1==");
   text = text.replace(/<u\b[^>]*>([\s\S]*?)<\/u>/g, "__$1__");
+
+  // Mermaid diagrams: a dedicated block node rendered from a ```mermaid fence.
+  // Must run BEFORE the generic fenced-code handler below (which would
+  // otherwise emit a language-less ``` fence and lose the mermaid hint). GitHub
+  // renders these natively after a publish. See rich-text.ts (the inverse).
+  text = text.replace(
+    /<pre[^>]*data-type="mermaid"[^>]*>\s*<code[^>]*>([\s\S]*?)<\/code>\s*<\/pre>/g,
+    (_match, body: string) =>
+      `\n\`\`\`mermaid\n${decodeEntities(body).trim()}\n\`\`\`\n`
+  );
 
   // Fenced code blocks. Keep the contents verbatim; if the editor stored a
   // language hint as a class, surface it on the opening fence.
@@ -1410,7 +1450,7 @@ function buildHiddenAgentGuidanceMarkdown(
       "Mutation tools:",
       "- `creed_update_section({ sectionId, contentMarkdown })` - rewrite a section's body.",
       "- `creed_append_to_section({ sectionId, contentMarkdown })` - add new content to a section WITHOUT rewriting existing content. Prefer this for new facts.",
-      "- `creed_create_section({ name, contentMarkdown, accent?, insertAfterSectionId? })` - add a new section.",
+      "- `creed_create_section({ name, contentMarkdown, accent?, insertAfterSectionId?, parentSectionId? })` - add a new section. Pass `parentSectionId` to nest a subsection under an existing section (up to 2 levels deep); pass `insertAfterSectionId` to add a sibling. Omit both to append at the end.",
       "- `creed_delete_section({ sectionId })` - remove a section.",
       "- `creed_rename_section({ sectionId, name })` - give a section a new name.",
       "- `creed_recolor_section({ sectionId, accent })` - change a section's accent.",
@@ -1420,7 +1460,6 @@ function buildHiddenAgentGuidanceMarkdown(
       "- `creed_get_section({ sectionId })` - fetch ONE section in full (id, name, accent, contentHtml, lastEditedBy). Use this before update / append.",
       "- `creed_search({ query, limit? })` - locate where a fact lives. Returns ranked sections with snippets.",
       "- `creed_get_recent_activity({ limit?, sinceISO? })` - see what other agents recently did. Useful to avoid duplicate proposals.",
-      "- `creed_get_quality_report({ sectionId? })` - see auto-generated quality scores so you can target the weakest sections.",
       "",
       "All mutation tools take flat parameters, do NOT ask you to pick a mode, and route to direct-edit or proposal automatically based on the user's approval setting. Errors include the list of valid section IDs and accents so you can self-correct without re-reading docs.",
       "",
@@ -1442,7 +1481,7 @@ function buildHiddenAgentGuidanceMarkdown(
       "",
       "### Draft shapes (read this BEFORE policy JSON to know what's possible)",
       '- Update content: `{ "kind": "rich-text", "contentMarkdown": "..." }`',
-      '- Create section: `{ "kind": "new-section", "name": "...", "accent"?: "<accent-key>", "insertAfterSectionId"?: "<id>", "contentMarkdown": "..." }`. Set the proposal\'s `sectionId` to `"new-section"`.',
+      '- Create section: `{ "kind": "new-section", "name": "...", "accent"?: "<accent-key>", "insertAfterSectionId"?: "<id>", "parentSectionId"?: "<id>", "contentMarkdown": "..." }`. Set the proposal\'s `sectionId` to `"new-section"`. Sections nest up to 2 levels: use `parentSectionId` to make it a subsection (first child of that section); use `insertAfterSectionId` to make it a sibling after that section. `parentSectionId` wins if both are set.',
       '- Delete section: `{ "kind": "delete-section" }`. The proposal\'s `sectionId` selects which section to remove.',
       '- Rename section: `{ "kind": "rename-section", "name": "New name" }`',
       `- Recolour section: \`{ "kind": "recolor-section", "accent": "${ACCENT_KEYS.join(" | ")}" }\``,
@@ -1539,6 +1578,18 @@ function buildHiddenAgentGuidanceMarkdown(
       "  When: command-line snippets, config blocks, file paths the user keeps re-typing, scheduled jobs. Anything that should not be reflowed.",
       "  Don't: wrap normal sentences in code. Don't use a code block as a 'fancy' callout.",
       "",
+      "**Diagrams (Mermaid)** - flows, sequences, architecture, decision trees, relationships.",
+      "  Syntax: a fenced code block with the `mermaid` language hint - ```` ```mermaid ````, then valid Mermaid source (`flowchart`, `sequenceDiagram`, `erDiagram`, `journey`, `graph`, etc.), then ```` ``` ```` to close.",
+      "  When: anything easier to grasp as a picture than as prose - a process with branches, a sequence of calls between systems, a data model, a user journey. Creed renders it as a live diagram in the editor and it renders natively on GitHub after a publish.",
+      "  Don't: paste a screenshot description or ASCII art - use real Mermaid syntax. Keep one diagram per idea; a giant unreadable graph helps no one.",
+      "  Example:",
+      "  ```mermaid",
+      "  flowchart TD",
+      "      A[Request] --> B{Authorized?}",
+      "      B -->|Yes| C[Serve content]",
+      "      B -->|No| D[Return 401]",
+      "  ```",
+      "",
       "**Horizontal rule** - visual divider between major thoughts.",
       "  Syntax: `---` on its own line (or `***` / `___`).",
       "  When: a section is long enough to have two or more distinct chunks of meaning. One or two rules per section is plenty.",
@@ -1553,13 +1604,14 @@ function buildHiddenAgentGuidanceMarkdown(
       "  Syntax: a line of text with a blank line above and below.",
       "  When: a single durable fact or context that doesn't fit a list or callout. A paragraph should be one idea.",
       "",
-      "Quality rules (the user's quality popover scores against these):",
+      "Content structure rules (apply these when writing or reviewing sections):",
       "- Pick the block that matches the meaning. A list of three rules is a list. A warning is a callout. A tool list is tags. A command is a code block.",
       "- One block per idea. Don't cram three rules into one bullet.",
       "- Group related material under a `### subheading` instead of leaving a flat list of 8+ bullets.",
       "- A long section earns one or two `---` dividers between major chunks.",
       "- A tool list is ALWAYS `#tag #tag #tag`. Never bullets of tool names.",
       "- A hard rule the AI should never break is ALWAYS a `> callout`. Never a bullet.",
+      "- A process, sequence, data model, or journey with branches is clearer as a ```mermaid diagram than as nested bullets.",
       "",
       "Worked example - a Routines section that uses every component appropriately:",
       "```",
@@ -1601,6 +1653,7 @@ function buildHiddenAgentGuidanceMarkdown(
       "When to use a NEW section vs richer formatting in an existing one:",
       "- Stay in the existing section if the new content is a fact or rule that fits the section's meaning. Use richer formatting (headings, callouts, tags) to organise it.",
       "- Create a new section only when the user has a recurring kind of content that genuinely doesn't fit any of the 10 defaults (Identity, Beliefs, Goals, Work, Preferences, Constraints, People, Health, Routines, Context). Examples: Reading, Travel, Music, Finances. Set `accent: \"custom\"` and pick a sensible `insertAfterSectionId`.",
+      "- Nest a SUBSECTION (via `parentSectionId`) only when the content is a genuine sub-topic of an existing section - e.g. a \"Dietary rules\" subsection under Health, or \"Direct reports\" under People. Nesting is capped at 2 levels deep. Prefer a subsection over a new top-level section when the parent already frames the topic; prefer richer formatting inside the parent over a subsection when it's just a fact or two.",
       "",
       "- Do not hunt for other routes. Use the endpoint and token above."
     );
@@ -1730,44 +1783,15 @@ export function buildAgentReadPayload(
   })}\n`;
 }
 
-export const sectionSuggestions = [
-  {
-    name: "Beliefs",
-    description: "Values and worldview AI should know about and respect.",
-    starter:
-      "<ul class=\"creed-list creed-list-bullet\"><li>Add a belief or value AI should factor into how it reasons with you.</li></ul>",
-  },
-  {
-    name: "Constraints",
-    description: "Lines AI should never cross: hard noes, sensitive topics, things that need explicit permission.",
-    starter:
-      "<ul class=\"creed-list creed-list-bullet\"><li>Never assume something on your behalf without checking first.</li><li>Don't surface topics you've flagged as off-limits.</li></ul>",
-  },
-  {
-    name: "People",
-    description: "Important relationships AI should know and treat consistently.",
-    starter:
-      "<p>Name the person, your relationship, and what AI should remember when they come up.</p>",
-  },
-  {
-    name: "Health",
-    description: "Health, dietary, accessibility, or wellbeing context AI should accommodate.",
-    starter:
-      "<p>Note any conditions, sensitivities, dietary patterns, or accessibility needs, and how AI should handle them.</p>",
-  },
-  {
-    name: "Routines",
-    description: "Daily, weekly, or seasonal rhythms AI should respect when planning or scheduling.",
-    starter:
-      "<ul class=\"creed-list creed-list-bullet\"><li>Note a habit, schedule, or ritual AI should plan around.</li></ul>",
-  },
-  {
-    name: "Context",
-    description: "Catch-all for durable personal context that doesn't fit elsewhere.",
-    starter:
-      "<p>Anything else AI should know about you that doesn't have its own section yet.</p>",
-  },
-];
+// Starter section presets were removed from the add-section composer: the
+// product no longer ships opinionated templates (Beliefs / Constraints / etc.).
+// The export stays as an empty list so `createStarterContent` keeps a single
+// lookup path and any remaining importers compile.
+export const sectionSuggestions: {
+  name: string;
+  description: string;
+  starter: string;
+}[] = [];
 
 export function createStarterContent(name: string) {
   const suggestion = sectionSuggestions.find((item) => item.name === name);

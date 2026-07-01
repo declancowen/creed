@@ -17,27 +17,42 @@ Creed is **not** a notes app, journal, chat memory store, or generic AI
 wrapper. If a change would make it feel like one of those, it's the
 wrong change.
 
-Creed also has a shared Markdown document workspace for invited users. For
-that workspace, **Supabase is the live source of truth**. GitHub is the
-published/version-control output, not the live collaboration layer.
+Creed also has a shared Markdown document workspace for invited users. That
+workspace is **Supabase-only**: Supabase is the source of truth, and versioning
+and review happen inside Creed via proposals and an append-only version history.
+There is no GitHub syncing for documents (push/pull/publish were removed).
 
 Agents working through MCP must:
 - list/read shared documents through the Creed MCP document tools;
 - read current comments before changing a document when review context matters;
 - update document content with `expectedRevision` and re-read on conflicts;
 - use document metadata tools for status/type/stage/lifecycle/priority/size;
-- treat the YAML frontmatter in a document's `contentMarkdown` as the
-  version-controlled projection of its properties (title/type/status/stage/
-  lifecycle/priority/size). Supabase columns stay authoritative; the frontmatter
-  is written on push and parsed back on pull/update. `content` is body-only;
+- expect that document content edits are governed by the workspace Agent edit
+  policy: a change is applied directly, recorded as a pending proposal for a
+  workspace member to approve, or rejected outright. Read the `outcome` in the
+  tool result to know which happened; do not assume an edit was applied;
 - add comments for questions, uncertainty, review notes, and suggested changes
-  that should not be applied silently;
-- mention a user only when their attention is actually needed;
-- publish/sync to GitHub only through Creed's publish flow.
+  that should not be applied silently; comments you add through MCP are recorded
+  as private pending proposals that the user reviews and approves before anyone
+  else sees them, and once approved they appear as the user's own comment (never
+  labelled as an agent);
+- mention a user only when their attention is actually needed (a mention in a
+  pending comment only notifies once the user approves it).
 
-Do not edit the GitHub roadmap repository directly as a way to collaborate on
-live documents. If direct GitHub edits happen outside Creed, Creed must detect
-and reconcile them before publishing.
+Documents can reference other documents and folders inline. Use the slug from
+`creed_list_documents` / `creed_read_document`:
+
+- `[[doc:SLUG]]` inline chip linking a document; `[[folder:SLUG]]` links a folder.
+- `![[doc:SLUG]]` (or `![[folder:SLUG]]`) on its own line renders a full-width
+  card with the target's title, description, and property pills.
+
+Prefer a reference over pasting another document's contents so links stay live.
+The token round-trips through Markdown, so it survives edits by both humans and
+agents. In-editor, users insert the same references with `@` or the "Reference
+document" slash command.
+
+Do not attempt to push, pull, or publish shared documents to GitHub — documents
+live only in Supabase.
 
 ---
 
@@ -46,7 +61,7 @@ and reconcile them before publishing.
 ```
 Next.js 16 (App Router, Turbopack)   React 19   TypeScript (strict)
 Tailwind v4   shadcn/ui   Tiptap   Framer Motion / motion
-Supabase (Postgres + RLS + auth)   OpenRouter (BYOK)
+Supabase (Postgres + RLS + auth)
 ```
 
 ---
@@ -75,10 +90,11 @@ lib/
 ├── creed-data.ts             types, section IDs, accent maps, agent contract
 ├── creed-backend.ts          Supabase reads/writes
 ├── creed-markdown.ts         Markdown ↔ section parser
+├── section-hierarchy.ts      section nesting rules (depth 0-2, indent/collapse/insert)
+├── workspace-settings.ts     workspace edit-policy (human/agent: cant-edit|propose|direct)
+├── document-editing.ts       policy router + apply path for shared-document edits
+├── document-versions.ts      append-only shared-document version history
 ├── rich-text.ts              Tiptap content normalization
-├── ai/quality{,-runner,-rubric}.ts   quality analysis
-├── ai/openrouter.ts          BYOK call helper
-├── ai/model-catalog.ts       OpenRouter model list + tier scoring
 ├── supabase/{server,browser,admin}.ts        per-runtime clients
 ├── secret-crypto.ts          AES-256-GCM token storage
 ├── audit-log.ts              creed_audit_events writer
@@ -149,7 +165,7 @@ These are non-negotiable. Don't cross them without asking.
 
 ### Fetches
 - Server fetches in route handlers / server components.
-- Client fetches go through `lib/ai/quality-runner.ts`-style module
+- Client fetches go through `lib/document-reference-index.ts`-style module
   singletons when state must survive navigation.
 - No `next/dynamic({ ssr: false })` for heavy public-route components
   — known to hang in Next 16 dev.

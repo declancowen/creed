@@ -31,7 +31,6 @@ There's a small set of tools every AI-native person re-invents for themselves: a
 The file is plain Markdown. The app exists to:
 
 - support invite-only sign-in and shared Markdown workspaces
-- score quality and surface gaps (BYOK OpenRouter — never our tab)
 - let agents read and propose updates without you copy-pasting
 - keep one canonical version across every tool you use
 
@@ -71,7 +70,7 @@ Every section is agent-writable. Every change goes through the review (or direct
 
 ## Status
 
-Creed is in active development. This fork is invite-only, BYOK-only for AI, and does not expose public billing or signup.
+Creed is in active development. This fork is invite-only and does not expose public billing or signup.
 
 ---
 
@@ -81,7 +80,6 @@ You'll need:
 
 - **Node.js 20+**
 - **a Supabase project** (free tier is fine)
-- **an OpenRouter API key** (only needed for AI-powered quality analysis and refinement)
 
 ### 1. Clone and install
 
@@ -165,7 +163,6 @@ MCP uses OAuth 2.1: Creed is its own authorization server (`/authorize`, `/token
 - **Tiptap** for the rich-text editor
 - **Framer Motion** for the calmer-than-normal interactions
 - **Supabase** for auth, Postgres, RLS, realtime
-- **OpenRouter** for BYOK AI
 
 The stack is intentionally boring and self-hostable.
 
@@ -191,7 +188,6 @@ components/
 lib/
 ├── creed-data.ts       types, section IDs, agent contract
 ├── creed-backend.ts    Supabase reads/writes
-├── ai/                 OpenRouter, model catalog, quality
 └── supabase/           browser + server clients
 
 supabase/migrations/    canonical schema

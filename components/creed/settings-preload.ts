@@ -1,8 +1,5 @@
 "use client";
 
-import type { AiModelQuality } from "@/lib/ai/model-catalog";
-import type { AiModelCatalogItem } from "@/lib/ai/model-catalog";
-
 export type RepoOption = {
   id: number;
   owner: string;
@@ -31,39 +28,6 @@ export type VersionControlStatus = {
   remoteCommittedAt?: string | null;
 };
 
-export type AiMode = "credits" | "byok";
-
-export type PublicAiSettings = {
-  provider: "openrouter";
-  selectedModelId: string;
-  keyStatus: "missing" | "valid" | "invalid";
-  aiMode: AiMode;
-  keyLastFour?: string;
-  lastValidatedAt?: string;
-};
-
-export type AiUsageRange = "7d" | "30d" | "90d";
-
-export type AiUsageSummary = {
-  range: AiUsageRange;
-  totalCostUsd: number;
-  byModel: Array<{
-    modelId: string;
-    modelName: string;
-    quality: AiModelQuality;
-    costUsd: number;
-  }>;
-  days: Array<{
-    date: string;
-    segments: Array<{
-      modelId: string;
-      modelName: string;
-      quality: AiModelQuality;
-      costUsd: number;
-    }>;
-  }>;
-};
-
 type CacheEntry<T> = {
   value: T | null;
   promise: Promise<T> | null;
@@ -71,21 +35,13 @@ type CacheEntry<T> = {
 
 const reposCache: CacheEntry<RepoOption[]> = { value: null, promise: null };
 const branchesCache = new Map<string, CacheEntry<BranchOption[]>>();
-const aiSettingsCache: CacheEntry<PublicAiSettings | null> = { value: null, promise: null };
-const aiModelsCache: CacheEntry<AiModelCatalogItem[]> = { value: null, promise: null };
-const usageCache = new Map<string, CacheEntry<AiUsageSummary | null>>();
 const versionStatusCache = new Map<string, CacheEntry<VersionControlStatus | null>>();
 let activeCacheScope = "";
 
 function clearAllSettingsCaches() {
   reposCache.value = null;
   reposCache.promise = null;
-  aiSettingsCache.value = null;
-  aiSettingsCache.promise = null;
-  aiModelsCache.value = null;
-  aiModelsCache.promise = null;
   branchesCache.clear();
-  usageCache.clear();
   versionStatusCache.clear();
 }
 
@@ -161,73 +117,6 @@ export function loadSettingsBranches(owner: string, repo: string) {
   return cached.promise;
 }
 
-export function loadSettingsAiSettings() {
-  if (aiSettingsCache.value) {
-    return Promise.resolve(aiSettingsCache.value);
-  }
-
-  if (!aiSettingsCache.promise) {
-    aiSettingsCache.promise = readJson<{ settings?: PublicAiSettings; models?: AiModelCatalogItem[] }>("/api/app/ai/settings")
-      .then((payload) => {
-        aiSettingsCache.value = payload.settings ?? null;
-        aiModelsCache.value = payload.models ?? aiModelsCache.value;
-        return aiSettingsCache.value;
-      })
-      .finally(() => {
-        aiSettingsCache.promise = null;
-      });
-  }
-
-  return aiSettingsCache.promise;
-}
-
-export function loadSettingsAiModels() {
-  if (aiModelsCache.value) {
-    return Promise.resolve(aiModelsCache.value);
-  }
-
-  if (!aiModelsCache.promise) {
-    aiModelsCache.promise = readJson<{ settings?: PublicAiSettings; models?: AiModelCatalogItem[] }>("/api/app/ai/settings")
-      .then((payload) => {
-        aiSettingsCache.value = payload.settings ?? aiSettingsCache.value;
-        aiModelsCache.value = payload.models ?? [];
-        return aiModelsCache.value;
-      })
-      .finally(() => {
-        aiModelsCache.promise = null;
-      });
-  }
-
-  return aiModelsCache.promise;
-}
-
-export function setCachedSettingsAiSettings(settings: PublicAiSettings) {
-  aiSettingsCache.value = settings;
-}
-
-export function loadSettingsUsage(range: AiUsageRange, mode: AiMode) {
-  const key = `${range}:${mode}`;
-  const cached = usageCache.get(key) ?? { value: null, promise: null };
-  usageCache.set(key, cached);
-
-  if (!cached.promise) {
-    cached.promise = readJson<{ usage?: AiUsageSummary }>(`/api/app/ai/usage?range=${range}&mode=${mode}`)
-      .then((payload) => {
-        cached.value = payload.usage ?? null;
-        return cached.value;
-      })
-      .finally(() => {
-        cached.promise = null;
-      });
-  }
-
-  return cached.promise;
-}
-
-export function clearSettingsUsageCache() {
-  usageCache.clear();
-}
-
 export function loadSettingsVersionStatus(localHash: string) {
   const cached = versionStatusCache.get(localHash) ?? { value: null, promise: null };
   versionStatusCache.set(localHash, cached);
@@ -273,9 +162,6 @@ export function preloadSettingsData({
   if (scope) {
     setSettingsCacheScope(scope);
   }
-
-  void loadSettingsAiSettings().catch(() => null);
-  void loadSettingsUsage("7d", "byok").catch(() => null);
 
   if (!githubConnected) {
     return;

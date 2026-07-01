@@ -15,29 +15,21 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   Contrast,
-  FileText,
-  Link2,
+  LayoutGrid,
+  ChevronDown,
   Logout,
   Plug,
   Plus,
   Settings,
 } from "@/components/ui/phosphor-icons";
-import { AnimatedMenuIconItem } from "@/components/creed/animated-icon-action";
-import { FeedbackMenuItem } from "@/components/creed/feedback-menu";
 import { NotificationMenu } from "@/components/creed/notification-menu";
 import { useTheme } from "@/components/creed/theme-provider";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Separator } from "@/components/ui/separator";
 import { accentColorMap, type CreedSection } from "@/lib/creed-data";
+import { sectionDepth, sectionHasChildren, collapsedHiddenIds } from "@/lib/section-hierarchy";
 import { cn } from "@/lib/utils";
-import { CreedMark, CreedWordmark } from "@/components/creed/brand";
 import { useCreed } from "@/components/creed/creed-provider";
 import { preloadSettingsData } from "@/components/creed/settings-preload";
 import { preloadMcpHealth } from "@/components/creed/mcp-health-preload";
@@ -68,7 +60,7 @@ type ShellActionsContextValue = {
 const ShellActionsContext = createContext<ShellActionsContextValue | null>(null);
 
 const navItems = [
-  { href: "/dashboard", label: "Dashboard", icon: FileText },
+  { href: "/dashboard", label: "Dashboard", icon: LayoutGrid },
   { href: "/connections", label: "Connections", icon: Plug },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
@@ -123,13 +115,43 @@ export function CreedShell({
   const [activeSectionId, setActiveSectionId] = useState<string | null>(null);
   const [liveSections, setLiveSections] = useState<CreedSection[] | null>(null);
   const documentOpen = pathname === "/file" && Boolean(searchParams.get("document"));
-  // The signed-in app sidebar stays identical on every route (matching
-  // /dashboard) so navigating into a document doesn't swap the nav out. The
-  // personal-creed section list is legacy and is never surfaced in the shared
-  // sidebar anymore.
-  const visibleNavItems = navItems;
-  const showLegacySections: boolean = false;
-  const sidebarSections = liveSections ?? sections;
+  // On a shared-document view the sidebar becomes the document's outline: a
+  // work tree of its sections (nested by depth) instead of the global app nav.
+  // Everywhere else the sidebar stays identical to /dashboard. The document's
+  // live sections are pushed in from file-screen via useCreedShellLiveSections.
+  const visibleNavItems = documentOpen ? [] : navItems;
+  // Only render the document outline once its live sections have actually
+  // arrived (file-screen pushes them via useCreedShellLiveSections). Until
+  // then liveSections is null, so we keep the sidebar clean during the
+  // document's skeleton load instead of showing a lone "Add section" button.
+  const showLegacySections: boolean = documentOpen && liveSections !== null;
+  // In document mode the outline must come ONLY from the open document's live
+  // sections. Never fall back to the personal-creed `sections` here or they
+  // leak into the document sidebar during the brief window before mount.
+  const sidebarSections = liveSections ?? (documentOpen ? [] : sections);
+  // Sidebar outline collapse. View-only and local to the rail: collapsing a
+  // parent here hides its subtree in the outline without touching the editor's
+  // own collapse state or anything serialized. Mirrors the editor's logic via
+  // the shared section-hierarchy helpers so nesting reads consistently.
+  const [collapsedSidebarIds, setCollapsedSidebarIds] = useState<ReadonlySet<string>>(
+    () => new Set<string>()
+  );
+  const toggleSidebarCollapsed = useCallback((sectionId: string) => {
+    setCollapsedSidebarIds((current) => {
+      const next = new Set(current);
+      if (next.has(sectionId)) next.delete(sectionId);
+      else next.add(sectionId);
+      return next;
+    });
+  }, []);
+  const activeSidebarSections = useMemo(
+    () => sidebarSections.filter((section) => !section.archived),
+    [sidebarSections]
+  );
+  const hiddenSidebarIds = useMemo(
+    () => collapsedHiddenIds(activeSidebarSections, collapsedSidebarIds),
+    [activeSidebarSections, collapsedSidebarIds]
+  );
   const registerFileActions = useCallback((actions: ShellFileActions) => {
     fileActionsRef.current = actions;
 
@@ -266,21 +288,36 @@ export function CreedShell({
       <div className="grid h-screen grid-cols-[48px_minmax(0,1fr)] overflow-hidden bg-[var(--creed-surface)] lg:grid-cols-[220px_minmax(0,1fr)]">
         <aside className="h-screen overflow-hidden border-r border-[var(--creed-border)] bg-[var(--creed-surface)] px-1.5 py-3 lg:px-5 lg:py-5">
           <div className="flex h-full flex-col">
-            <Link
-              href="/dashboard"
-              aria-label="Creed dashboard"
-              className="mx-auto flex h-8 w-8 items-center justify-center rounded-[10px] transition-opacity duration-200 hover:opacity-60 lg:mx-0 lg:h-auto lg:w-auto lg:justify-start lg:px-2 lg:py-1.5"
-            >
-              <span className="lg:hidden">
-                <CreedMark />
+            {/* Persistent identity. Static (no menu) so it always reads as a
+                label of who's signed in, not an action. Avatar-only on the
+                mobile rail, avatar + name on lg. */}
+            <div className="flex items-center justify-center gap-2.5 px-1 py-1 lg:justify-start lg:px-2 lg:py-1.5">
+              <Avatar className="h-6 w-6 overflow-hidden rounded-[8px] border border-[var(--creed-border)] bg-[var(--creed-surface-raised)] after:rounded-[8px]">
+                {showAvatarImage && avatarUrl ? (
+                  <Image
+                    key={avatarUrl}
+                    src={avatarUrl}
+                    alt={userName}
+                    fill
+                    className="rounded-[8px] object-cover"
+                    referrerPolicy="no-referrer"
+                    unoptimized
+                    onError={() => setFailedAvatarUrl(avatarUrl)}
+                  />
+                ) : (
+                  <AvatarFallback className="bg-transparent text-xs font-medium text-[var(--creed-text-primary)]">
+                    {avatarInitials}
+                  </AvatarFallback>
+                )}
+              </Avatar>
+              <span className="hidden min-w-0 flex-1 truncate text-left text-sm font-medium text-[var(--creed-text-primary)] lg:inline">
+                {userName}
               </span>
-              <span className="hidden lg:block">
-                <CreedWordmark className="ml-0" />
-              </span>
-            </Link>
+            </div>
+            <Separator className="my-3 bg-[var(--creed-border)] lg:my-4" />
 
             {visibleNavItems.length > 0 ? (
-              <nav className="mt-5 space-y-1 lg:mt-8">
+              <nav className="space-y-1">
                 {visibleNavItems.map((item) => {
                   const active = pathname === item.href;
 
@@ -291,18 +328,62 @@ export function CreedShell({
 
             {showLegacySections ? (
               <>
-                <Separator className="my-4 bg-[var(--creed-border)] lg:my-6" />
-
-                <div className="hidden text-[13px] font-medium text-[var(--creed-text-tertiary)] lg:block">
-                  Sections
-                </div>
-                <div className="mt-2 min-h-0 flex-1 space-y-1 overflow-y-auto creed-scrollbar lg:mt-4 lg:pr-1">
-              {sidebarSections.filter((section) => !section.archived).map((section) => {
+                <div className="min-h-0 flex-1 space-y-1 overflow-y-auto creed-scrollbar lg:pr-1">
+              {activeSidebarSections.map((section, sectionIndex) => {
+                if (hiddenSidebarIds.has(section.id)) return null;
                 const pendingCount = pendingProposalCountBySection.get(section.id) ?? 0;
                 const isActive = activeSectionId === section.id && pathname === "/file";
                 const pendingDelete = pendingDeleteSectionIds.has(section.id);
+                const depth = sectionDepth(section);
+                const hasChildren = sectionHasChildren(activeSidebarSections, sectionIndex);
+                const collapsed = collapsedSidebarIds.has(section.id);
                 const content = (
                   <>
+                    {depth > 0 ? (
+                      // Indent nested sections so the outline reads as a work
+                      // tree. Only on lg where labels are visible; the mobile
+                      // rail is icon-only and stays flush.
+                      <span
+                        aria-hidden
+                        className="hidden shrink-0 lg:block"
+                        style={{ width: depth * 10 }}
+                      />
+                    ) : null}
+                    {/* Disclosure slot. A parent gets a chevron that toggles its
+                        subtree; leaf rows get an equal-width spacer so every dot
+                        lines up regardless of whether the row has children. A
+                        span[role=button] is valid inside the row button (unlike a
+                        nested <button>) and stops propagation so toggling never
+                        navigates. lg only - the mobile rail is icon-only. */}
+                    {hasChildren ? (
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        aria-expanded={!collapsed}
+                        aria-label={collapsed ? `Expand ${section.name}` : `Collapse ${section.name}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          toggleSidebarCollapsed(section.id);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            toggleSidebarCollapsed(section.id);
+                          }
+                        }}
+                        className="hidden h-3.5 w-3.5 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--creed-text-secondary)] transition-colors hover:text-[var(--creed-text-primary)] lg:inline-flex"
+                      >
+                        <ChevronDown
+                          className={cn(
+                            "h-3 w-3 transition-transform duration-200",
+                            collapsed ? "-rotate-90" : "rotate-0"
+                          )}
+                        />
+                      </span>
+                    ) : (
+                      <span aria-hidden className="hidden h-3.5 w-3.5 shrink-0 lg:block" />
+                    )}
                     <span
                       className="h-2.5 w-2.5 shrink-0 rounded-[3px] lg:h-1.5 lg:w-1.5 lg:rounded-[2px]"
                       style={{
@@ -339,7 +420,7 @@ export function CreedShell({
                     type="button"
                     onClick={() => handleSectionClick(section.id)}
                     className={cn(
-                      "flex h-8 w-8 mx-auto items-center justify-center rounded-[10px] text-left text-[14px] font-medium text-[var(--creed-text-secondary)] transition-colors duration-150 hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)] lg:h-auto lg:w-full lg:mx-0 lg:min-h-0 lg:justify-start lg:gap-3 lg:px-2 lg:py-2",
+                      "flex h-8 w-8 mx-auto items-center justify-center rounded-[10px] text-left text-[12px] font-medium text-[var(--creed-text-secondary)] transition-colors duration-150 hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)] lg:h-auto lg:w-full lg:mx-0 lg:min-h-0 lg:justify-start lg:gap-1.5 lg:px-1.5 lg:py-1.5",
                       isActive &&
                         "bg-[var(--creed-surface-raised)] text-[var(--creed-text-primary)] hover:bg-[var(--creed-surface-raised)]",
                       // Pending delete: subtle red wash and red text so the
@@ -380,7 +461,7 @@ export function CreedShell({
                     router.push("/file");
                   }}
                   className={cn(
-                    "flex h-8 w-8 mx-auto items-center justify-center rounded-[10px] bg-[#ECFDF5] text-left text-[14px] font-medium text-[#047857] transition-colors duration-150 hover:bg-[#D1FAE5] hover:text-[#065F46] dark:bg-[#052e1a]/40 dark:text-[#4ade80] dark:hover:bg-[#052e1a]/60 dark:hover:text-[#4ade80] lg:h-auto lg:w-full lg:mx-0 lg:min-h-0 lg:justify-start lg:gap-3 lg:px-2 lg:py-2",
+                    "flex h-8 w-8 mx-auto items-center justify-center rounded-[10px] bg-[#ECFDF5] text-left text-[12px] font-medium text-[#047857] transition-colors duration-150 hover:bg-[#D1FAE5] hover:text-[#065F46] dark:bg-[#052e1a]/40 dark:text-[#4ade80] dark:hover:bg-[#052e1a]/60 dark:hover:text-[#4ade80] lg:h-auto lg:w-full lg:mx-0 lg:min-h-0 lg:justify-start lg:gap-1.5 lg:px-1.5 lg:py-1.5",
                     // Same active-equals-hover rule as the pending-delete
                     // rows above: once the user has scrolled into the
                     // proposal preview, lock the row into its hover tone.
@@ -400,7 +481,7 @@ export function CreedShell({
               <button
                 type="button"
                 onClick={handleAddSectionClick}
-                className="flex h-8 w-8 mx-auto items-center justify-center rounded-[10px] text-left text-[14px] text-[var(--creed-text-tertiary)] transition-colors duration-150 hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)] lg:h-auto lg:w-full lg:mx-0 lg:min-h-0 lg:justify-start lg:gap-2 lg:px-2 lg:py-2"
+                className="flex h-8 w-8 mx-auto items-center justify-center rounded-[10px] text-left text-[12px] text-[var(--creed-text-tertiary)] transition-colors duration-150 hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)] lg:h-auto lg:w-full lg:mx-0 lg:min-h-0 lg:justify-start lg:gap-1.5 lg:px-1.5 lg:py-1.5"
                 aria-label="Add section"
               >
                 <Plus className="h-3.5 w-3.5" strokeWidth={1.8} />
@@ -413,65 +494,23 @@ export function CreedShell({
             )}
 
             <div className="mt-auto">
-              <NotificationMenu />
               <Separator className="my-4 bg-[var(--creed-border)] lg:my-6" />
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    className="h-auto w-full min-w-0 justify-center rounded-[10px] border-0 bg-transparent px-1 py-1 transition-colors hover:bg-[var(--creed-surface-raised)] aria-expanded:bg-[var(--creed-surface-raised)] dark:hover:bg-[var(--creed-surface-raised)] lg:justify-between lg:bg-transparent lg:pl-[7px] lg:pr-2.5 lg:py-1.5"
-                  >
-                    <span className="flex min-w-0 w-full items-center justify-center gap-2.5 lg:justify-start">
-                      <Avatar className="h-6 w-6 overflow-hidden rounded-[8px] border border-[var(--creed-border)] bg-[var(--creed-surface-raised)] after:rounded-[8px]">
-                        {showAvatarImage && avatarUrl ? (
-                          <Image
-                            key={avatarUrl}
-                            src={avatarUrl}
-                            alt={userName}
-                            fill
-                            className="rounded-[8px] object-cover"
-                            referrerPolicy="no-referrer"
-                            unoptimized
-                            onError={() => setFailedAvatarUrl(avatarUrl)}
-                          />
-                        ) : (
-                          <AvatarFallback className="bg-transparent text-xs font-medium text-[var(--creed-text-primary)]">
-                            {avatarInitials}
-                          </AvatarFallback>
-                        )}
-                      </Avatar>
-                      <span className="hidden min-w-0 flex-1 truncate text-left text-sm font-medium text-[var(--creed-text-primary)] lg:inline">
-                        {userName}
-                      </span>
-                    </span>
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  align="start"
-                  className="w-(--radix-dropdown-menu-trigger-width) border-[var(--creed-border)] bg-[var(--creed-surface)]"
+              {/* Utility actions as plain icon buttons (no name dropdown).
+                  Stacked on the mobile rail, a single row on lg. */}
+              <div className="flex flex-col items-center gap-1 lg:flex-row lg:justify-start lg:gap-1.5">
+                <NotificationMenu iconOnly />
+                <DarkModeButton />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 rounded-[10px] text-[var(--creed-text-secondary)] hover:text-[var(--creed-text-primary)]"
+                  aria-label="Log out"
+                  onClick={() => void signOut()}
                 >
-                  <AnimatedMenuIconItem
-                    icon={Link2}
-                    className="text-[13px]"
-                    onSelect={() => {
-                      router.push("/dashboard");
-                    }}
-                  >
-                    Dashboard
-                  </AnimatedMenuIconItem>
-                  <FeedbackMenuItem />
-                  <ThemeToggleMenuItem />
-                  <AnimatedMenuIconItem
-                    icon={Logout}
-                    className="text-[13px]"
-                    onSelect={() => {
-                      void signOut();
-                    }}
-                  >
-                    Log out
-                  </AnimatedMenuIconItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+                  <Logout className="h-4 w-4" />
+                </Button>
+              </div>
             </div>
           </div>
         </aside>
@@ -514,33 +553,26 @@ export function useCreedShellLiveSections(sections: CreedSection[] | null) {
   }, [context, sections]);
 }
 
-function ThemeToggleMenuItem() {
+function DarkModeButton() {
   const { theme, toggleTheme } = useTheme();
 
   return (
-    <DropdownMenuItem
-      onSelect={(event) => {
-        event.preventDefault();
-        // On touch / dropdown clicks the cursor isn't a useful origin -
-        // emit the reveal from the centre of the menu row itself so the
-        // animation feels rooted at the button the user just tapped.
-        const target = event.target as HTMLElement | null;
-        const rect = target?.getBoundingClientRect();
-        const origin = rect
-          ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
-          : undefined;
-        toggleTheme(origin);
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      className="h-8 w-8 rounded-[10px] text-[var(--creed-text-secondary)] hover:text-[var(--creed-text-primary)]"
+      aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+      onClick={(event) => {
+        // Emit the theme reveal from the centre of the button so the
+        // animation feels rooted where the user clicked.
+        const rect = event.currentTarget.getBoundingClientRect();
+        toggleTheme({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
       }}
-      className="flex items-center justify-between gap-2 text-[13px]"
     >
-      <span className="flex items-center gap-2">
-        <Contrast className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center leading-none" />
-        <span className="md:hidden">Theme</span>
-        <span className="hidden md:inline">{theme === "dark" ? "Light mode" : "Dark mode"}</span>
-      </span>
-      <kbd className="inline-flex h-5 w-5 items-center justify-center rounded border border-[var(--creed-border)] bg-[var(--creed-surface-raised)] text-[10px] font-medium text-[var(--creed-text-secondary)]">
-        M
-      </kbd>
-    </DropdownMenuItem>
+      <Contrast className="h-4 w-4" />
+    </Button>
   );
 }
+
+

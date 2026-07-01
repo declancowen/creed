@@ -555,6 +555,23 @@
   font-size: 0.92em;
 }
 
+/* Anchored comment highlights. Painted as ProseMirror decorations (never
+   stored in the document) so the Markdown source stays clean. Amber matches
+   the comment badge accent used across the document surface. */
+.ProseMirror .creed-comment-highlight {
+  border-radius: 2px;
+  background: color-mix(in srgb, #f59e0b 16%, transparent);
+  box-shadow: inset 0 -2px 0 color-mix(in srgb, #f59e0b 55%, transparent);
+  cursor: pointer;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ProseMirror .creed-comment-highlight:hover,
+.ProseMirror .creed-comment-highlight.is-active {
+  background: color-mix(in srgb, #f59e0b 30%, transparent);
+  box-shadow: inset 0 -2px 0 color-mix(in srgb, #f59e0b 80%, transparent);
+}
+
 .ProseMirror .creed-code-block {
   overflow-x: auto;
   border: none;
@@ -576,6 +593,121 @@
   color: inherit;
   font-family: inherit;
   font-size: inherit;
+}
+
+/* Mermaid diagram node (components/creed/extensions/mermaid-block.tsx). The
+   node renders a live SVG preview with an inline source editor toggled from
+   the block. Stored as a ```mermaid fence in Markdown. */
+.ProseMirror .creed-mermaid {
+  position: relative;
+  margin: 1.35rem 0;
+  border: 1px solid var(--creed-border);
+  border-radius: 0.75rem;
+  background: var(--creed-surface-raised);
+  padding: 1rem;
+}
+
+.ProseMirror .creed-mermaid-selected {
+  outline: 2px solid var(--section-accent-bar, var(--creed-border));
+  outline-offset: 2px;
+}
+
+.ProseMirror .creed-mermaid-preview {
+  display: flex;
+  justify-content: center;
+  overflow-x: auto;
+}
+
+.ProseMirror .creed-mermaid-preview svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.ProseMirror .creed-mermaid-empty {
+  font-size: 0.9em;
+  color: var(--creed-text-tertiary);
+}
+
+.ProseMirror .creed-mermaid-error {
+  width: 100%;
+  color: #b91c1c;
+  font-size: 0.85em;
+}
+
+.dark .ProseMirror .creed-mermaid-error {
+  color: #f87171;
+}
+
+.ProseMirror .creed-mermaid-error p {
+  margin: 0 0 0.35rem;
+  font-weight: 500;
+}
+
+.ProseMirror .creed-mermaid-error pre {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.95em;
+  opacity: 0.85;
+}
+
+.ProseMirror .creed-mermaid-edit-trigger {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  border: 1px solid var(--creed-border);
+  border-radius: 0.5rem;
+  background: var(--creed-surface);
+  padding: 0.2rem 0.55rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--creed-text-secondary);
+  opacity: 0;
+  transition: opacity 160ms cubic-bezier(0.22, 1, 0.36, 1);
+  cursor: pointer;
+}
+
+.ProseMirror .creed-mermaid:hover .creed-mermaid-edit-trigger {
+  opacity: 1;
+}
+
+.ProseMirror .creed-mermaid-source {
+  width: 100%;
+  min-height: 80px;
+  resize: vertical;
+  border: 1px solid var(--creed-border);
+  border-radius: 0.5rem;
+  background: var(--creed-surface);
+  padding: 0.65rem 0.8rem;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.88em;
+  line-height: 1.5;
+  color: var(--creed-text-primary);
+  tab-size: 2;
+}
+
+.ProseMirror .creed-mermaid-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  margin-top: 0.55rem;
+}
+
+.ProseMirror .creed-mermaid-btn {
+  border: 1px solid var(--creed-border);
+  border-radius: 0.5rem;
+  background: var(--creed-surface);
+  padding: 0.3rem 0.7rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--creed-text-secondary);
+  cursor: pointer;
+}
+
+.ProseMirror .creed-mermaid-btn-primary {
+  background: var(--creed-text-primary);
+  border-color: var(--creed-text-primary);
+  color: var(--creed-surface);
 }
 
 /* Syntax highlighting (lowlight / highlight.js classes). The token palette
@@ -742,6 +874,165 @@
 
 .ProseMirror .creed-inline-tag {
   cursor: text;
+}
+
+/* Document/folder reference chip - an inline link to another document or a
+ * folder. Rendered by the docReferenceInline node (see
+ * components/creed/extensions/doc-reference.tsx). */
+.creed-doc-ref-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 7px 2px 6px;
+  margin: 0 1px;
+  border-radius: 6px;
+  font-size: 0.92em;
+  font-weight: 500;
+  line-height: 1.4;
+  background: rgba(0, 0, 0, 0.05);
+  color: inherit;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  cursor: pointer;
+  vertical-align: baseline;
+  white-space: nowrap;
+  text-decoration: none;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.creed-doc-ref-inline:hover {
+  background: rgba(0, 0, 0, 0.08);
+  border-color: rgba(0, 0, 0, 0.14);
+}
+
+.creed-doc-ref-inline .creed-doc-ref-icon {
+  width: 0.92em;
+  height: 0.92em;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+.creed-doc-ref-inline .creed-doc-ref-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+}
+
+.creed-doc-ref-inline.creed-doc-ref-missing {
+  background: rgba(148, 163, 184, 0.14);
+  color: var(--creed-text-tertiary);
+}
+
+.creed-doc-ref-expand {
+  margin-left: 3px;
+  padding: 0 2px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+  font-size: 0.85em;
+  line-height: 1;
+}
+
+.creed-doc-ref-expand:hover {
+  opacity: 1;
+}
+
+/* Full-width reference card - mirrors the dashboard document card. Rendered by
+ * the docReferenceCard node. */
+.creed-doc-ref-card {
+  display: block;
+  width: 100%;
+  margin: 12px 0;
+  padding: 14px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--creed-border);
+  background: var(--creed-surface);
+  cursor: pointer;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.creed-doc-ref-card:hover {
+  border-color: var(--creed-border-strong);
+  box-shadow: 0 6px 20px rgba(28, 28, 26, 0.05);
+}
+
+.creed-doc-ref-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.creed-doc-ref-card-header .creed-doc-ref-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--creed-text-tertiary);
+}
+
+.creed-doc-ref-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--creed-text-primary);
+}
+
+.creed-doc-ref-card-desc {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--creed-text-tertiary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.creed-doc-ref-card-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.creed-doc-ref-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.creed-doc-ref-toggle {
+  margin-top: 12px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--creed-text-tertiary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.creed-doc-ref-toggle:hover {
+  color: var(--creed-text-primary);
+}
+
+.creed-doc-ref-card.creed-doc-ref-missing {
+  border-style: dashed;
+}
+
+.dark .creed-doc-ref-inline {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: inherit;
+}
+
+.dark .creed-doc-ref-inline:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.2);
 }
 
 /* Cursor-style inline diff for proposal review. */

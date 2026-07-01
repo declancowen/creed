@@ -6,7 +6,7 @@ import type { SupabaseLikeClient } from "@/lib/supabase/types";
 
 type MutationResult<T> =
   | { ok: true; value: T }
-  | { ok: false; error: string; code: "conflict" | "invalid" | "not-found" };
+  | { ok: false; error: string; code: "conflict" | "invalid" | "not-found" | "forbidden" };
 
 export type WorkspaceUser = {
   id: string;
@@ -30,6 +30,12 @@ export type DocumentComment = {
   mentionedUserIds: string[];
   createdAt: string;
   updatedAt: string;
+  // 'pending' is a private agent-proposed comment visible only to its proposer
+  // (created_by) until approved; 'shared' is a normal workspace comment.
+  proposalStatus: "pending" | "shared";
+  // Only populated for a proposer viewing their own pending comment; never
+  // shown once the comment is shared.
+  proposedByAgentLabel: string | null;
 };
 
 export type DocumentActivityEvent = {
@@ -73,6 +79,8 @@ type CommentRow = {
   updated_by: string | null;
   created_at: string;
   updated_at: string;
+  proposal_status: string | null;
+  proposed_by_agent_label: string | null;
 };
 
 type ActivityRow = {
@@ -135,6 +143,8 @@ const COMMENT_COLUMNS = [
   "updated_by",
   "created_at",
   "updated_at",
+  "proposal_status",
+  "proposed_by_agent_label",
 ].join(", ");
 
 const ACTIVITY_COLUMNS = [
@@ -182,6 +192,14 @@ function metadataString(metadata: Record<string, unknown>, keys: string[]) {
   return "";
 }
 
+// Fallback display name when a user hasn't set any name metadata: the local
+// part of their email (e.g. "declan@cowen.co" -> "declan"). Keeps mentions and
+// author labels human instead of showing raw email addresses.
+function labelFromEmail(email: string) {
+  const local = email.split("@")[0]?.trim() ?? "";
+  return local;
+}
+
 function buildUserLabel(user: WorkspaceUser | undefined, fallback?: string | null) {
   return user?.label || fallback || "Someone";
 }
@@ -215,6 +233,8 @@ function mapComment(
     mentionedUserIds: mentionsByComment.get(row.id) ?? [],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    proposalStatus: row.proposal_status === "pending" ? "pending" : "shared",
+    proposedByAgentLabel: row.proposed_by_agent_label,
   };
 }
 
@@ -282,8 +302,14 @@ export async function listWorkspaceUsers(client: unknown): Promise<WorkspaceUser
       const metadata = mapMetadata(user.user_metadata);
       const email = user.email?.trim().toLowerCase() ?? "";
       const label =
-        metadataString(metadata, ["full_name", "name", "user_name", "preferred_username"]) ||
-        email ||
+        metadataString(metadata, [
+          "full_name",
+          "name",
+          "display_name",
+          "user_name",
+          "preferred_username",
+        ]) ||
+        labelFromEmail(email) ||
         user.id;
       return { id: user.id, email, label };
     });
@@ -354,6 +380,7 @@ export async function listDocumentComments(client: unknown, documentId: string) 
     .from("creed_document_comments")
     .select(COMMENT_COLUMNS)
     .eq("document_id", documentId)
+    .eq("proposal_status", "shared")
     .order("created_at", { ascending: true })) as {
     data: CommentRow[] | null;
     error: { message: string } | null;
@@ -361,6 +388,43 @@ export async function listDocumentComments(client: unknown, documentId: string) 
 
   if (error) {
     throw new Error(error.message || "Could not load comments.");
+  }
+
+  const rows = data ?? [];
+  const [users, mentions] = await Promise.all([
+    userMap(client),
+    mentionsByComment(client, rows.map((row) => row.id)),
+  ]);
+  return rows.map((row) => mapComment(row, users, mentions));
+}
+
+// Pending agent-proposed comments are private to their proposer. This is the
+// only read path that returns pending rows, and it is always scoped to the
+// requesting user (created_by), so a pending comment can never reach anyone
+// else. The editor merges these with the shared list for the proposer only.
+export async function listPendingCommentsForUser(
+  client: unknown,
+  documentId: string,
+  userId: string
+) {
+  if (!userId) {
+    return [];
+  }
+
+  const db = client as SupabaseLikeClient;
+  const { data, error } = (await db
+    .from("creed_document_comments")
+    .select(COMMENT_COLUMNS)
+    .eq("document_id", documentId)
+    .eq("proposal_status", "pending")
+    .eq("created_by", userId)
+    .order("created_at", { ascending: true })) as {
+    data: CommentRow[] | null;
+    error: { message: string } | null;
+  };
+
+  if (error) {
+    throw new Error(error.message || "Could not load pending comments.");
   }
 
   const rows = data ?? [];
@@ -430,6 +494,11 @@ export async function createDocumentComment(
     referenceQuote?: string | null;
     mentionedUserIds?: string[];
     source?: "creed" | "mcp";
+    // When "pending", the comment is a private agent proposal: it is stored
+    // with its mentions but produces no notifications, emails, or activity
+    // until the proposer approves it. Defaults to "shared" (normal comment).
+    proposalStatus?: "pending" | "shared";
+    proposedByAgentLabel?: string | null;
   }
 ): Promise<MutationResult<CreatedCommentResult>> {
   const body = input.body.trim();
@@ -442,15 +511,16 @@ export async function createDocumentComment(
     return { ok: false, code: "not-found", error: "Document not found." };
   }
 
+  let effectiveParentId = input.parentId ?? null;
   if (input.parentId) {
     const db = client as SupabaseLikeClient;
     const { data, error } = (await db
       .from("creed_document_comments")
-      .select("id, document_id")
+      .select("id, document_id, parent_id")
       .eq("id", input.parentId)
       .eq("document_id", input.documentId)
       .maybeSingle()) as {
-      data: { id: string; document_id: string } | null;
+      data: { id: string; document_id: string; parent_id: string | null } | null;
       error: { message: string } | null;
     };
     if (error) {
@@ -459,6 +529,9 @@ export async function createDocumentComment(
     if (!data) {
       return { ok: false, code: "not-found", error: "Parent comment not found." };
     }
+    // One level of threading only: replying to a reply attaches to the reply's
+    // root comment so threads never nest deeper than parent -> reply.
+    effectiveParentId = data.parent_id ?? data.id;
   }
 
   const { userIds: mentionedUserIds, users } = await mentionUserIds(
@@ -468,17 +541,18 @@ export async function createDocumentComment(
     input.actorUserId
   );
   const now = nowIso();
-  const emailConfigured = isNotificationEmailConfigured();
   const db = client as SupabaseLikeClient;
   const { data, error } = (await db
     .from("creed_document_comments")
     .insert({
       document_id: input.documentId,
-      parent_id: input.parentId ?? null,
+      parent_id: effectiveParentId,
       reference_id: trimToNull(input.referenceId),
       reference_quote: trimToNull(input.referenceQuote),
       body,
       status: "open",
+      proposal_status: input.proposalStatus === "pending" ? "pending" : "shared",
+      proposed_by_agent_label: input.proposedByAgentLabel ?? null,
       created_by: input.actorUserId ?? null,
       updated_by: input.actorUserId ?? null,
       created_at: now,
@@ -513,62 +587,31 @@ export async function createDocumentComment(
     }
   }
 
-  const actor = users.find((user) => user.id === input.actorUserId);
-  const actorLabel = buildUserLabel(actor, input.source === "mcp" ? "MCP agent" : "Someone");
-  const href = `/file?document=${encodeURIComponent(document.slug)}&comment=${encodeURIComponent(data.id)}`;
-  let notifications: DocumentNotification[] = [];
-  if (mentionedUserIds.length > 0) {
-    const { data: notificationRows, error: notificationError } = (await db
-      .from("creed_notifications")
-      .insert(
-        mentionedUserIds.map((userId) => ({
-          user_id: userId,
-          actor_user_id: input.actorUserId ?? null,
-          document_id: document.id,
-          comment_id: data.id,
-          type: "mention",
-          title: `${actorLabel} mentioned you`,
-          body,
-          href,
-          email_status: emailConfigured ? "pending" : "not-configured",
-          created_at: now,
-        }))
-      )
-      .select(NOTIFICATION_COLUMNS)) as {
-      data: NotificationRow[] | null;
-      error: { message: string } | null;
-    };
-    if (notificationError) {
-      return { ok: false, code: "invalid", error: notificationError.message };
-    }
-    notifications = (notificationRows ?? []).map(mapNotification);
-  }
-
-  await recordDocumentActivity(client, {
-    documentId: document.id,
-    actorUserId: input.actorUserId,
-    action: input.parentId ? "comment.reply.created" : "comment.created",
-    summary: input.parentId ? "Replied to a comment" : "Added a comment",
-    metadata: {
-      commentId: data.id,
-      source: input.source ?? "creed",
-      mentionedUserIds,
-    },
-  });
-
   const mentions = new Map([[data.id, mentionedUserIds]]);
   const usersMap = new Map(users.map((user) => [user.id, user]));
-  const pendingEmails = notifications.flatMap((notification) => {
-    const target = users.find((user) => user.id === notification.userId);
-    if (!target?.email || notification.emailStatus !== "pending") return [];
-    return [{
-      notificationId: notification.id,
-      to: target.email,
-      actorLabel,
-      documentTitle: document.title,
-      commentBody: body,
-      href,
-    }];
+
+  // Pending agent proposals stay silent until approved: the comment and its
+  // mentions are stored, but no notifications, emails, or activity are produced.
+  if (input.proposalStatus === "pending") {
+    return {
+      ok: true,
+      value: { comment: mapComment(data, usersMap, mentions), notifications: [], pendingEmails: [] },
+    };
+  }
+
+  const actorLabel = buildUserLabel(
+    users.find((user) => user.id === input.actorUserId),
+    input.source === "mcp" ? "MCP agent" : "Someone"
+  );
+  const { notifications, pendingEmails } = await publishCommentSideEffects(client, {
+    document,
+    commentId: data.id,
+    parentId: input.parentId ?? null,
+    body,
+    mentionedUserIds,
+    actorUserId: input.actorUserId ?? null,
+    actorLabel,
+    users,
   });
 
   return {
@@ -579,6 +622,228 @@ export async function createDocumentComment(
       pendingEmails,
     },
   };
+}
+
+// Notifications + workspace activity + email fan-out for a newly visible
+// comment. Shared by the direct create path and comment approval so the
+// "publish" side effects live in exactly one place and fire exactly once.
+async function publishCommentSideEffects(
+  client: unknown,
+  input: {
+    document: { id: string; slug: string; title: string };
+    commentId: string;
+    parentId: string | null;
+    body: string;
+    mentionedUserIds: string[];
+    actorUserId: string | null;
+    actorLabel: string;
+    users: WorkspaceUser[];
+  }
+): Promise<{ notifications: DocumentNotification[]; pendingEmails: PendingEmailNotification[] }> {
+  const db = client as SupabaseLikeClient;
+  const now = nowIso();
+  const emailConfigured = isNotificationEmailConfigured();
+  const href = `/file?document=${encodeURIComponent(input.document.slug)}&comment=${encodeURIComponent(input.commentId)}`;
+
+  let notifications: DocumentNotification[] = [];
+  if (input.mentionedUserIds.length > 0) {
+    const { data: notificationRows, error } = (await db
+      .from("creed_notifications")
+      .insert(
+        input.mentionedUserIds.map((userId) => ({
+          user_id: userId,
+          actor_user_id: input.actorUserId ?? null,
+          document_id: input.document.id,
+          comment_id: input.commentId,
+          type: "mention",
+          title: `${input.actorLabel} mentioned you`,
+          body: input.body,
+          href,
+          email_status: emailConfigured ? "pending" : "not-configured",
+          created_at: now,
+        }))
+      )
+      .select(NOTIFICATION_COLUMNS)) as {
+      data: NotificationRow[] | null;
+      error: { message: string } | null;
+    };
+    if (error) {
+      throw new Error(error.message || "Could not create mention notifications.");
+    }
+    notifications = (notificationRows ?? []).map(mapNotification);
+  }
+
+  await recordDocumentActivity(client, {
+    documentId: input.document.id,
+    actorUserId: input.actorUserId,
+    action: input.parentId ? "comment.reply.created" : "comment.created",
+    summary: input.parentId ? "Replied to a comment" : "Added a comment",
+    metadata: { commentId: input.commentId, mentionedUserIds: input.mentionedUserIds },
+  });
+
+  const pendingEmails = notifications.flatMap((notification) => {
+    const target = input.users.find((user) => user.id === notification.userId);
+    if (!target?.email || notification.emailStatus !== "pending") return [];
+    return [
+      {
+        notificationId: notification.id,
+        to: target.email,
+        actorLabel: input.actorLabel,
+        documentTitle: input.document.title,
+        commentBody: input.body,
+        href,
+      },
+    ];
+  });
+
+  return { notifications, pendingEmails };
+}
+
+// Approve a pending agent-proposed comment. Only the proposer (created_by) can
+// approve. Flips proposal_status to 'shared' and THEN runs the deferred publish
+// side effects (mention notifications, emails, workspace activity) exactly once.
+export async function approveDocumentComment(
+  client: unknown,
+  input: { commentId: string; actorUserId: string }
+): Promise<MutationResult<CreatedCommentResult>> {
+  const db = client as SupabaseLikeClient;
+  const { data: row, error: readError } = (await db
+    .from("creed_document_comments")
+    .select(COMMENT_COLUMNS)
+    .eq("id", input.commentId)
+    .maybeSingle()) as {
+    data: CommentRow | null;
+    error: { message: string } | null;
+  };
+
+  if (readError) {
+    return { ok: false, code: "invalid", error: readError.message };
+  }
+  if (!row) {
+    return { ok: false, code: "not-found", error: "Comment not found." };
+  }
+  if (row.created_by !== input.actorUserId) {
+    return { ok: false, code: "forbidden", error: "You can only approve your own pending comments." };
+  }
+
+  const [users, mentions] = await Promise.all([
+    listWorkspaceUsers(client),
+    mentionsByComment(client, [row.id]),
+  ]);
+  const usersMap = new Map(users.map((user) => [user.id, user]));
+
+  // Already shared (double-click / retry): idempotent no-op, no duplicate side
+  // effects.
+  if (row.proposal_status !== "pending") {
+    return {
+      ok: true,
+      value: { comment: mapComment(row, usersMap, mentions), notifications: [], pendingEmails: [] },
+    };
+  }
+
+  const now = nowIso();
+  const { data: updated, error: updateError } = (await db
+    .from("creed_document_comments")
+    .update({ proposal_status: "shared", updated_by: input.actorUserId, updated_at: now })
+    .eq("id", row.id)
+    .eq("proposal_status", "pending")
+    .select(COMMENT_COLUMNS)
+    .maybeSingle()) as {
+    data: CommentRow | null;
+    error: { message: string } | null;
+  };
+
+  if (updateError) {
+    return { ok: false, code: "invalid", error: updateError.message };
+  }
+  if (!updated) {
+    // Lost the race to another approve; treat as already shared.
+    return {
+      ok: true,
+      value: { comment: mapComment(row, usersMap, mentions), notifications: [], pendingEmails: [] },
+    };
+  }
+
+  const document = await readSharedDocumentById(client, updated.document_id);
+  if (!document) {
+    return { ok: false, code: "not-found", error: "Document not found." };
+  }
+
+  const mentionedUserIds = mentions.get(row.id) ?? [];
+  const actorLabel = buildUserLabel(usersMap.get(input.actorUserId), "Someone");
+  const { notifications, pendingEmails } = await publishCommentSideEffects(client, {
+    document,
+    commentId: updated.id,
+    parentId: updated.parent_id,
+    body: updated.body,
+    mentionedUserIds,
+    actorUserId: input.actorUserId,
+    actorLabel,
+    users,
+  });
+
+  return {
+    ok: true,
+    value: { comment: mapComment(updated, usersMap, mentions), notifications, pendingEmails },
+  };
+}
+
+// Reject a pending agent-proposed comment: hard-delete the row (and its replies)
+// with no activity trace. Only the proposer (created_by) can reject.
+export async function rejectDocumentComment(
+  client: unknown,
+  input: { commentId: string; actorUserId: string }
+): Promise<MutationResult<{ id: string; parentId: string | null }>> {
+  const db = client as SupabaseLikeClient;
+  const { data: existing, error: readError } = (await db
+    .from("creed_document_comments")
+    .select("id, document_id, created_by, parent_id, proposal_status")
+    .eq("id", input.commentId)
+    .maybeSingle()) as {
+    data: {
+      id: string;
+      document_id: string;
+      created_by: string | null;
+      parent_id: string | null;
+      proposal_status: string | null;
+    } | null;
+    error: { message: string } | null;
+  };
+
+  if (readError) {
+    return { ok: false, code: "invalid", error: readError.message };
+  }
+  if (!existing) {
+    return { ok: false, code: "not-found", error: "Comment not found." };
+  }
+  if (existing.created_by !== input.actorUserId) {
+    return { ok: false, code: "forbidden", error: "You can only reject your own pending comments." };
+  }
+  if (existing.proposal_status !== "pending") {
+    return { ok: false, code: "invalid", error: "Only pending comments can be rejected." };
+  }
+
+  // Remove replies first (only relevant when rejecting a root comment).
+  if (!existing.parent_id) {
+    const { error: repliesError } = (await db
+      .from("creed_document_comments")
+      .delete()
+      .eq("parent_id", existing.id)) as { error: { message: string } | null };
+    if (repliesError) {
+      return { ok: false, code: "invalid", error: repliesError.message };
+    }
+  }
+
+  const { error: deleteError } = (await db
+    .from("creed_document_comments")
+    .delete()
+    .eq("id", existing.id)) as { error: { message: string } | null };
+  if (deleteError) {
+    return { ok: false, code: "invalid", error: deleteError.message };
+  }
+
+  // No activity event: a rejected pending comment leaves no trace.
+  return { ok: true, value: { id: existing.id, parentId: existing.parent_id } };
 }
 
 export async function setDocumentCommentStatus(
@@ -627,6 +892,120 @@ export async function setDocumentCommentStatus(
     mentionsByComment(client, [data.id]),
   ]);
   return { ok: true, value: mapComment(data, users, mentions) };
+}
+
+// Edit the body text of an existing comment (or reply). Mentions and the
+// referenced quote are left untouched - editing is for fixing wording, not
+// re-anchoring. Only the original author path is enforced at the route layer.
+export async function updateDocumentComment(
+  client: unknown,
+  input: {
+    commentId: string;
+    body: string;
+    actorUserId?: string | null;
+  }
+): Promise<MutationResult<DocumentComment>> {
+  const body = input.body.trim();
+  if (!body) {
+    return { ok: false, code: "invalid", error: "Comment body is required." };
+  }
+
+  const now = nowIso();
+  const db = client as SupabaseLikeClient;
+  const { data, error } = (await db
+    .from("creed_document_comments")
+    .update({
+      body,
+      updated_by: input.actorUserId ?? null,
+      updated_at: now,
+    })
+    .eq("id", input.commentId)
+    .eq("created_by", input.actorUserId ?? "")
+    .select(COMMENT_COLUMNS)
+    .maybeSingle()) as {
+    data: CommentRow | null;
+    error: { message: string } | null;
+  };
+
+  if (error) {
+    return { ok: false, code: "invalid", error: error.message };
+  }
+  if (!data) {
+    return { ok: false, code: "not-found", error: "You can only edit your own comments." };
+  }
+
+  await recordDocumentActivity(client, {
+    documentId: data.document_id,
+    actorUserId: input.actorUserId,
+    action: "comment.updated",
+    summary: "Edited a comment",
+    metadata: { commentId: data.id },
+  });
+
+  const [users, mentions] = await Promise.all([
+    userMap(client),
+    mentionsByComment(client, [data.id]),
+  ]);
+  return { ok: true, value: mapComment(data, users, mentions) };
+}
+
+// Delete a comment (or reply) the actor authored. Deleting a root comment also
+// removes its replies so a thread never leaves orphaned children behind.
+export async function deleteDocumentComment(
+  client: unknown,
+  input: {
+    commentId: string;
+    actorUserId?: string | null;
+  }
+): Promise<MutationResult<{ id: string; parentId: string | null }>> {
+  const db = client as SupabaseLikeClient;
+  const { data: existing, error: readError } = (await db
+    .from("creed_document_comments")
+    .select("id, document_id, created_by, parent_id")
+    .eq("id", input.commentId)
+    .maybeSingle()) as {
+    data: { id: string; document_id: string; created_by: string | null; parent_id: string | null } | null;
+    error: { message: string } | null;
+  };
+
+  if (readError) {
+    return { ok: false, code: "invalid", error: readError.message };
+  }
+  if (!existing) {
+    return { ok: false, code: "not-found", error: "Comment not found." };
+  }
+  if (!input.actorUserId || existing.created_by !== input.actorUserId) {
+    return { ok: false, code: "forbidden", error: "You can only delete your own comments." };
+  }
+
+  // Remove replies first (only relevant when deleting a root comment).
+  if (!existing.parent_id) {
+    const { error: repliesError } = (await db
+      .from("creed_document_comments")
+      .delete()
+      .eq("parent_id", existing.id)) as { error: { message: string } | null };
+    if (repliesError) {
+      return { ok: false, code: "invalid", error: repliesError.message };
+    }
+  }
+
+  const { error: deleteError } = (await db
+    .from("creed_document_comments")
+    .delete()
+    .eq("id", existing.id)) as { error: { message: string } | null };
+  if (deleteError) {
+    return { ok: false, code: "invalid", error: deleteError.message };
+  }
+
+  await recordDocumentActivity(client, {
+    documentId: existing.document_id,
+    actorUserId: input.actorUserId,
+    action: "comment.deleted",
+    summary: "Deleted a comment",
+    metadata: { commentId: existing.id },
+  });
+
+  return { ok: true, value: { id: existing.id, parentId: existing.parent_id } };
 }
 
 export async function listNotifications(client: unknown, userId: string) {

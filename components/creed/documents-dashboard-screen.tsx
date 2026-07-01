@@ -2,16 +2,21 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useState, type DragEvent, type ReactNode } from "react";
+import { useMemo, useState, Fragment, type DragEvent, type MouseEvent, type ReactNode } from "react";
 import {
   Archive,
+  ArrowUp,
+  ArrowDown,
+  ChevronRight,
   CircleDashed,
   Clock3,
+  FileStack,
   FileText,
   Flag,
   Folder,
   LayoutGrid,
   List,
+  ListOrdered,
   LoaderCircle,
   MoreHorizontal,
   Plus,
@@ -34,7 +39,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { CreateDocumentDialog } from "@/components/creed/create-document-dialog";
+import { CreateDialog, type CreateDialogMode } from "@/components/creed/create-document-dialog";
 import {
   DOCUMENT_GROUP_OPTIONS,
   DOCUMENT_LIFECYCLE_OPTIONS,
@@ -44,7 +49,7 @@ import {
   DOCUMENT_SORT_OPTIONS,
   DOCUMENT_STAGE_OPTIONS,
   DOCUMENT_STATUS_OPTIONS,
-  DOCUMENT_TONE_DOT,
+  DOCUMENT_TONE_DOT_COLOR,
   DOCUMENT_TONE_STYLE,
   DOCUMENT_TYPE_OPTIONS,
   DEFAULT_VISIBLE_DOCUMENT_PROPERTIES,
@@ -175,12 +180,12 @@ function groupedDocuments(documents: DashboardDocument[], groupBy: DocumentGroup
 function InlineSelect<T extends string>({
   value,
   options,
-  label,
+  icon,
   onChange,
 }: {
   value: T;
   options: ReadonlyArray<{ value: T; label: string }>;
-  label: string;
+  icon: ReactNode;
   onChange: (value: T) => void;
 }) {
   const current = options.find((option) => option.value === value)?.label ?? value;
@@ -191,7 +196,7 @@ function InlineSelect<T extends string>({
           type="button"
           className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border border-[var(--creed-border)] bg-[var(--creed-surface)] px-2.5 text-[12.5px] font-medium text-[var(--creed-text-secondary)] transition hover:bg-[var(--creed-surface-raised)]"
         >
-          <span className="text-[var(--creed-text-tertiary)]">{label}</span>
+          <span className="text-[var(--creed-text-tertiary)]">{icon}</span>
           <span className="text-[var(--creed-text-primary)]">{current}</span>
         </button>
       </DropdownMenuTrigger>
@@ -335,16 +340,36 @@ function DocumentCard({
   onDragStart: (documentId: string) => void;
   onDragEnd: () => void;
 }) {
+  const router = useRouter();
+  const href = `/file?document=${encodeURIComponent(document.slug)}`;
+
+  function handleCardClick(event: MouseEvent<HTMLDivElement>) {
+    // Ignore clicks on interactive children (title link, property pills, archive button).
+    if ((event.target as HTMLElement).closest("a, button, input, [role='menu'], [role='menuitem']")) {
+      return;
+    }
+    router.push(href);
+  }
+
   return (
     <div
       draggable
+      role="button"
+      tabIndex={0}
+      onClick={handleCardClick}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          router.push(href);
+        }
+      }}
       onDragStart={() => onDragStart(document.id)}
       onDragEnd={onDragEnd}
-      className="group/card flex min-h-[150px] flex-col rounded-[10px] border border-[var(--creed-border)] bg-[var(--creed-surface)] p-3.5 transition hover:border-[var(--creed-border-strong)] hover:shadow-[0_6px_20px_rgba(28,28,26,0.05)]"
+      className="group/card flex min-h-[150px] cursor-pointer flex-col rounded-[10px] border border-[var(--creed-border)] bg-[var(--creed-surface)] p-3.5 transition hover:border-[var(--creed-border-strong)] hover:shadow-[0_6px_20px_rgba(28,28,26,0.05)]"
     >
       <div className="flex items-start justify-between gap-2">
         <Link
-          href={`/file?document=${encodeURIComponent(document.slug)}`}
+          href={href}
           className="min-w-0 text-[14px] font-semibold leading-snug text-[var(--creed-text-primary)] hover:text-[#2563EB]"
         >
           <span className="line-clamp-2">{document.title}</span>
@@ -424,13 +449,64 @@ function ViewSwitcher({
   );
 }
 
+function FolderTile({
+  folder,
+  subfolderCount,
+  updating,
+  onArchive,
+}: {
+  folder: SharedDocumentFolder;
+  subfolderCount: number;
+  updating: boolean;
+  onArchive: () => void;
+}) {
+  return (
+    <div className="group/folder relative">
+      <Link
+        href={`/dashboard/folder/${encodeURIComponent(folder.slug)}`}
+        className="flex items-center gap-3 rounded-[10px] border border-[var(--creed-border)] bg-[var(--creed-surface)] p-3 pr-12 transition hover:border-[var(--creed-border-strong)] hover:shadow-[0_6px_20px_rgba(28,28,26,0.05)]"
+      >
+        <span className="grid size-9 shrink-0 place-items-center rounded-[8px] bg-[var(--creed-surface-raised)] text-[var(--creed-text-secondary)] transition group-hover/folder:text-[#2563EB]">
+          <Folder className="h-[18px] w-[18px]" strokeWidth={1.8} />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[14px] font-medium text-[var(--creed-text-primary)]">
+            {folder.name}
+          </span>
+          <span className="block text-[12px] text-[var(--creed-text-tertiary)]">
+            {subfolderCount > 0
+              ? `${subfolderCount} subfolder${subfolderCount === 1 ? "" : "s"}`
+              : "Folder"}
+          </span>
+        </span>
+      </Link>
+      <button
+        type="button"
+        disabled={updating}
+        onClick={onArchive}
+        aria-label={`Archive ${folder.name}`}
+        title="Archive"
+        className="absolute right-2.5 top-1/2 inline-grid size-8 -translate-y-1/2 place-items-center rounded-[8px] text-[var(--creed-text-tertiary)] opacity-0 transition hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)] group-hover/folder:opacity-100 disabled:opacity-50"
+      >
+        {updating ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Archive className="h-4 w-4" />}
+      </button>
+    </div>
+  );
+}
+
 export function DocumentsDashboardScreen({
   documents,
   folders,
+  allFolders,
+  currentFolder,
+  breadcrumbs,
   preferences,
 }: {
   documents: SharedDocumentSummary[];
   folders: SharedDocumentFolder[];
+  allFolders: SharedDocumentFolder[];
+  currentFolder: SharedDocumentFolder | null;
+  breadcrumbs: SharedDocumentFolder[];
   preferences: DocumentDashboardPreferences;
 }) {
   const router = useRouter();
@@ -448,7 +524,13 @@ export function DocumentsDashboardScreen({
   const [savingView, setSavingView] = useState<"user" | "global" | null>(null);
   const [updatingDocumentId, setUpdatingDocumentId] = useState<string | null>(null);
   const [updatingFolderId, setUpdatingFolderId] = useState<string | null>(null);
-  const [createDocumentOpen, setCreateDocumentOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createMode, setCreateMode] = useState<CreateDialogMode>("document");
+
+  function openCreate(mode: CreateDialogMode) {
+    setCreateMode(mode);
+    setCreateOpen(true);
+  }
 
   const filteredDocuments = useMemo(() => {
     const query = filter.trim().toLowerCase();
@@ -470,6 +552,27 @@ export function DocumentsDashboardScreen({
 
     return sortDocuments(filtered, sortBy, sortDir);
   }, [documentRows, filter, sortBy, sortDir]);
+
+  const filteredFolders = useMemo(() => {
+    const query = filter.trim().toLowerCase();
+    const rows = query
+      ? folderRows.filter((folder) =>
+          [folder.name, folder.path].some((value) => value.toLowerCase().includes(query))
+        )
+      : folderRows;
+    return [...rows].sort((a, b) => a.name.localeCompare(b.name));
+  }, [folderRows, filter]);
+
+  // Subfolder counts come from the full folder tree so a folder tile can hint
+  // at nested content even though the dashboard only loads direct children.
+  const subfolderCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const folder of allFolders) {
+      if (!folder.parentId) continue;
+      counts.set(folder.parentId, (counts.get(folder.parentId) ?? 0) + 1);
+    }
+    return counts;
+  }, [allFolders]);
 
   const groups = useMemo(
     () => groupedDocuments(filteredDocuments, groupBy),
@@ -617,23 +720,67 @@ export function DocumentsDashboardScreen({
     <div className="flex h-full flex-col overflow-hidden bg-[var(--creed-surface)]">
       {/* Top bar */}
       <header className="flex items-center justify-between gap-3 border-b border-[var(--creed-border)] px-5 py-3 md:px-8">
-        <div className="flex items-baseline gap-2.5">
-          <h1 className="text-[15px] font-semibold text-[var(--creed-text-primary)]">Documents</h1>
-          <span className="text-[12px] font-medium text-[var(--creed-text-tertiary)]">
+        <div className="flex min-w-0 items-center gap-1.5">
+          {currentFolder ? (
+            <>
+              <Link
+                href="/dashboard"
+                className="shrink-0 text-[15px] font-medium text-[var(--creed-text-tertiary)] transition hover:text-[var(--creed-text-primary)]"
+              >
+                Documents
+              </Link>
+              {breadcrumbs.map((folder, index) => {
+                const isLast = index === breadcrumbs.length - 1;
+                return (
+                  <Fragment key={folder.id}>
+                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--creed-text-tertiary)]" strokeWidth={1.8} />
+                    {isLast ? (
+                      <h1 className="min-w-0 truncate text-[15px] font-semibold text-[var(--creed-text-primary)]">
+                        {folder.name}
+                      </h1>
+                    ) : (
+                      <Link
+                        href={`/dashboard/folder/${encodeURIComponent(folder.slug)}`}
+                        className="min-w-0 truncate text-[15px] font-medium text-[var(--creed-text-tertiary)] transition hover:text-[var(--creed-text-primary)]"
+                      >
+                        {folder.name}
+                      </Link>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </>
+          ) : (
+            <h1 className="text-[15px] font-semibold text-[var(--creed-text-primary)]">Documents</h1>
+          )}
+          <span className="ml-1 shrink-0 text-[12px] font-medium text-[var(--creed-text-tertiary)]">
             {documentRows.length}
           </span>
         </div>
 
-        <Button type="button" size="sm" className="gap-1.5" onClick={() => setCreateDocumentOpen(true)}>
-          <Plus className="h-4 w-4" strokeWidth={2} />
-          New document
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button type="button" size="sm" className="gap-1.5">
+              <Plus className="h-4 w-4" strokeWidth={2} />
+              New
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-[160px]">
+            <DropdownMenuItem onSelect={() => openCreate("document")}>
+              <FileText className="h-4 w-4" strokeWidth={1.8} />
+              Document
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => openCreate("folder")}>
+              <Folder className="h-4 w-4" strokeWidth={1.8} />
+              Folder
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </header>
 
       {/* Toolbar (floating) */}
-      <div className="px-5 pt-3 md:px-8">
-        <div className="flex flex-wrap items-center gap-2 rounded-[12px] border border-[var(--creed-border)] bg-[var(--creed-surface)] px-3 py-2 shadow-[0_8px_24px_rgba(28,28,26,0.06)]">
-        <span className="relative min-w-[180px] flex-1 sm:max-w-xs">
+      <div className="flex flex-wrap items-center gap-2 px-5 pt-3 md:px-8">
+        <span className="relative min-w-[200px] flex-1">
           <Search
             className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--creed-text-tertiary)]"
             strokeWidth={1.8}
@@ -648,17 +795,31 @@ export function DocumentsDashboardScreen({
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <ViewSwitcher viewMode={viewMode} onChange={setViewMode} />
-          <InlineSelect label="Group" value={groupBy} options={DOCUMENT_GROUP_OPTIONS} onChange={setGroupBy} />
-          <InlineSelect label="Sort" value={sortBy} options={DOCUMENT_SORT_OPTIONS} onChange={setSortBy} />
           <InlineSelect
-            label="Dir"
-            value={sortDir}
-            options={[
-              { value: "asc", label: "Asc" },
-              { value: "desc", label: "Desc" },
-            ]}
-            onChange={setSortDir}
+            icon={<FileStack className="h-3.5 w-3.5" strokeWidth={1.8} />}
+            value={groupBy}
+            options={DOCUMENT_GROUP_OPTIONS}
+            onChange={setGroupBy}
           />
+          <InlineSelect
+            icon={<ListOrdered className="h-3.5 w-3.5" strokeWidth={1.8} />}
+            value={sortBy}
+            options={DOCUMENT_SORT_OPTIONS}
+            onChange={setSortBy}
+          />
+          <button
+            type="button"
+            onClick={() => setSortDir((current) => (current === "asc" ? "desc" : "asc"))}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[var(--creed-border)] bg-[var(--creed-surface)] text-[var(--creed-text-secondary)] transition hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)]"
+            aria-label={sortDir === "asc" ? "Sorted ascending, click for descending" : "Sorted descending, click for ascending"}
+            title={sortDir === "asc" ? "Ascending" : "Descending"}
+          >
+            {sortDir === "asc" ? (
+              <ArrowUp className="h-3.5 w-3.5" strokeWidth={1.8} />
+            ) : (
+              <ArrowDown className="h-3.5 w-3.5" strokeWidth={1.8} />
+            )}
+          </button>
 
           <details className="relative">
             <summary className="flex h-8 cursor-pointer list-none items-center gap-1.5 rounded-[8px] border border-[var(--creed-border)] px-2.5 text-[12.5px] font-medium text-[var(--creed-text-secondary)] transition hover:bg-[var(--creed-surface-raised)] [&::-webkit-details-marker]:hidden">
@@ -685,9 +846,13 @@ export function DocumentsDashboardScreen({
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button type="button" variant="outline" size="icon-sm" aria-label="View options">
+              <button
+                type="button"
+                aria-label="View options"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[var(--creed-border)] bg-[var(--creed-surface)] text-[var(--creed-text-secondary)] transition hover:bg-[var(--creed-surface-raised)]"
+              >
                 {savingView ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <MoreHorizontal className="h-4 w-4" />}
-              </Button>
+              </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="min-w-[180px]">
               <DropdownMenuLabel>Save current view</DropdownMenuLabel>
@@ -702,37 +867,27 @@ export function DocumentsDashboardScreen({
           </DropdownMenu>
         </div>
         </div>
-      </div>
 
-      {/* Folders strip */}
-      {folderRows.length > 0 ? (
-        <div className="flex flex-wrap items-center gap-2 border-b border-[var(--creed-border)] px-5 py-2.5 md:px-8">
-          <span className="inline-flex items-center gap-1.5 text-[12px] font-medium text-[var(--creed-text-tertiary)]">
-            <Folder className="h-3.5 w-3.5" strokeWidth={1.8} />
-            Folders
-          </span>
-          {folderRows.map((folder) => (
-            <span
-              key={folder.id}
-              className="inline-flex h-7 items-center gap-1.5 rounded-[7px] border border-[var(--creed-border)] px-2 text-[12px] text-[var(--creed-text-secondary)]"
-            >
-              {folder.path}
-              <button
-                type="button"
-                disabled={updatingFolderId === folder.id}
-                onClick={() => void archiveFolder(folder.id)}
-                className="inline-flex h-4 w-4 items-center justify-center rounded-[5px] text-[var(--creed-text-tertiary)] transition hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)] disabled:opacity-50"
-                aria-label={`Archive ${folder.path}`}
-              >
-                {updatingFolderId === folder.id ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <Archive className="h-3 w-3" />}
-              </button>
-            </span>
-          ))}
-        </div>
-      ) : null}
-
-      {/* Documents */}
+      {/* Content */}
       <div className="flex-1 overflow-y-auto px-5 py-5 md:px-8">
+        {filteredFolders.length > 0 ? (
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {filteredFolders.map((folder) => (
+              <FolderTile
+                key={folder.id}
+                folder={folder}
+                subfolderCount={subfolderCounts.get(folder.id) ?? 0}
+                updating={updatingFolderId === folder.id}
+                onArchive={() => void archiveFolder(folder.id)}
+              />
+            ))}
+          </div>
+        ) : null}
+
+        {filteredFolders.length > 0 && filteredDocuments.length > 0 ? (
+          <div className="my-6 border-t border-[var(--creed-border)]" />
+        ) : null}
+
         {filteredDocuments.length > 0 ? (
           <div className="space-y-7">
             {groups.map((group) => (
@@ -749,7 +904,15 @@ export function DocumentsDashboardScreen({
               >
                 {groupBy !== "none" ? (
                   <div className="mb-2.5 flex items-center gap-2">
-                    <span className={cn("h-2 w-2 rounded-full", DOCUMENT_TONE_DOT[documentPropertyTone(groupBy as DocumentPropertyKey, group.value)])} />
+                    <span
+                      className="h-2 w-2 rounded-full"
+                      style={{
+                        backgroundColor:
+                          DOCUMENT_TONE_DOT_COLOR[
+                            documentPropertyTone(groupBy as DocumentPropertyKey, group.value)
+                          ],
+                      }}
+                    />
                     <h2 className="text-[13px] font-semibold text-[var(--creed-text-primary)]">
                       {group.label}
                     </h2>
@@ -799,21 +962,33 @@ export function DocumentsDashboardScreen({
               </div>
             ))}
           </div>
+        ) : filteredFolders.length > 0 ? (
+          <p className="px-1 py-2 text-[13px] text-[var(--creed-text-tertiary)]">
+            {filter ? "No documents match your search." : "No documents here yet."}
+          </p>
         ) : (
-          <div className="mx-auto mt-10 max-w-sm rounded-[12px] border border-dashed border-[var(--creed-border)] py-12 text-center">
+          <div className="mx-auto mt-10 max-w-sm py-12 text-center">
             <FileText className="mx-auto h-7 w-7 text-[var(--creed-text-tertiary)]" strokeWidth={1.6} />
             <h2 className="mt-4 text-[15px] font-medium text-[var(--creed-text-primary)]">
-              {filter ? "No documents match" : "No documents yet"}
+              {filter
+                ? "No documents match"
+                : currentFolder
+                  ? "This folder is empty"
+                  : "No documents yet"}
             </h2>
             <p className="mt-1.5 text-[13px] text-[var(--creed-text-secondary)]">
-              {filter ? "Try a different search." : "Create your first document to get started."}
+              {filter
+                ? "Try a different search."
+                : currentFolder
+                  ? "Add a document or folder to get started."
+                  : "Create your first document to get started."}
             </p>
             {!filter ? (
               <Button
                 type="button"
                 size="sm"
                 className="mt-4 gap-1.5"
-                onClick={() => setCreateDocumentOpen(true)}
+                onClick={() => openCreate("document")}
               >
                 <Plus className="h-4 w-4" strokeWidth={2} />
                 New document
@@ -823,11 +998,15 @@ export function DocumentsDashboardScreen({
         )}
       </div>
 
-      <CreateDocumentDialog
-        open={createDocumentOpen}
-        onOpenChange={setCreateDocumentOpen}
-        folders={folderRows}
-        onCreated={(document) => setDocumentRows((rows) => [document, ...rows])}
+      <CreateDialog
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        mode={createMode}
+        onModeChange={setCreateMode}
+        folders={allFolders}
+        defaultFolderId={currentFolder?.id ?? null}
+        onDocumentCreated={(document) => setDocumentRows((rows) => [document, ...rows])}
+        onFolderCreated={(folder) => setFolderRows((rows) => [...rows, folder])}
       />
     </div>
   );

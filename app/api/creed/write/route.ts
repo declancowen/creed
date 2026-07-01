@@ -25,6 +25,7 @@ import {
 } from "@/lib/creed-backend";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { markdownToRichHtml, normalizeRichTextInput } from "@/lib/rich-text";
+import { insertSectionRelativeTo } from "@/lib/section-hierarchy";
 import { getSupabaseAdminClient } from "@/lib/supabase/admin";
 import { isSupabaseAdminConfigured } from "@/lib/supabase/env";
 
@@ -69,6 +70,9 @@ type CreateSectionInput = {
   kind: "rich-text";
   accent?: AccentKey;
   insertAfterSectionId?: string;
+  // Nest the new section as the first child of this section (one level deeper,
+  // clamped to MAX_SECTION_DEPTH). Takes precedence over insertAfterSectionId.
+  parentSectionId?: string;
   contentHtml?: string;
   contentMarkdown?: string;
 };
@@ -370,15 +374,23 @@ export async function POST(request: Request) {
       agentName,
       result.state.settings.requireApproval ? "propose" : "direct"
     );
-    const insertAfterIndex = normalizedSection.insertAfterSectionId
-      ? result.state.sections.findIndex((section) => section.id === normalizedSection.insertAfterSectionId)
-      : -1;
-
-    if (insertAfterIndex === -1) {
-      nextSections = [...result.state.sections, newSection];
+    // `parentSectionId` nests the new row as that section's first child;
+    // otherwise `insertAfterSectionId` places it as a sibling after that
+    // section's whole subtree. The shared helper keeps depth valid (<= 2).
+    if (normalizedSection.parentSectionId) {
+      nextSections = insertSectionRelativeTo(
+        result.state.sections,
+        normalizedSection.parentSectionId,
+        newSection,
+        "child"
+      );
     } else {
-      nextSections = [...result.state.sections];
-      nextSections.splice(insertAfterIndex + 1, 0, newSection);
+      nextSections = insertSectionRelativeTo(
+        result.state.sections,
+        normalizedSection.insertAfterSectionId,
+        newSection,
+        "sibling"
+      );
     }
 
     revisedSectionId = newSection.id;

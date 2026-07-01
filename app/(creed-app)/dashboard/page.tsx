@@ -1,12 +1,8 @@
 import { redirect } from "next/navigation";
 import { DocumentsDashboardScreen } from "@/components/creed/documents-dashboard-screen";
-import {
-  listSharedDocumentFolders,
-  listSharedDocuments,
-  readDocumentDashboardPreferences,
-} from "@/lib/shared-documents";
 import { getSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { loadDashboardData } from "./dashboard-data";
 
 export const dynamic = "force-dynamic";
 
@@ -21,11 +17,21 @@ export default async function DashboardPage() {
   }
 
   const admin = getSupabaseAdminClient();
-  const [documents, folders, preferences] = await Promise.all([
-    listSharedDocuments(supabase),
-    listSharedDocumentFolders(supabase),
-    readDocumentDashboardPreferences(admin, user.id),
-  ]);
+  const data = await loadDashboardData(supabase, admin, user.id);
 
-  return <DocumentsDashboardScreen documents={documents} folders={folders} preferences={preferences.effective} />;
+  if ("notFound" in data) {
+    redirect("/dashboard");
+  }
+
+  return (
+    <DocumentsDashboardScreen
+      key={data.currentFolder?.id ?? "root"}
+      documents={data.documents}
+      folders={data.folders}
+      allFolders={data.allFolders}
+      currentFolder={data.currentFolder}
+      breadcrumbs={data.breadcrumbs}
+      preferences={data.preferences}
+    />
+  );
 }

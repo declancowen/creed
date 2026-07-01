@@ -3,6 +3,7 @@ import { FileScreen } from "@/components/creed/file-screen";
 import {
   listDocumentActivity,
   listDocumentComments,
+  listPendingCommentsForUser,
   listWorkspaceUsers,
 } from "@/lib/document-collaboration";
 import { readSharedDocument } from "@/lib/shared-documents";
@@ -30,11 +31,20 @@ export default async function FilePage({
     notFound();
   }
 
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
   const admin = getSupabaseAdminClient();
-  const [comments, activity, users] = await Promise.all([
+  const [comments, activity, users, pendingComments] = await Promise.all([
     listDocumentComments(admin, document.id),
     listDocumentActivity(admin, document.id),
     listWorkspaceUsers(admin),
+    // Pending agent-proposed comments are private to their proposer; only ever
+    // fetched scoped to the signed-in viewer.
+    user?.id
+      ? listPendingCommentsForUser(admin, document.id, user.id)
+      : Promise.resolve([]),
   ]);
 
   return (
@@ -42,8 +52,10 @@ export default async function FilePage({
       sharedDocument={{
         document,
         comments,
+        pendingComments,
         activity,
         users,
+        currentUserId: user?.id ?? null,
         activeCommentId: params.comment ?? null,
       }}
     />

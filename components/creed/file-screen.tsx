@@ -7,7 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
 import { AnimatePresence, Reorder, motion, useDragControls } from "framer-motion";
@@ -38,9 +38,9 @@ import {
   LockOpen,
   MessageSquare,
   Plus,
+  Reply,
   RotateCcw,
   Save,
-  Send,
   SquarePen,
   Stamp,
   Tag,
@@ -74,26 +74,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { AgentIconStack } from "@/components/creed/agent-icon-stack";
-import {
-  OverallQualityPopover,
-  QualityRefreshButton,
-  QualityRing,
-  SectionQualityPopover,
-  type CreedQualityReport,
-} from "@/components/creed/file-quality-ui";
-import {
-  getInFlightFull,
-  getQualityRunnerServerSnapshot,
-  getQualityRunnerSnapshot,
-  runFullQuality,
-  runSectionQuality,
-  setBaselineReport,
-  subscribeQualityRunner,
-} from "@/lib/ai/quality-runner";
 import { RichTextEditor } from "@/components/creed/rich-text-editor";
+import { MentionText } from "@/components/creed/mention-text";
+import { MentionTextarea } from "@/components/creed/mention-textarea";
 import {
   DiffBadge,
   InlineMetaProposal,
@@ -104,6 +89,7 @@ import {
   summarizeDiff,
 } from "@/components/creed/inline-proposal-diff";
 import { ReviewPill } from "@/components/creed/review-pill";
+import { DocumentReviewPanel } from "@/components/creed/document-review-panel";
 import {
   useCreedShellFileActions,
   useCreedShellActiveSection,
@@ -120,7 +106,6 @@ import {
   getProposalPreviewText,
   normalizeLegacyProposalDraft,
   normalizeProposalForSection,
-  sectionSuggestions,
   type AccentKey,
   type ActivityEntry,
   type ActivityStatus,
@@ -153,12 +138,11 @@ import type {
 import type { SharedDocument } from "@/lib/shared-documents";
 import {
   canIndentSection,
+  canNestUnder,
   canOutdentSection,
-  collapsedHiddenIds,
+  insertSectionRelativeTo,
   normalizeSectionDepths,
-  reconcileReorderedIds,
   sectionDepth,
-  sectionHasChildren,
   shiftSubtreeDepth,
 } from "@/lib/section-hierarchy";
 import { cn } from "@/lib/utils";
@@ -179,22 +163,9 @@ const activityStatusLabelMap: Record<ActivityStatus, string> = {
 };
 
 const FILE_NAV_INTENT_KEY = "creed:file-nav-intent";
-const QUALITY_FINGERPRINT_IGNORED_KEYS = new Set([
-  "lastEditedAt",
-  "lastEditedBy",
-  "lastEditedLabel",
-  "lastEditedType",
-  "revision",
-]);
 
 const documentHeaderIconButtonClass =
   "h-8 w-8 min-h-8 min-w-8 rounded-full border-0 bg-transparent p-0 text-[var(--creed-text-secondary)] hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)]";
-
-function qualityFingerprint(value: unknown) {
-  return JSON.stringify(value, (key, nestedValue) =>
-    QUALITY_FINGERPRINT_IGNORED_KEYS.has(key) ? undefined : nestedValue
-  );
-}
 
 function getProposalStatusStyles(status: ActivityStatus) {
   if (status === "pending") {
@@ -676,8 +647,10 @@ type GitHubPullPreview = {
 type SharedDocumentFilePayload = {
   document: SharedDocument;
   comments: DocumentComment[];
+  pendingComments: DocumentComment[];
   activity: DocumentActivityEvent[];
   users: WorkspaceUser[];
+  currentUserId: string | null;
   activeCommentId: string | null;
 };
 
@@ -947,6 +920,9 @@ export function FileScreen({
   const [documentComments, setDocumentComments] = useState<DocumentComment[]>(
     sharedDocument?.comments ?? []
   );
+  const [pendingComments, setPendingComments] = useState<DocumentComment[]>(
+    sharedDocument?.pendingComments ?? []
+  );
   const [documentActivity, setDocumentActivity] = useState<DocumentActivityEvent[]>(
     sharedDocument?.activity ?? []
   );
@@ -956,18 +932,21 @@ export function FileScreen({
   const [activeDocumentCommentId, setActiveDocumentCommentId] = useState<string | null>(
     sharedDocument?.activeCommentId ?? null
   );
-  const [commentBody, setCommentBody] = useState("");
-  const [commentReferenceQuote, setCommentReferenceQuote] = useState("");
-  const [mentionedUserIds, setMentionedUserIds] = useState<string[]>([]);
   const [replyingTo, setReplyingTo] = useState<string | null>(null);
   const [replyBody, setReplyBody] = useState("");
-  const [savingComment, setSavingComment] = useState(false);
   const [savingReply, setSavingReply] = useState(false);
   const [documentLocked, setDocumentLocked] = useState(false);
   const [documentSaving, setDocumentSaving] = useState(false);
-  const [documentPublishing, setDocumentPublishing] = useState(false);
+  const [reviewRefreshKey, setReviewRefreshKey] = useState(0);
   const [savingDocumentProperty, setSavingDocumentProperty] = useState<DocumentPropertyName | null>(null);
-  const documentUsers = sharedDocument?.users ?? [];
+  const documentUsers = useMemo(() => sharedDocument?.users ?? [], [sharedDocument]);
+  const currentUserId = sharedDocument?.currentUserId ?? null;
+  // People you can @mention: everyone except yourself (tagging yourself is a
+  // no-op the server strips anyway).
+  const mentionableUsers = useMemo(
+    () => documentUsers.filter((user) => user.id !== currentUserId),
+    [documentUsers, currentUserId]
+  );
 
   useEffect(() => {
     if (!sharedDocument) {
@@ -975,6 +954,7 @@ export function FileScreen({
       setDocumentSections([]);
       setSavedDocumentMarkdown("");
       setDocumentComments([]);
+      setPendingComments([]);
       setDocumentActivity([]);
       setActiveDocumentPanel(null);
       setActiveDocumentCommentId(null);
@@ -986,12 +966,10 @@ export function FileScreen({
     setDocumentSections(parsed);
     setSavedDocumentMarkdown(documentSectionsToMarkdown(parsed, sharedDocument.document.title));
     setDocumentComments(sharedDocument.comments);
+    setPendingComments(sharedDocument.pendingComments);
     setDocumentActivity(sharedDocument.activity);
     setActiveDocumentPanel(sharedDocument.activeCommentId ? "comments" : null);
     setActiveDocumentCommentId(sharedDocument.activeCommentId ?? null);
-    setCommentBody("");
-    setCommentReferenceQuote("");
-    setMentionedUserIds([]);
     setReplyingTo(null);
     setReplyBody("");
   }, [sharedDocument]);
@@ -1025,28 +1003,10 @@ export function FileScreen({
     [editorSections]
   );
   useCreedShellLiveSections(documentMode ? visibleSections : null);
-  // Collapse is a view-only concern (never serialized). A collapsed section
-  // hides its whole subtree from the rendered list; the rows still live in
-  // state so they persist and keep their nesting.
-  const [collapsedSectionIds, setCollapsedSectionIds] = useState<ReadonlySet<string>>(
-    () => new Set<string>()
-  );
-  const toggleSectionCollapsed = useCallback((sectionId: string) => {
-    setCollapsedSectionIds((current) => {
-      const next = new Set(current);
-      if (next.has(sectionId)) next.delete(sectionId);
-      else next.add(sectionId);
-      return next;
-    });
-  }, []);
-  const hiddenSectionIds = useMemo(
-    () => collapsedHiddenIds(visibleSections, collapsedSectionIds),
-    [visibleSections, collapsedSectionIds]
-  );
-  const renderSections = useMemo(
-    () => visibleSections.filter((section) => !hiddenSectionIds.has(section.id)),
-    [visibleSections, hiddenSectionIds]
-  );
+  // Section collapse lives only in the sidebar outline (see shell.tsx). The
+  // editor always renders every visible section, so the rendered list is just
+  // the un-archived sections in their current order.
+  const renderSections = visibleSections;
   const pendingProposals = useMemo(
     () => (documentMode ? [] : state.proposals.filter((proposal) => proposal.status === "pending")),
     [documentMode, state.proposals]
@@ -1091,28 +1051,13 @@ export function FileScreen({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
-  const qualitySnapshot = useSyncExternalStore(
-    subscribeQualityRunner,
-    getQualityRunnerSnapshot,
-    getQualityRunnerServerSnapshot
-  );
-  const qualityReport = qualitySnapshot.report;
-  const qualityLoading = qualitySnapshot.fullRunning;
-  const qualitySectionLoading = useMemo(() => {
-    const first = qualitySnapshot.sectionRunning.values().next();
-    return first.done ? null : first.value;
-  }, [qualitySnapshot.sectionRunning]);
-  const [qualityNotice, setQualityNotice] = useState<string | null>(qualitySnapshot.error);
-  const [qualityEnabled, setQualityEnabled] = useState(false);
-  useEffect(() => {
-    if (qualitySnapshot.error) setQualityNotice(qualitySnapshot.error);
-  }, [qualitySnapshot.error]);
-  const [analyzedFullFingerprint, setAnalyzedFullFingerprint] = useState<string | null>(null);
-  const [analyzedSectionFingerprints, setAnalyzedSectionFingerprints] = useState<Record<string, string>>({});
   const [composerOpen, setComposerOpen] = useState(false);
   const [composerName, setComposerName] = useState("");
   const [composerStarter, setComposerStarter] = useState<string | undefined>();
   const [insertAfterId, setInsertAfterId] = useState<string | null>(null);
+  // Whether the composer will create a sibling of the anchor or nest a child
+  // under it. Set by the slash command / per-section add controls.
+  const [composerMode, setComposerMode] = useState<"sibling" | "child">("sibling");
   const [copiedAction, setCopiedAction] = useState<string | null>(null);
   const [importBusy, setImportBusy] = useState(false);
   const [pushDialogOpen, setPushDialogOpen] = useState(false);
@@ -1147,10 +1092,7 @@ export function FileScreen({
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const editorScrollRef = useRef<HTMLDivElement | null>(null);
   const composerAreaRef = useRef<HTMLDivElement | null>(null);
-  const qualityBaselineLoadedRef = useRef(false);
   const lastDocumentStatusKeyRef = useRef<string | null>(null);
-  const currentFullFingerprintRef = useRef<string | null>(null);
-  const sectionFingerprintByIdRef = useRef<Map<string, string>>(new Map());
   // `exportMarkdown` is re-created by the provider whenever state changes,
   // so depending on it alone is sufficient - listing `state.sections`
   // separately would be redundant.
@@ -1158,33 +1100,6 @@ export function FileScreen({
     () => (documentMode ? documentMarkdown : exportMarkdown()),
     [documentMarkdown, documentMode, exportMarkdown]
   );
-  const sectionQualityById = useMemo(
-    () => new Map((qualityReport?.sections ?? []).map((section) => [section.sectionId, section])),
-    [qualityReport]
-  );
-  const currentFullFingerprint = useMemo(
-    () => qualityFingerprint(editorSections),
-    [editorSections]
-  );
-  const sectionFingerprintById = useMemo(
-    () =>
-      new Map(
-        editorSections.map((section) => [section.id, qualityFingerprint(section)] as const)
-      ),
-    [editorSections]
-  );
-  const qualityHasReport = Boolean(qualityReport);
-  const fullQualityDirty =
-    qualityEnabled &&
-    editorSections.length > 0 &&
-    qualityHasReport &&
-    (!analyzedFullFingerprint || analyzedFullFingerprint !== currentFullFingerprint);
-  const qualityCanRunInitialAnalysis = qualityEnabled && editorSections.length > 0 && !qualityHasReport;
-
-  useEffect(() => {
-    currentFullFingerprintRef.current = currentFullFingerprint;
-    sectionFingerprintByIdRef.current = sectionFingerprintById;
-  }, [currentFullFingerprint, sectionFingerprintById]);
   const githubConfigured = documentMode
     ? state.settings.integrations.github.status === "connected" &&
       Boolean(currentDocument?.githubRepoOwner) &&
@@ -1197,12 +1112,10 @@ export function FileScreen({
       Boolean(state.settings.versionControl.branch);
 
   const pushDisabled =
-    documentMode
-      ? !githubConfigured || documentSaving || documentPublishing
-      : !githubConfigured ||
-        versionStatusBusy ||
-        versionStatus?.syncStatus === "up-to-date" ||
-        versionStatus?.syncStatus === "remote-ahead";
+    !githubConfigured ||
+    versionStatusBusy ||
+    versionStatus?.syncStatus === "up-to-date" ||
+    versionStatus?.syncStatus === "remote-ahead";
   // Pull is allowed any time GitHub is configured - including when the
   // local file is "local-ahead." That way, as soon as you make a local
   // edit, you can still click Pull to refresh against the latest remote
@@ -1232,57 +1145,9 @@ export function FileScreen({
 
     async function loadVersionStatus() {
       if (documentMode) {
-        if (!currentDocument || !githubConfigured) {
-          lastDocumentStatusKeyRef.current = null;
-          setVersionStatus({
-            connected: state.settings.integrations.github.status === "connected",
-            configured: githubConfigured,
-            syncStatus: githubConfigured ? "unknown" : "not-configured",
-          });
-          return;
-        }
-
-        // Document status is derived from the SAVED Supabase content, not the
-        // in-editor draft, so only refetch when the document identity or its
-        // revision changes - not on every keystroke (localMarkdown is a dep).
-        const statusKey = `${currentDocument.id}:${currentDocument.revision}`;
-        if (lastDocumentStatusKeyRef.current === statusKey) {
-          return;
-        }
-        lastDocumentStatusKeyRef.current = statusKey;
-
-        try {
-          setVersionStatusBusy(true);
-          const response = await fetch(
-            `/api/app/documents/${encodeURIComponent(currentDocument.id)}/github/status`,
-            { method: "GET", cache: "no-store" }
-          );
-          const payload = (await response.json()) as GitHubVersionStatus & { error?: string };
-          if (!response.ok) {
-            throw new Error(payload?.error || "Could not load document GitHub status");
-          }
-          if (!cancelled) {
-            setVersionStatus(payload);
-          }
-        } catch {
-          // Fall back to the document's stored sync status so the control still
-          // reflects something sensible if the live check fails. Clear the key
-          // so a later render retries.
-          lastDocumentStatusKeyRef.current = null;
-          if (!cancelled) {
-            setVersionStatus({
-              connected: state.settings.integrations.github.status === "connected",
-              configured: githubConfigured,
-              syncStatus:
-                (currentDocument?.syncStatus as GitHubVersionStatus["syncStatus"] | undefined) ??
-                "unknown",
-            });
-          }
-        } finally {
-          if (!cancelled) {
-            setVersionStatusBusy(false);
-          }
-        }
+        // Documents are Supabase-only now; there is no GitHub sync status to
+        // fetch. Version history lives in the document's own panel.
+        setVersionStatus({ connected: false, configured: false, syncStatus: "not-configured" });
         return;
       }
 
@@ -1344,225 +1209,16 @@ export function FileScreen({
     state.settings.versionControl.lastSyncedContentHash,
   ]);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadAiReadiness() {
-      if (documentMode) {
-        setQualityEnabled(false);
-        setQualityNotice(null);
-        return;
-      }
-
-      try {
-        const response = await fetch("/api/app/ai/settings", {
-          method: "GET",
-          cache: "no-store",
-        });
-        if (!response.ok) {
-          return;
-        }
-        const payload = (await response.json()) as {
-          settings?: { keyStatus?: "missing" | "valid" | "invalid" };
-        };
-        if (!cancelled) {
-          const enabled = payload.settings?.keyStatus === "valid";
-          setQualityEnabled(enabled);
-          setQualityNotice(enabled ? null : "Add an API key in Settings to enable quality analysis.");
-        }
-      } catch {
-        if (!cancelled) {
-          setQualityEnabled(false);
-        }
-      }
-    }
-
-    void loadAiReadiness();
-
-    function onWindowFocus() {
-      void loadAiReadiness();
-    }
-
-    function onVisibilityChange() {
-      if (document.visibilityState === "visible") {
-        void loadAiReadiness();
-      }
-    }
-
-    window.addEventListener("focus", onWindowFocus);
-    document.addEventListener("visibilitychange", onVisibilityChange);
-
-    return () => {
-      cancelled = true;
-      window.removeEventListener("focus", onWindowFocus);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, [documentMode]);
-
-  useEffect(() => {
-    if (documentMode || !qualityEnabled || editorSections.length === 0 || qualityBaselineLoadedRef.current) {
-      return;
-    }
-
-    // Re-mount after navigation: if the runner already has a report cached,
-    // skip the baseline read entirely. Likewise skip if a force refresh for
-    // the same fingerprint is still in flight - we'll see its result via the
-    // runner snapshot when it lands.
-    if (qualityReport) {
-      qualityBaselineLoadedRef.current = true;
-      return;
-    }
-    if (getInFlightFull(`full:${currentFullFingerprint}`)) {
-      qualityBaselineLoadedRef.current = true;
-      return;
-    }
-
-    let cancelled = false;
-    const sectionsSnapshot = editorSections;
-    const fingerprintSnapshot = currentFullFingerprint;
-
-    async function loadQualityBaseline() {
-      try {
-        qualityBaselineLoadedRef.current = true;
-        // Reuse the runner so a navigate-away + return reattaches to any
-        // in-flight baseline read instead of issuing a duplicate request.
-        const payload = await runFullQuality({
-          sections: sectionsSnapshot,
-          fingerprint: `baseline:${fingerprintSnapshot}`,
-          readOnly: true,
-        });
-
-        if (cancelled || !payload.report) {
-          return;
-        }
-
-        setBaselineReport(payload.report);
-        setAnalyzedFullFingerprint(
-          payload.current
-            ? fingerprintSnapshot
-            : `stored:${payload.storedContentHash ?? payload.report.contentHash}`
-        );
-        setAnalyzedSectionFingerprints(
-          Object.fromEntries(
-            sectionsSnapshot.flatMap((section) => {
-              const currentSectionFingerprint = qualityFingerprint(section);
-              const storedSectionHash = payload.storedSectionHashes?.[section.id];
-              const currentSectionHash = payload.sectionHashes?.[section.id];
-              const hasLegacySectionReport = payload.report?.sections.some(
-                (sectionReport) => sectionReport.sectionId === section.id
-              );
-
-              if (payload.current || (storedSectionHash && storedSectionHash === currentSectionHash)) {
-                return [[section.id, currentSectionFingerprint] as const];
-              }
-
-              if (storedSectionHash) {
-                return [[section.id, `stored:${storedSectionHash}`] as const];
-              }
-
-              if (hasLegacySectionReport) {
-                return [
-                  [
-                    section.id,
-                    `stored:legacy:${payload.storedContentHash ?? payload.report?.contentHash ?? "unknown"}:${section.id}`,
-                  ] as const,
-                ];
-              }
-
-              return [];
-            })
-          )
-        );
-      } catch (error) {
-        if (!cancelled) {
-          qualityBaselineLoadedRef.current = false;
-          setQualityNotice(
-            error instanceof Error ? error.message : "Could not load the latest quality analysis."
-          );
-        }
-      }
-    }
-
-    void loadQualityBaseline();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [currentFullFingerprint, documentMode, editorSections, qualityEnabled, qualityReport]);
-
-  async function refreshFullQuality() {
-    if (documentMode || !qualityEnabled || qualityLoading || editorSections.length === 0) {
-      return;
-    }
-
-    setQualityNotice(null);
-    const sectionFingerprints = Object.fromEntries(
-      editorSections.map((section) => [section.id, qualityFingerprint(section)])
-    );
-
-    try {
-      // One whole-file pass. The server re-scores only the sections that
-      // drifted since the last analysis, carries the rest forward, and
-      // recomputes the overall - so a single call does what the old
-      // stale-section fan-out did, without the redundant per-section requests.
-      const fingerprint = currentFullFingerprintRef.current ?? currentFullFingerprint;
-      const payload = await runFullQuality({
-        sections: editorSections,
-        fingerprint: `full:${fingerprint}`,
-        force: true,
-      });
-
-      if (payload.report) {
-        setAnalyzedFullFingerprint(fingerprint);
-        setAnalyzedSectionFingerprints(
-          Object.fromEntries(
-            editorSections.map((section) => [
-              section.id,
-              sectionFingerprintByIdRef.current.get(section.id) ?? sectionFingerprints[section.id],
-            ])
-          )
-        );
-      }
-    } catch {
-      // Full-analysis failures surface as a toast via the shell QualityToasts
-      // subscriber; just clear any stale inline notice here.
-      setQualityNotice(null);
-    }
-  }
-
-  async function refreshSectionQuality(section: CreedSection) {
-    if (documentMode || !qualityEnabled || qualitySectionLoading === section.id) {
-      return;
-    }
-
-    setQualityNotice(null);
-    try {
-      const sectionFingerprint =
-        sectionFingerprintByIdRef.current.get(section.id) ?? qualityFingerprint(section);
-      const nextSectionReport = await runSectionQuality({
-        sections: editorSections,
-        section,
-        fingerprint: sectionFingerprint,
-      });
-      if (nextSectionReport) {
-        setAnalyzedSectionFingerprints((current) => ({
-          ...current,
-          [section.id]: sectionFingerprint,
-        }));
-      }
-    } catch {
-      // The failure surfaces as a toast via the shell QualityToasts subscriber
-      // (the runner records the outcome); just clear any stale inline notice.
-      setQualityNotice(null);
-    }
-  }
-
-  const openComposer = useCallback((afterSectionId?: string) => {
-    setInsertAfterId(afterSectionId ?? null);
-    setComposerOpen(true);
-    setComposerName("");
-    setComposerStarter(undefined);
-  }, []);
+  const openComposer = useCallback(
+    (afterSectionId?: string, mode: "sibling" | "child" = "sibling") => {
+      setInsertAfterId(afterSectionId ?? null);
+      setComposerMode(afterSectionId ? mode : "sibling");
+      setComposerOpen(true);
+      setComposerName("");
+      setComposerStarter(undefined);
+    },
+    []
+  );
 
   const scrollComposerIntoView = useCallback((behavior: ScrollBehavior = "smooth") => {
     const container = editorScrollRef.current;
@@ -1581,8 +1237,8 @@ export function FileScreen({
   }, []);
 
   const openComposerAndReveal = useCallback(
-    (afterSectionId?: string) => {
-      openComposer(afterSectionId);
+    (afterSectionId?: string, mode: "sibling" | "child" = "sibling") => {
+      openComposer(afterSectionId, mode);
 
       window.setTimeout(() => {
         scrollComposerIntoView("smooth");
@@ -1621,23 +1277,17 @@ export function FileScreen({
     };
   }
 
-  function addDocumentSection(name: string, starter?: string, afterSectionId?: string | null) {
+  function addDocumentSection(
+    name: string,
+    starter?: string,
+    afterSectionId?: string | null,
+    mode: "sibling" | "child" = "sibling"
+  ) {
     setDocumentSections((current) => {
       const nextSection = createDocumentSection(name, starter);
-      if (!afterSectionId) {
-        return normalizeSectionDepths([...current, nextSection]);
-      }
-      const index = current.findIndex((section) => section.id === afterSectionId);
-      if (index === -1) {
-        return normalizeSectionDepths([...current, nextSection]);
-      }
-      // Insert as a sibling of the anchor section (same depth).
-      const anchorDepth = current[index]?.depth ?? 0;
-      return normalizeSectionDepths([
-        ...current.slice(0, index + 1),
-        { ...nextSection, depth: anchorDepth },
-        ...current.slice(index + 1),
-      ]);
+      // "sibling" lands after the anchor's whole subtree at the same depth;
+      // "child" nests it one level deeper as the anchor's first child.
+      return insertSectionRelativeTo(current, afterSectionId, nextSection, mode);
     });
   }
 
@@ -1676,19 +1326,14 @@ export function FileScreen({
     });
   }
 
-  // Drag reorders only the VISIBLE rows. Reconcile hidden (collapsed) children
-  // back next to their parent so a collapsed subtree drags as one unit, then
-  // route to the right mode's reorder handler.
+  // Drag reorders the section rows. Every visible section is rendered (the
+  // editor has no collapse), so the reordered ids already represent the full
+  // order - route straight to the right mode's reorder handler.
   function handleSectionReorder(reorderedVisibleIds: string[]) {
-    const fullOrder = reconcileReorderedIds(
-      visibleSections,
-      reorderedVisibleIds,
-      collapsedSectionIds
-    );
     if (documentMode) {
-      reorderDocumentSections(fullOrder);
+      reorderDocumentSections(reorderedVisibleIds);
     } else {
-      reorderSections(fullOrder);
+      reorderSections(reorderedVisibleIds);
     }
   }
 
@@ -1698,9 +1343,9 @@ export function FileScreen({
     }
 
     if (documentMode) {
-      addDocumentSection(composerName, composerStarter, insertAfterId);
+      addDocumentSection(composerName, composerStarter, insertAfterId, composerMode);
     } else if (insertAfterId) {
-      addSectionAfter(insertAfterId, composerName, composerStarter);
+      addSectionAfter(insertAfterId, composerName, composerStarter, composerMode);
     } else {
       addSection(composerName, composerStarter);
     }
@@ -1709,6 +1354,7 @@ export function FileScreen({
     setComposerName("");
     setComposerStarter(undefined);
     setInsertAfterId(null);
+    setComposerMode("sibling");
   }
 
   async function copyValue(key: string, value: string) {
@@ -1779,6 +1425,47 @@ export function FileScreen({
     }
   }
 
+  // Approve a pending agent-proposed comment: it becomes a normal shared comment
+  // authored by the current user, and the deferred mention notifications fire.
+  async function approvePendingComment(commentId: string) {
+    if (!currentDocument) return;
+    try {
+      const response = await fetch(
+        `/api/app/documents/${encodeURIComponent(currentDocument.id)}/comments/${encodeURIComponent(commentId)}/approve`,
+        { method: "POST" }
+      );
+      const payload = (await response.json()) as { comment?: DocumentComment; error?: string };
+      if (!response.ok || !payload.comment) {
+        throw new Error(payload.error || "Could not approve the comment.");
+      }
+      const approved = payload.comment;
+      setPendingComments((rows) => rows.filter((comment) => comment.id !== commentId));
+      setDocumentComments((rows) => [...rows, approved]);
+      await reloadDocumentActivity(currentDocument.id);
+      toast.success("Comment shared with the workspace");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not approve the comment.");
+    }
+  }
+
+  async function rejectPendingComment(commentId: string) {
+    if (!currentDocument) return;
+    try {
+      const response = await fetch(
+        `/api/app/documents/${encodeURIComponent(currentDocument.id)}/comments/${encodeURIComponent(commentId)}/reject`,
+        { method: "POST" }
+      );
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(payload?.error || "Could not reject the comment.");
+      }
+      setPendingComments((rows) => rows.filter((comment) => comment.id !== commentId));
+      toast.success("Pending comment rejected");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not reject the comment.");
+    }
+  }
+
   async function handleSaveDocument(): Promise<SharedDocument | null> {
     if (!currentDocument || documentSaving || !documentDirty) {
       return currentDocument;
@@ -1797,7 +1484,19 @@ export function FileScreen({
       if (!response.ok) {
         throw new Error(await readError(response, "Could not save document."));
       }
-      const payload = (await response.json()) as { document?: SharedDocument };
+      const payload = (await response.json()) as {
+        outcome?: "applied" | "proposed";
+        document?: SharedDocument;
+        proposal?: { id: string };
+      };
+      // Under the workspace edit policy a save is either applied directly or
+      // recorded as a pending proposal for review.
+      if (payload.outcome === "proposed" || (!payload.document && payload.proposal)) {
+        await reloadDocumentActivity(currentDocument.id);
+        setReviewRefreshKey((key) => key + 1);
+        toast.success("Change proposed for review");
+        return currentDocument;
+      }
       if (payload.document) {
         setCurrentDocument(payload.document);
         const parsed = parseDocumentSections(payload.document.content, payload.document.title);
@@ -1805,16 +1504,6 @@ export function FileScreen({
         setSavedDocumentMarkdown(documentSectionsToMarkdown(parsed, payload.document.title));
         await reloadDocumentActivity(payload.document.id);
         lastDocumentStatusKeyRef.current = null;
-        setVersionStatus((current) =>
-          current
-            ? {
-                ...current,
-                syncStatus:
-                  (payload.document?.syncStatus as GitHubVersionStatus["syncStatus"] | undefined) ??
-                  current.syncStatus,
-              }
-            : current
-        );
         toast.success("Document saved");
         return payload.document;
       }
@@ -1824,62 +1513,6 @@ export function FileScreen({
       return null;
     } finally {
       setDocumentSaving(false);
-    }
-  }
-
-  async function handlePublishDocument() {
-    if (!currentDocument || documentPublishing) {
-      return;
-    }
-
-    try {
-      let documentToPublish = currentDocument;
-      if (documentDirty) {
-        const savedDocument = await handleSaveDocument();
-        if (!savedDocument) {
-          return;
-        }
-        documentToPublish = savedDocument;
-      }
-
-      setDocumentPublishing(true);
-      const response = await fetch(`/api/app/documents/${encodeURIComponent(documentToPublish.id)}/github/push`, {
-        method: "POST",
-      });
-      if (!response.ok) {
-        throw new Error(await readError(response, "Could not publish document."));
-      }
-      const payload = (await response.json()) as { document?: SharedDocument; synced?: boolean };
-      if (payload.document) {
-        setCurrentDocument(payload.document);
-        const parsed = parseDocumentSections(payload.document.content, payload.document.title);
-        setDocumentSections(parsed);
-        setSavedDocumentMarkdown(documentSectionsToMarkdown(parsed, payload.document.title));
-        lastDocumentStatusKeyRef.current = null;
-        setVersionStatus((current) =>
-          current
-            ? {
-                ...current,
-                syncStatus:
-                  (payload.document?.syncStatus as GitHubVersionStatus["syncStatus"] | undefined) ??
-                  current.syncStatus,
-                remoteSha: payload.document?.lastRemoteSha ?? current.remoteSha,
-                remoteContentHash:
-                  payload.document?.lastSyncedContentHash ?? current.remoteContentHash,
-              }
-            : current
-        );
-        await reloadDocumentActivity(payload.document.id);
-      }
-      if (payload.synced === false) {
-        toast.success("Published to GitHub. You have newer local edits - publish again to sync them.");
-      } else {
-        toast.success("Published to GitHub");
-      }
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not publish document.");
-    } finally {
-      setDocumentPublishing(false);
     }
   }
 
@@ -1916,51 +1549,132 @@ export function FileScreen({
     }
   }
 
-  async function createDocumentComment(parentId?: string) {
+  // New comments are created from the in-editor popup composer, which supplies
+  // the selected text as the anchor quote. Replies use the sidebar and go
+  // through createDocumentReply below.
+  async function createDocumentCommentFromEditor(input: {
+    quote: string;
+    body: string;
+    mentionedUserIds: string[];
+  }) {
     if (!currentDocument) {
       return;
     }
-    const body = parentId ? replyBody : commentBody;
-    if (!body.trim()) {
+    const body = input.body.trim();
+    if (!body) {
       return;
     }
+    const response = await fetch(`/api/app/documents/${encodeURIComponent(currentDocument.id)}/comments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        body,
+        parentId: null,
+        referenceQuote: input.quote || null,
+        mentionedUserIds: input.mentionedUserIds,
+      }),
+    });
+    if (!response.ok) {
+      const message = await readError(response, "Could not add comment.");
+      toast.error(message);
+      // Re-throw so the editor popup stays open and the user can retry.
+      throw new Error(message);
+    }
+    const payload = (await response.json()) as { comment?: DocumentComment };
+    if (payload.comment) {
+      setDocumentComments((rows) => [...rows, payload.comment!]);
+      setActiveDocumentPanel("comments");
+      setActiveDocumentCommentId(payload.comment.id);
+    }
+    await reloadDocumentActivity(currentDocument.id);
+  }
+
+  async function createDocumentReply(parentId: string) {
+    if (!currentDocument) {
+      return;
+    }
+    const body = replyBody.trim();
+    if (!body) {
+      return;
+    }
+    // Resolve "@Display Name" mentions typed into the reply against workspace
+    // members so replies can notify people just like top-level comments.
+    const mentionedUserIds = documentUsers
+      .filter((user) => user.label && body.includes(`@${user.label}`))
+      .map((user) => user.id);
 
     try {
-      if (parentId) setSavingReply(true);
-      else setSavingComment(true);
+      setSavingReply(true);
       const response = await fetch(`/api/app/documents/${encodeURIComponent(currentDocument.id)}/comments`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           body,
-          parentId: parentId ?? null,
-          referenceQuote: parentId ? null : commentReferenceQuote || null,
-          mentionedUserIds: parentId ? [] : mentionedUserIds,
+          parentId,
+          referenceQuote: null,
+          mentionedUserIds,
         }),
       });
       if (!response.ok) {
-        throw new Error(await readError(response, "Could not add comment."));
+        throw new Error(await readError(response, "Could not add reply."));
       }
       const payload = (await response.json()) as { comment?: DocumentComment };
       if (payload.comment) {
         setDocumentComments((rows) => [...rows, payload.comment!]);
-        setActiveDocumentPanel("comments");
-        setActiveDocumentCommentId(payload.comment.id);
       }
-      if (parentId) {
-        setReplyBody("");
-        setReplyingTo(null);
-      } else {
-        setCommentBody("");
-        setCommentReferenceQuote("");
-        setMentionedUserIds([]);
-      }
+      setReplyBody("");
+      setReplyingTo(null);
       await reloadDocumentActivity(currentDocument.id);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not add comment.");
+      toast.error(error instanceof Error ? error.message : "Could not add reply.");
     } finally {
       setSavingReply(false);
-      setSavingComment(false);
+    }
+  }
+
+  async function updateDocumentCommentBody(commentId: string, body: string) {
+    const trimmed = body.trim();
+    if (!trimmed) {
+      return;
+    }
+    const response = await fetch(`/api/app/comments/${encodeURIComponent(commentId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body: trimmed }),
+    });
+    if (!response.ok) {
+      const message = await readError(response, "Could not update comment.");
+      toast.error(message);
+      throw new Error(message);
+    }
+    const payload = (await response.json()) as { comment?: DocumentComment };
+    if (payload.comment) {
+      setDocumentComments((rows) =>
+        rows.map((comment) => comment.id === commentId ? payload.comment! : comment)
+      );
+    }
+    if (currentDocument) {
+      await reloadDocumentActivity(currentDocument.id);
+    }
+  }
+
+  async function deleteDocumentCommentById(commentId: string) {
+    const response = await fetch(`/api/app/comments/${encodeURIComponent(commentId)}`, {
+      method: "DELETE",
+    });
+    if (!response.ok) {
+      toast.error(await readError(response, "Could not delete comment."));
+      return;
+    }
+    // Drop the comment and any of its replies from local state.
+    setDocumentComments((rows) =>
+      rows.filter((comment) => comment.id !== commentId && comment.parentId !== commentId)
+    );
+    if (activeDocumentCommentId === commentId) {
+      setActiveDocumentCommentId(null);
+    }
+    if (currentDocument) {
+      await reloadDocumentActivity(currentDocument.id);
     }
   }
 
@@ -1985,18 +1699,8 @@ export function FileScreen({
     }
   }
 
-  function toggleMention(userId: string) {
-    setMentionedUserIds((current) =>
-      current.includes(userId) ? current.filter((id) => id !== userId) : [...current, userId]
-    );
-  }
 
   async function handleOpenPushReview() {
-    if (documentMode) {
-      await handlePublishDocument();
-      return;
-    }
-
     setSelectedVersionAction("push");
     setPushMessage("Update Creed");
     setPushPreview(null);
@@ -2079,63 +1783,6 @@ export function FileScreen({
   }
 
   async function handleOpenPullReview() {
-    if (documentMode) {
-      if (!currentDocument) {
-        return;
-      }
-      try {
-        setSelectedVersionAction("pull");
-        setPullBusy(true);
-        setPullDialogOpen(true);
-        setPullPreview(null);
-
-        const response = await fetch(
-          `/api/app/documents/${encodeURIComponent(currentDocument.id)}/github/pull/preview`,
-          { method: "POST" }
-        );
-        const payload = (await response.json()) as {
-          syncStatus?: GitHubPullPreview["syncStatus"];
-          remoteSha?: string | null;
-          remoteMessage?: string | null;
-          remoteCommittedAt?: string | null;
-          remoteContentHash?: string | null;
-          remoteContent?: string;
-          remoteBody?: string;
-          error?: string;
-        };
-
-        if (!response.ok) {
-          throw new Error(payload?.error || "Could not preview GitHub import");
-        }
-
-        // The remote body (frontmatter already stripped server-side) is parsed
-        // into sections purely to render the incoming-changes diff.
-        const remoteSections = parseDocumentSections(
-          payload.remoteBody ?? "",
-          currentDocument.title
-        );
-        setPullPreview({
-          syncStatus: payload.syncStatus ?? "unknown",
-          remoteSha: payload.remoteSha ?? null,
-          remoteMessage: payload.remoteMessage ?? null,
-          remoteCommittedAt: payload.remoteCommittedAt ?? null,
-          remoteContentHash: payload.remoteContentHash ?? null,
-          remoteContent: payload.remoteContent ?? "",
-          warnings: [],
-          sections: remoteSections,
-        });
-        setPullPreviewRenderKey((current) => current + 1);
-      } catch (error) {
-        toast.error(
-          error instanceof Error ? error.message : "Could not preview GitHub import"
-        );
-        setPullDialogOpen(false);
-      } finally {
-        setPullBusy(false);
-      }
-      return;
-    }
-
     try {
       setSelectedVersionAction("pull");
       setPullBusy(true);
@@ -2567,47 +2214,6 @@ export function FileScreen({
                   </div>
 
                   <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 self-start">
-                    {!documentMode ? (
-                    <div className="inline-flex h-7 items-center gap-1">
-                      <AnimatePresence initial={false}>
-                        {fullQualityDirty || qualityCanRunInitialAnalysis ? (
-                          <motion.div
-                            key="refresh-full-quality"
-                            initial={{ opacity: 0, scale: 0.88, width: 0 }}
-                            animate={{ opacity: 1, scale: 1, width: 28 }}
-                            exit={{ opacity: 0, scale: 0.88, width: 0 }}
-                            transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
-                            className="overflow-hidden"
-                          >
-                            <QualityRefreshButton
-                              title="Refresh full analysis"
-                              loading={qualityLoading}
-                              onClick={() => void refreshFullQuality()}
-                            />
-                          </motion.div>
-                        ) : null}
-                      </AnimatePresence>
-                      <OverallQualityPopover
-                        report={qualityReport}
-                        loading={qualityLoading}
-                        notice={qualityNotice}
-                        canRefresh={qualityEnabled && editorSections.length > 0}
-                        onRefresh={() => void refreshFullQuality()}
-                      >
-                        <button
-                          type="button"
-                          className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[var(--creed-text-primary)] transition-colors duration-150 hover:bg-[var(--creed-surface-raised)] data-[state=open]:bg-[var(--creed-surface-raised)]"
-                          aria-label="Show Creed quality"
-                        >
-                          <QualityRing
-                            score={qualityReport?.overall.score ?? 0}
-                            color="#2563EB"
-                            loading={qualityLoading}
-                          />
-                        </button>
-                      </OverallQualityPopover>
-                    </div>
-                    ) : null}
                     <input
                       ref={importInputRef}
                       type="file"
@@ -2639,8 +2245,9 @@ export function FileScreen({
                         )}
                       </Button>
                     ) : null}
+                    {!documentMode ? (
                     <div
-                      className={documentMode ? "contents" : "flex items-center"}
+                      className="flex items-center"
                       title={
                         githubConfigured
                           ? undefined
@@ -2762,6 +2369,7 @@ export function FileScreen({
                       </DropdownMenu>
                       ) : null}
                     </div>
+                    ) : null}
 
                     {documentMode ? (
                       <Button
@@ -2956,6 +2564,23 @@ export function FileScreen({
                   />
                 ) : null}
 
+                {documentMode && currentDocument ? (
+                  <DocumentReviewPanel
+                    documentId={currentDocument.id}
+                    revision={currentDocument.revision}
+                    currentContent={currentDocument.content}
+                    users={documentUsers}
+                    refreshSignal={reviewRefreshKey}
+                    onDocumentUpdated={(doc) => {
+                      setCurrentDocument(doc);
+                      const parsed = parseDocumentSections(doc.content, doc.title);
+                      setDocumentSections(parsed);
+                      setSavedDocumentMarkdown(documentSectionsToMarkdown(parsed, doc.title));
+                      void reloadDocumentActivity(doc.id);
+                    }}
+                  />
+                ) : null}
+
                 {/* Review pill lives inside the sticky header block so both
                     pin to the top of the scroll viewport together. Visually
                     distinct via its own card chrome and a top margin - but
@@ -3011,15 +2636,11 @@ export function FileScreen({
                 className="space-y-10 md:space-y-16"
               >
                 {renderSections.map((section) => {
-                  const quality = sectionQualityById.get(section.id);
-                  const analyzedFingerprint = analyzedSectionFingerprints[section.id];
-                  const currentFingerprint = sectionFingerprintById.get(section.id);
                   const editorIndex = visibleSections.findIndex((item) => item.id === section.id);
                   const depth = sectionDepth(section);
-                  const hasChildren = sectionHasChildren(visibleSections, editorIndex);
-                  const collapsed = collapsedSectionIds.has(section.id);
                   const canIndent = canIndentSection(visibleSections, editorIndex);
                   const canOutdent = canOutdentSection(visibleSections, editorIndex);
+                  const canAddSubsection = canNestUnder(section);
 
                   const isOverridden = !documentMode && state.sectionLockOverrides.includes(section.id);
                   const sectionLocked = documentMode
@@ -3030,9 +2651,6 @@ export function FileScreen({
                       key={section.id}
                       section={section}
                       depth={depth}
-                      hasChildren={hasChildren}
-                      collapsed={collapsed}
-                      onToggleCollapse={() => toggleSectionCollapsed(section.id)}
                       canIndent={canIndent}
                       canOutdent={canOutdent}
                       onIndent={() => {
@@ -3050,14 +2668,6 @@ export function FileScreen({
                           ? () => setDocumentLocked((current) => !current)
                           : () => toggleSectionLock(section.id)
                       }
-                      quality={quality}
-                      qualityLoading={qualitySectionLoading === section.id}
-                      qualityDirty={
-                        qualityEnabled &&
-                        Boolean(quality) &&
-                        (!analyzedFingerprint || analyzedFingerprint !== currentFingerprint)
-                      }
-                      onRefreshQuality={() => void refreshSectionQuality(section)}
                       proposals={normalizedPendingProposals.filter((item) => item.sectionId === section.id)}
                       onAcceptProposal={(id) => {
                         void acceptProposal(id);
@@ -3122,9 +2732,14 @@ export function FileScreen({
                           toast.success(`Archived "${section.name}"`);
                         }
                       }}
-                      onAddSectionAfter={() => openComposerAndReveal(section.id)}
-                      comments={documentMode ? rootDocumentComments : []}
+                      onAddSectionAfter={(mode) => openComposerAndReveal(section.id, mode)}
+                      canAddSubsection={canAddSubsection}
+                      comments={documentMode ? [...rootDocumentComments, ...pendingComments] : []}
                       activeCommentId={activeDocumentCommentId}
+                      commentUsers={documentMode ? mentionableUsers : []}
+                      onCreateComment={
+                        documentMode ? createDocumentCommentFromEditor : undefined
+                      }
                       onSelectComment={
                         documentMode
                           ? (commentId) => {
@@ -3133,6 +2748,7 @@ export function FileScreen({
                             }
                           : undefined
                       }
+                      enableReferences={documentMode}
                     />
                   );
                 })}
@@ -3181,10 +2797,15 @@ export function FileScreen({
                     <div className="flex items-center justify-between gap-3">
                       <div className="min-w-0">
                         <div className="text-[13px] font-medium text-[var(--creed-text-primary)]">
-                          New section
+                          {composerMode === "child" ? "New subsection" : "New section"}
                         </div>
                         <div className="mt-0.5 hidden text-[12px] text-[var(--creed-text-secondary)] sm:block">
-                          Pick a starter or name your own.
+                          {composerMode === "child" && insertAfterId
+                            ? `Nested under "${
+                                visibleSections.find((item) => item.id === insertAfterId)?.name ??
+                                "section"
+                              }". Pick a starter or name your own.`
+                            : "Pick a starter or name your own."}
                         </div>
                       </div>
                       <Button
@@ -3211,31 +2832,6 @@ export function FileScreen({
                       placeholder="Section name..."
                       className="mt-4 h-10 rounded-md border-[var(--creed-border)] bg-[var(--creed-surface)] px-3 text-[14px]"
                     />
-
-                    <div className="mt-3 flex flex-wrap gap-1.5">
-                      {sectionSuggestions.map((suggestion) => (
-                        <button
-                          key={suggestion.name}
-                          type="button"
-                          onClick={() => {
-                            setComposerName(suggestion.name);
-                            setComposerStarter(suggestion.starter);
-                            if (documentMode) {
-                              addDocumentSection(suggestion.name, suggestion.starter, insertAfterId);
-                            } else if (!insertAfterId) {
-                              addSection(suggestion.name, suggestion.starter);
-                            } else {
-                              addSectionAfter(insertAfterId, suggestion.name, suggestion.starter);
-                            }
-                            setComposerOpen(false);
-                            setInsertAfterId(null);
-                          }}
-                          className="rounded-md border border-[var(--creed-border)] bg-[var(--creed-surface)] px-2.5 py-1 text-[12px] font-medium text-[var(--creed-text-secondary)] transition-colors duration-150 hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)]"
-                        >
-                          {suggestion.name}
-                        </button>
-                      ))}
-                    </div>
 
                     <div className="mt-4 flex items-center justify-between gap-2">
                       <Button
@@ -3272,25 +2868,24 @@ export function FileScreen({
           <DocumentCollaborationRail
             panel={activeDocumentPanel}
             comments={rootDocumentComments}
+            pendingComments={pendingComments}
             repliesByParent={documentRepliesByParent}
             activity={documentActivity}
             users={documentUsers}
+            mentionUsers={mentionableUsers}
+            currentUserId={currentUserId}
             activeCommentId={activeDocumentCommentId}
-            commentBody={commentBody}
-            commentReferenceQuote={commentReferenceQuote}
-            mentionedUserIds={mentionedUserIds}
             replyingTo={replyingTo}
             replyBody={replyBody}
-            savingComment={savingComment}
             savingReply={savingReply}
-            onCommentBodyChange={setCommentBody}
-            onReferenceQuoteChange={setCommentReferenceQuote}
-            onToggleMention={toggleMention}
             onReplyingToChange={setReplyingTo}
             onReplyBodyChange={setReplyBody}
-            onCreateComment={() => void createDocumentComment()}
-            onCreateReply={(commentId) => void createDocumentComment(commentId)}
+            onCreateReply={(commentId) => void createDocumentReply(commentId)}
             onUpdateCommentStatus={(commentId, status) => void updateDocumentCommentStatus(commentId, status)}
+            onUpdateCommentBody={updateDocumentCommentBody}
+            onDeleteComment={(commentId) => void deleteDocumentCommentById(commentId)}
+            onApprovePending={(commentId) => void approvePendingComment(commentId)}
+            onRejectPending={(commentId) => void rejectPendingComment(commentId)}
             onActiveCommentChange={setActiveDocumentCommentId}
             onClose={() => setActiveDocumentPanel(null)}
           />
@@ -3559,9 +3154,6 @@ export function FileScreen({
 function SectionCard({
   section,
   depth,
-  hasChildren,
-  collapsed,
-  onToggleCollapse,
   canIndent,
   canOutdent,
   onIndent,
@@ -3569,10 +3161,6 @@ function SectionCard({
   locked,
   globalLocked,
   onToggleLock,
-  quality,
-  qualityLoading,
-  qualityDirty,
-  onRefreshQuality,
   proposals,
   onAcceptProposal,
   onRejectProposal,
@@ -3583,15 +3171,16 @@ function SectionCard({
   onDelete,
   onArchive,
   onAddSectionAfter,
+  canAddSubsection,
   comments = [],
   activeCommentId = null,
+  commentUsers = [],
+  onCreateComment,
   onSelectComment,
+  enableReferences = false,
 }: {
   section: CreedSection;
   depth: number;
-  hasChildren: boolean;
-  collapsed: boolean;
-  onToggleCollapse: () => void;
   canIndent: boolean;
   canOutdent: boolean;
   onIndent: () => void;
@@ -3599,10 +3188,6 @@ function SectionCard({
   locked: boolean;
   globalLocked: boolean;
   onToggleLock: () => void;
-  quality?: CreedQualityReport["sections"][number];
-  qualityLoading?: boolean;
-  qualityDirty?: boolean;
-  onRefreshQuality: () => void;
   proposals: Proposal[];
   onAcceptProposal: (proposalId: string) => void;
   onRejectProposal: (proposalId: string) => void;
@@ -3612,15 +3197,32 @@ function SectionCard({
   onDuplicate: () => void;
   onDelete: () => void;
   onArchive: () => void;
-  onAddSectionAfter: () => void;
+  onAddSectionAfter: (mode: "sibling" | "child") => void;
+  canAddSubsection: boolean;
   comments?: DocumentComment[];
   activeCommentId?: string | null;
+  commentUsers?: WorkspaceUser[];
+  onCreateComment?: (input: {
+    quote: string;
+    body: string;
+    mentionedUserIds: string[];
+  }) => Promise<void> | void;
   onSelectComment?: (commentId: string) => void;
+  enableReferences?: boolean;
 }) {
   const dragControls = useDragControls();
   const accent = accentColorMap[section.accent];
+  // Section titles shrink with nesting depth so the hierarchy reads at a glance:
+  // top-level sections are largest, subsections smaller, sub-subsections smallest.
+  const titleSizeClass =
+    depth >= 2
+      ? "text-[13px] md:text-[14px]"
+      : depth === 1
+        ? "text-[14px] md:text-[15px]"
+        : "text-[16px] md:text-[18px]";
+  const accentBarHeightClass = depth >= 2 ? "h-6" : depth === 1 ? "h-7" : "h-9";
   const sectionText = useMemo(() => htmlToText(section.content).toLocaleLowerCase(), [section.content]);
-  const liveCommentMarkers = useMemo(
+  const sectionCommentAnchors = useMemo(
     () =>
       comments
         .filter((comment) => {
@@ -3628,7 +3230,13 @@ function SectionCard({
           const quote = comment.referenceQuote.trim();
           return quote.length > 0 && sectionText.includes(quote.toLocaleLowerCase());
         })
-        .slice(0, 4),
+        .map((comment) => ({
+          id: comment.id,
+          quote: comment.referenceQuote,
+          body: comment.body,
+          authorLabel: comment.authorLabel,
+          status: comment.status,
+        })),
     [comments, sectionText]
   );
 
@@ -3640,17 +3248,9 @@ function SectionCard({
       data-section-id={section.id}
       id={section.id}
       className="scroll-mt-24"
-      style={depth > 0 ? { paddingLeft: depth * 28 } : undefined}
+      style={depth > 0 ? { paddingLeft: depth * 18 } : undefined}
     >
       <section className="group relative">
-        {depth > 0 ? (
-          // Subtle rail marking a nested subtree, aligned to the indent.
-          <span
-            aria-hidden
-            className="absolute -left-px top-1 bottom-1 w-px bg-[var(--creed-border)]"
-            style={{ left: -14 }}
-          />
-        ) : null}
         <button
           type="button"
           onPointerDown={(event) => dragControls.start(event)}
@@ -3662,50 +3262,17 @@ function SectionCard({
         <div className="mb-6 flex items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-3">
-              {hasChildren ? (
-                <button
-                  type="button"
-                  onClick={onToggleCollapse}
-                  aria-expanded={!collapsed}
-                  aria-label={collapsed ? `Expand ${section.name}` : `Collapse ${section.name}`}
-                  className="-ml-1 shrink-0 rounded p-0.5 text-[var(--creed-text-secondary)] transition-colors hover:text-[var(--creed-text-primary)]"
-                >
-                  <ChevronDown
-                    className={cn(CHEVRON_CLASS, collapsed ? "-rotate-90" : "rotate-0")}
-                    style={{ color: accent }}
-                  />
-                </button>
-              ) : null}
               <span
-                className="inline-block h-9 w-[3px] rounded-full"
+                className={cn("inline-block w-[3px] rounded-full", accentBarHeightClass)}
                 style={{ backgroundColor: accent }}
               />
               <div className="flex min-w-0 flex-wrap items-center gap-3">
                 <span
-                  className="text-[15px] font-medium leading-none md:text-[16px]"
+                  className={cn("font-medium leading-none", titleSizeClass)}
                   style={{ color: accent }}
                 >
                   {section.name}
                 </span>
-                <SectionQualityPopover quality={quality} color={accent} loading={qualityLoading} />
-                <AnimatePresence initial={false}>
-                  {qualityDirty ? (
-                    <motion.div
-                      key={`${section.id}-quality-refresh`}
-                      initial={{ opacity: 0, scale: 0.88, width: 0 }}
-                      animate={{ opacity: 1, scale: 1, width: 28 }}
-                      exit={{ opacity: 0, scale: 0.88, width: 0 }}
-                      transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
-                      className="overflow-hidden"
-                    >
-                      <QualityRefreshButton
-                        title={`Refresh ${section.name} score`}
-                        loading={qualityLoading}
-                        onClick={onRefreshQuality}
-                      />
-                    </motion.div>
-                  ) : null}
-                </AnimatePresence>
                 {/* Per-section lock controls only exist while the master
                     lock is on - the header is the authority. Smoothly
                     expand/collapse so the chrome doesn't jump when the user
@@ -3896,31 +3463,6 @@ function SectionCard({
           </div>
         ) : null}
 
-        {liveCommentMarkers.length > 0 ? (
-          <div className="mb-3 flex flex-wrap gap-2">
-            {liveCommentMarkers.map((comment) => {
-              const active = activeCommentId === comment.id;
-              return (
-                <button
-                  key={comment.id}
-                  type="button"
-                  onClick={() => onSelectComment?.(comment.id)}
-                  className={cn(
-                    "inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
-                    active
-                      ? "border-[#7C2D12] bg-[#FFEDD5] text-[#7C2D12]"
-                      : "border-[#FDBA74] bg-[#FFF7ED] text-[#9A3412] hover:bg-[#FFEDD5]"
-                  )}
-                  title={comment.referenceQuote}
-                >
-                  <MessageSquare className="h-3.5 w-3.5 shrink-0" />
-                  <span className="truncate">{comment.referenceQuote}</span>
-                </button>
-              );
-            })}
-          </div>
-        ) : null}
-
         <div>
           <RichTextEditor
             sectionId={section.id}
@@ -3929,6 +3471,13 @@ function SectionCard({
             accentColor={accentColorMap[section.accent]}
             onChange={onChangeRichText}
             onAddSectionAfter={onAddSectionAfter}
+            canAddSubsection={canAddSubsection}
+            commentUsers={commentUsers}
+            onCreateComment={onCreateComment}
+            comments={sectionCommentAnchors}
+            activeCommentId={activeCommentId}
+            onSelectComment={onSelectComment}
+            enableReferences={enableReferences}
           />
         </div>
       </section>
@@ -4043,64 +3592,64 @@ function SectionLockButton({
 function DocumentCollaborationRail({
   panel,
   comments,
+  pendingComments,
   repliesByParent,
   activity,
   users,
+  mentionUsers,
+  currentUserId,
   activeCommentId,
-  commentBody,
-  commentReferenceQuote,
-  mentionedUserIds,
   replyingTo,
   replyBody,
-  savingComment,
   savingReply,
-  onCommentBodyChange,
-  onReferenceQuoteChange,
-  onToggleMention,
   onReplyingToChange,
   onReplyBodyChange,
-  onCreateComment,
   onCreateReply,
   onUpdateCommentStatus,
+  onUpdateCommentBody,
+  onDeleteComment,
+  onApprovePending,
+  onRejectPending,
   onActiveCommentChange,
   onClose,
 }: {
   panel: "comments" | "activity" | null;
   comments: DocumentComment[];
+  pendingComments: DocumentComment[];
   repliesByParent: Map<string, DocumentComment[]>;
   activity: DocumentActivityEvent[];
   users: WorkspaceUser[];
+  mentionUsers: WorkspaceUser[];
+  currentUserId: string | null;
   activeCommentId: string | null;
-  commentBody: string;
-  commentReferenceQuote: string;
-  mentionedUserIds: string[];
   replyingTo: string | null;
   replyBody: string;
-  savingComment: boolean;
   savingReply: boolean;
-  onCommentBodyChange: (value: string) => void;
-  onReferenceQuoteChange: (value: string) => void;
-  onToggleMention: (userId: string) => void;
   onReplyingToChange: (commentId: string | null) => void;
   onReplyBodyChange: (value: string) => void;
-  onCreateComment: () => void;
   onCreateReply: (commentId: string) => void;
   onUpdateCommentStatus: (commentId: string, status: "open" | "resolved") => void;
+  onUpdateCommentBody: (commentId: string, body: string) => Promise<void> | void;
+  onDeleteComment: (commentId: string) => void;
+  onApprovePending: (commentId: string) => void;
+  onRejectPending: (commentId: string) => void;
   onActiveCommentChange: (commentId: string | null) => void;
   onClose: () => void;
 }) {
   const open = panel !== null;
   const title = panel === "activity" ? "Activity" : "Comments";
+  const openCount = comments.filter((comment) => comment.status === "open").length;
+  const mentionLabels = useMemo(() => users.map((user) => user.label), [users]);
   const subtitle =
     panel === "activity"
       ? "Document changes from users and agents."
-      : "Questions, mentions, and review notes.";
+      : "Select text in the document and use the comment button to start a thread.";
 
   return (
     <motion.aside
       initial={false}
       animate={{
-        width: open ? 380 : 0,
+        width: open ? 400 : 0,
         opacity: open ? 1 : 0,
         x: open ? 0 : 18,
       }}
@@ -4112,15 +3661,22 @@ function DocumentCollaborationRail({
         "absolute inset-y-0 right-0 z-30 h-full overflow-hidden border-l border-[var(--creed-border)] bg-[var(--creed-surface)] shadow-[-18px_0_50px_rgba(28,28,26,0.12)] lg:static lg:h-full lg:shrink-0 lg:shadow-none",
         open ? "pointer-events-auto" : "pointer-events-none"
       )}
-      style={{ maxWidth: "min(86vw, 380px)" }}
+      style={{ maxWidth: "min(92vw, 400px)" }}
     >
-      <div className="flex h-full w-full flex-col p-5 lg:w-[380px]">
+      <div className="flex h-full w-full flex-col p-4 lg:w-[400px]">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <div className="text-[15px] font-medium text-[var(--creed-text-primary)]">
-              {title}
+            <div className="flex items-center gap-2">
+              <div className="text-[15px] font-medium text-[var(--creed-text-primary)]">
+                {title}
+              </div>
+              {panel === "comments" && openCount > 0 ? (
+                <span className="rounded-full bg-[#FEF3C7] px-2 py-0.5 text-[11px] font-semibold text-[#92400E]">
+                  {openCount} open
+                </span>
+              ) : null}
             </div>
-            <div className="mt-1 text-[12px] text-[var(--creed-text-tertiary)]">
+            <div className="mt-1 text-[12px] leading-5 text-[var(--creed-text-tertiary)]">
               {subtitle}
             </div>
           </div>
@@ -4130,84 +3686,89 @@ function DocumentCollaborationRail({
         </div>
 
         {panel === "comments" ? (
-          <>
-            <div className="mt-5 space-y-3 rounded-[14px] border border-[var(--creed-border)] bg-[var(--creed-surface-raised)] p-3">
-              <Textarea
-                value={commentBody}
-                onChange={(event) => onCommentBodyChange(event.target.value)}
-                placeholder="Add a comment"
-                className="min-h-24 resize-none bg-[var(--creed-surface)] text-sm"
-              />
-              <Input
-                value={commentReferenceQuote}
-                onChange={(event) => onReferenceQuoteChange(event.target.value)}
-                placeholder="Reference text"
-                className="h-9 bg-[var(--creed-surface)] text-sm"
-              />
-              {users.length > 0 ? (
-                <div className="flex flex-wrap gap-1.5">
-                  {users.map((user) => {
-                    const selected = mentionedUserIds.includes(user.id);
-                    return (
-                      <button
-                        key={user.id}
-                        type="button"
-                        onClick={() => onToggleMention(user.id)}
-                        className={cn(
-                          "rounded-full px-2 py-1 text-[11px] font-medium transition-colors",
-                          selected
-                            ? "bg-[#DBEAFE] text-[#1E40AF]"
-                            : "bg-[var(--creed-surface)] text-[var(--creed-text-secondary)] hover:text-[var(--creed-text-primary)]"
-                        )}
-                      >
-                        @{user.label}
-                      </button>
-                    );
-                  })}
+          <ScrollArea className="mt-4 min-h-0 flex-1">
+            <div className="space-y-2.5 pr-3">
+              {pendingComments.length ? (
+                <div className="space-y-2 rounded-[14px] border border-dashed border-[var(--creed-accent)]/40 bg-[var(--creed-accent)]/[0.04] p-3">
+                  <div className="flex items-center gap-1.5 px-0.5 text-[12px] font-medium text-[var(--creed-text-secondary)]">
+                    <Stamp className="h-3.5 w-3.5" />
+                    Pending from your agent
+                    <span className="text-[var(--creed-text-tertiary)]">({pendingComments.length})</span>
+                  </div>
+                  {pendingComments.map((comment) => (
+                    <div
+                      key={comment.id}
+                      className="rounded-[12px] border border-[var(--creed-border)] bg-[var(--creed-surface)] px-3 py-2.5"
+                    >
+                      <div className="text-[12px] text-[var(--creed-text-tertiary)]">
+                        {comment.proposedByAgentLabel || "Agent"} · proposed on your behalf
+                      </div>
+                      {comment.referenceQuote ? (
+                        <div className="mt-1.5 border-l-2 border-[var(--creed-accent)]/40 pl-2 text-[12px] italic text-[var(--creed-text-secondary)]">
+                          {comment.referenceQuote}
+                        </div>
+                      ) : null}
+                      <div className="mt-1.5 text-[13px] leading-6 text-[var(--creed-text-primary)]">
+                        <MentionText text={comment.body} mentionLabels={mentionLabels} />
+                      </div>
+                      <div className="mt-2.5 flex items-center justify-end gap-1.5">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 gap-1 rounded-md px-2 text-[12px] text-[var(--creed-text-secondary)] hover:text-[var(--creed-text-primary)]"
+                          onClick={() => onRejectPending(comment.id)}
+                        >
+                          <X className="h-3.5 w-3.5" />
+                          Reject
+                        </Button>
+                        <Button
+                          size="sm"
+                          className="h-7 gap-1 rounded-md bg-[var(--creed-accent)] px-2.5 text-[12px] text-white hover:bg-[var(--creed-accent-hover)]"
+                          onClick={() => onApprovePending(comment.id)}
+                        >
+                          <Check className="h-3.5 w-3.5" />
+                          Approve &amp; share
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               ) : null}
-              <Button
-                size="sm"
-                onClick={onCreateComment}
-                disabled={savingComment || !commentBody.trim()}
-                className="w-full"
-              >
-                {savingComment ? (
-                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Send className="h-3.5 w-3.5" />
-                )}
-                Add comment
-              </Button>
-            </div>
-
-            <ScrollArea className="mt-5 min-h-0 flex-1">
-              <div className="space-y-3 pr-4">
-                {comments.length ? (
-                  comments.map((comment) => (
-                    <DocumentCommentCard
-                      key={comment.id}
-                      comment={comment}
-                      replies={repliesByParent.get(comment.id) ?? []}
-                      active={activeCommentId === comment.id}
-                      replying={replyingTo === comment.id}
-                      replyBody={replyBody}
-                      savingReply={savingReply}
-                      onActive={() => onActiveCommentChange(comment.id)}
-                      onReplyingToChange={onReplyingToChange}
-                      onReplyBodyChange={onReplyBodyChange}
-                      onCreateReply={onCreateReply}
-                      onUpdateCommentStatus={onUpdateCommentStatus}
-                    />
-                  ))
-                ) : (
-                  <div className="rounded-[14px] border border-dashed border-[var(--creed-border)] px-4 py-8 text-center text-sm text-[var(--creed-text-secondary)]">
-                    No comments yet.
+              {comments.length ? (
+                comments.map((comment) => (
+                  <DocumentCommentCard
+                    key={comment.id}
+                    comment={comment}
+                    replies={repliesByParent.get(comment.id) ?? []}
+                    active={activeCommentId === comment.id}
+                    replying={replyingTo === comment.id}
+                    replyBody={replyBody}
+                    savingReply={savingReply}
+                    mentionLabels={mentionLabels}
+                    mentionUsers={mentionUsers}
+                    canManage={comment.createdBy !== null && comment.createdBy === currentUserId}
+                    onActive={() => onActiveCommentChange(comment.id)}
+                    onReplyingToChange={onReplyingToChange}
+                    onReplyBodyChange={onReplyBodyChange}
+                    onCreateReply={onCreateReply}
+                    onUpdateCommentStatus={onUpdateCommentStatus}
+                    onUpdateCommentBody={onUpdateCommentBody}
+                    onDeleteComment={onDeleteComment}
+                  />
+                ))
+              ) : pendingComments.length ? null : (
+                <div className="rounded-[14px] border border-dashed border-[var(--creed-border)] px-4 py-10 text-center">
+                  <MessageSquare className="mx-auto h-5 w-5 text-[var(--creed-text-tertiary)]" />
+                  <div className="mt-2 text-sm font-medium text-[var(--creed-text-primary)]">
+                    No comments yet
                   </div>
-                )}
-              </div>
-            </ScrollArea>
-          </>
+                  <div className="mx-auto mt-1 max-w-[240px] text-[12px] leading-5 text-[var(--creed-text-secondary)]">
+                    Highlight any text in the document and click the comment button to add the first one.
+                  </div>
+                </div>
+              )}
+            </div>
+          </ScrollArea>
         ) : (
           <ScrollArea className="mt-5 min-h-0 flex-1">
             <div className="space-y-3 pr-4">
@@ -4245,6 +3806,33 @@ function DocumentCollaborationRail({
   );
 }
 
+function CommentActionButton({
+  label,
+  onClick,
+  children,
+  tone = "default",
+}: {
+  label: string;
+  onClick: (event: ReactMouseEvent) => void;
+  children: ReactNode;
+  tone?: "default" | "danger";
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      className={cn(
+        "inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--creed-text-tertiary)] transition-colors hover:bg-[var(--creed-surface)] hover:text-[var(--creed-text-primary)]",
+        tone === "danger" && "hover:bg-[#FEF2F2] hover:text-[#DC2626]"
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
 function DocumentCommentCard({
   comment,
   replies,
@@ -4252,11 +3840,16 @@ function DocumentCommentCard({
   replying,
   replyBody,
   savingReply,
+  mentionLabels,
+  mentionUsers,
+  canManage,
   onActive,
   onReplyingToChange,
   onReplyBodyChange,
   onCreateReply,
   onUpdateCommentStatus,
+  onUpdateCommentBody,
+  onDeleteComment,
 }: {
   comment: DocumentComment;
   replies: DocumentComment[];
@@ -4264,13 +3857,38 @@ function DocumentCommentCard({
   replying: boolean;
   replyBody: string;
   savingReply: boolean;
+  mentionLabels: string[];
+  mentionUsers: WorkspaceUser[];
+  canManage: boolean;
   onActive: () => void;
   onReplyingToChange: (commentId: string | null) => void;
   onReplyBodyChange: (value: string) => void;
   onCreateReply: (commentId: string) => void;
   onUpdateCommentStatus: (commentId: string, status: "open" | "resolved") => void;
+  onUpdateCommentBody: (commentId: string, body: string) => Promise<void> | void;
+  onDeleteComment: (commentId: string) => void;
 }) {
   const resolved = comment.status === "resolved";
+  const [editing, setEditing] = useState(false);
+  const [editBody, setEditBody] = useState(comment.body);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [repliesCollapsed, setRepliesCollapsed] = useState(false);
+
+  async function saveEdit() {
+    const trimmed = editBody.trim();
+    if (!trimmed || trimmed === comment.body) {
+      setEditing(false);
+      return;
+    }
+    try {
+      setSavingEdit(true);
+      await onUpdateCommentBody(comment.id, trimmed);
+      setEditing(false);
+    } finally {
+      setSavingEdit(false);
+    }
+  }
 
   return (
     <div
@@ -4278,111 +3896,245 @@ function DocumentCommentCard({
       tabIndex={0}
       onClick={onActive}
       onKeyDown={(event) => {
+        // Only activate when the card itself is the key target. Without this,
+        // Space / Enter typed inside the reply or edit textarea bubbles here
+        // and gets preventDefault'd, so replies could never be typed.
+        if (event.target !== event.currentTarget) {
+          return;
+        }
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           onActive();
         }
       }}
       className={cn(
-        "block w-full rounded-[14px] border p-3 text-left transition-colors",
+        "group/comment block w-full rounded-2xl border bg-[var(--creed-surface)] p-3.5 text-left shadow-[0_1px_2px_rgba(28,28,26,0.04)] transition-colors",
         active
-          ? "border-[#93C5FD] bg-[#EFF6FF]"
-          : "border-[var(--creed-border)] bg-[var(--creed-surface-raised)] hover:border-[var(--creed-border-strong)]"
+          ? "border-[#BFD7FE] ring-1 ring-[#BFD7FE]"
+          : "border-[var(--creed-border)] hover:border-[var(--creed-border-strong)]"
       )}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="truncate text-sm font-medium text-[var(--creed-text-primary)]">
-            {comment.authorLabel}
-          </div>
-          <div className="mt-0.5 text-[11px] text-[var(--creed-text-tertiary)]">
-            {formatDocumentTimestamp(comment.createdAt)}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--creed-surface-raised)] text-[11px] font-semibold uppercase text-[var(--creed-text-secondary)]">
+            {comment.authorLabel.trim().charAt(0) || "?"}
+          </span>
+          <div className="flex min-w-0 items-baseline gap-2">
+            <span className="truncate text-[14px] font-semibold text-[var(--creed-text-primary)]">
+              {comment.authorLabel}
+            </span>
+            <span className="shrink-0 text-[11px] text-[var(--creed-text-tertiary)]">
+              {formatDocumentTimestamp(comment.createdAt)}
+            </span>
           </div>
         </div>
-        <span
-          className={cn(
-            "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold",
-            resolved ? "bg-[#F1F5F9] text-[#475569]" : "bg-[#FEF3C7] text-[#92400E]"
-          )}
-        >
-          {resolved ? "Resolved" : "Open"}
-        </span>
+        {resolved ? (
+          <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#ECFDF5] px-2 py-0.5 text-[10px] font-semibold text-[#047857]">
+            <Check className="h-3 w-3" />
+            Resolved
+          </span>
+        ) : (
+          <span className="inline-flex shrink-0 items-center rounded-full bg-[#FEF3C7] px-2 py-0.5 text-[10px] font-semibold text-[#92400E]">
+            Open
+          </span>
+        )}
       </div>
-      {comment.referenceQuote ? (
-        <div className="mt-3 border-l-2 border-[#93C5FD] pl-3 text-[12px] leading-5 text-[var(--creed-text-secondary)]">
-          {comment.referenceQuote}
+
+      {editing ? (
+        <div className="mt-2.5 space-y-2" onClick={(event) => event.stopPropagation()}>
+          <MentionTextarea
+            value={editBody}
+            onChange={setEditBody}
+            users={mentionUsers}
+            autoFocus
+            className="min-h-16 text-[13px]"
+            onSubmit={() => void saveEdit()}
+          />
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-[12px]"
+              onClick={() => {
+                setEditBody(comment.body);
+                setEditing(false);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              className="h-7 px-3 text-[12px]"
+              disabled={savingEdit || !editBody.trim()}
+              onClick={() => void saveEdit()}
+            >
+              {savingEdit ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
+              Save
+            </Button>
+          </div>
         </div>
-      ) : null}
-      <div className="mt-3 whitespace-pre-wrap text-sm leading-5 text-[var(--creed-text-primary)]">
-        {comment.body}
-      </div>
-      <div className="mt-3 flex flex-wrap gap-2">
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2 text-[12px]"
-          onClick={(event) => {
-            event.stopPropagation();
-            onReplyingToChange(replying ? null : comment.id);
-          }}
-        >
-          Reply
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2 text-[12px]"
-          onClick={(event) => {
-            event.stopPropagation();
-            onUpdateCommentStatus(comment.id, resolved ? "open" : "resolved");
-          }}
-        >
-          {resolved ? "Reopen" : "Resolve"}
-        </Button>
-      </div>
-      {replying ? (
+      ) : (
+        <div className="mt-2 whitespace-pre-wrap text-[13.5px] leading-6 text-[var(--creed-text-primary)]">
+          <MentionText text={comment.body} mentionLabels={mentionLabels} />
+        </div>
+      )}
+
+      {!editing && confirmingDelete ? (
         <div
-          className="mt-3 space-y-2"
+          className="mt-2.5 flex items-center justify-between gap-2 rounded-lg bg-[#FEF2F2] px-2.5 py-1.5"
           onClick={(event) => event.stopPropagation()}
         >
-          <Textarea
-            value={replyBody}
-            onChange={(event) => onReplyBodyChange(event.target.value)}
-            placeholder="Write a reply"
-            className="min-h-20 resize-none bg-[var(--creed-surface)] text-sm"
-          />
-          <Button
-            type="button"
-            size="sm"
-            className="w-full"
-            disabled={savingReply || !replyBody.trim()}
-            onClick={() => onCreateReply(comment.id)}
-          >
-            {savingReply ? (
-              <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Send className="h-3.5 w-3.5" />
-            )}
-            Send reply
-          </Button>
+          <span className="text-[12px] text-[#B91C1C]">Delete this comment?</span>
+          <div className="flex items-center gap-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-[12px]"
+              onClick={() => setConfirmingDelete(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              className="h-7 bg-[#DC2626] px-3 text-[12px] text-white hover:bg-[#B91C1C]"
+              onClick={() => {
+                setConfirmingDelete(false);
+                onDeleteComment(comment.id);
+              }}
+            >
+              Delete
+            </Button>
+          </div>
         </div>
       ) : null}
-      {replies.length ? (
-        <div className="mt-3 space-y-2 border-l border-[var(--creed-border)] pl-3">
+
+      {!editing && !confirmingDelete ? (
+        <div className="mt-2 flex items-center justify-between gap-2">
+          {replies.length ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                setRepliesCollapsed((value) => !value);
+              }}
+              className="flex items-center gap-1.5 rounded-md py-1 text-[12px] font-medium text-[var(--creed-text-secondary)] transition-colors hover:text-[var(--creed-text-primary)]"
+            >
+              <ChevronDown
+                className={cn(
+                  "h-3.5 w-3.5 transition-transform duration-200",
+                  repliesCollapsed && "-rotate-90"
+                )}
+              />
+              {repliesCollapsed ? "Show" : "Hide"} {replies.length}{" "}
+              {replies.length === 1 ? "reply" : "replies"}
+            </button>
+          ) : (
+            <span />
+          )}
+
+          <div className="flex items-center gap-0.5 opacity-100 transition-opacity md:opacity-0 md:group-hover/comment:opacity-100 md:group-focus-within/comment:opacity-100">
+            <CommentActionButton
+              label="Reply"
+              onClick={(event) => {
+                event.stopPropagation();
+                onReplyingToChange(replying ? null : comment.id);
+              }}
+            >
+              <Reply className="h-4 w-4" />
+            </CommentActionButton>
+            <CommentActionButton
+              label={resolved ? "Reopen" : "Resolve"}
+              onClick={(event) => {
+                event.stopPropagation();
+                onUpdateCommentStatus(comment.id, resolved ? "open" : "resolved");
+              }}
+            >
+              {resolved ? <RotateCcw className="h-4 w-4" /> : <Check className="h-4 w-4" />}
+            </CommentActionButton>
+            {canManage ? (
+              <>
+                <CommentActionButton
+                  label="Edit"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setEditBody(comment.body);
+                    setEditing(true);
+                  }}
+                >
+                  <SquarePen className="h-4 w-4" />
+                </CommentActionButton>
+                <CommentActionButton
+                  label="Delete"
+                  tone="danger"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setConfirmingDelete(true);
+                  }}
+                >
+                  <Delete className="h-4 w-4" />
+                </CommentActionButton>
+              </>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {replying ? (
+        <div className="mt-2.5 space-y-2" onClick={(event) => event.stopPropagation()}>
+          <MentionTextarea
+            value={replyBody}
+            onChange={onReplyBodyChange}
+            users={mentionUsers}
+            placeholder="Write a reply. Type @ to mention someone."
+            autoFocus
+            className="min-h-16 text-[13px]"
+            onSubmit={() => onCreateReply(comment.id)}
+          />
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-[12px]"
+              onClick={() => onReplyingToChange(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              className="h-7 px-3 text-[12px]"
+              disabled={savingReply || !replyBody.trim()}
+              onClick={() => onCreateReply(comment.id)}
+            >
+              {savingReply ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
+              Reply
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {replies.length && !repliesCollapsed ? (
+        <div className="mt-2 space-y-2">
           {replies.map((reply) => (
-            <div key={reply.id} className="rounded-[10px] bg-[var(--creed-surface)] p-2.5">
-              <div className="flex items-center justify-between gap-2">
-                <div className="truncate text-[12px] font-medium text-[var(--creed-text-primary)]">
+            <div key={reply.id} className="pt-0.5">
+              <div className="flex items-center gap-2">
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--creed-surface-raised)] text-[9px] font-semibold uppercase text-[var(--creed-text-secondary)]">
+                  {reply.authorLabel.trim().charAt(0) || "?"}
+                </span>
+                <span className="truncate text-[12.5px] font-semibold text-[var(--creed-text-primary)]">
                   {reply.authorLabel}
-                </div>
-                <div className="shrink-0 text-[10px] text-[var(--creed-text-tertiary)]">
+                </span>
+                <span className="shrink-0 text-[10px] text-[var(--creed-text-tertiary)]">
                   {formatDocumentTimestamp(reply.createdAt)}
-                </div>
+                </span>
               </div>
-              <div className="mt-1 whitespace-pre-wrap text-[12px] leading-5 text-[var(--creed-text-secondary)]">
-                {reply.body}
+              <div className="mt-1 whitespace-pre-wrap pl-7 text-[12.5px] leading-5 text-[var(--creed-text-secondary)]">
+                <MentionText text={reply.body} mentionLabels={mentionLabels} />
               </div>
             </div>
           ))}

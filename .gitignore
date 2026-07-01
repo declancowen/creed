@@ -50,6 +50,10 @@ pnpm-workspace.yaml
 .cursor/
 .aider*
 
+# temporary skill copies + local content exports (never part of the app)
+/.skills-tmp/
+/Creator Platform Notion Export */
+
 # private project notes — not shipped publicly
 /project-context/
 /creed.md

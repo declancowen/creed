@@ -1580,6 +1580,82 @@ export async function recordMcpClientUsage(
   );
 }
 
+// Removes a connected MCP agent for a user: revokes any OAuth grants
+// attributable to that agent, then clears its roster row and read-event
+// rollups so it disappears from the connections UI and health dashboard.
+//
+// Attribution note: the roster keys agents by a normalized id derived from the
+// runtime clientInfo.name, while OAuth tokens key off the registered DCR
+// client_name. We revoke every token whose registered name normalizes to the
+// same id. Tokens from clients that registered under a generic name can't be
+// tied to a specific agent and are left untouched - but the roster only ever
+// holds specifically-named agents (generic "MCP Client" reads are never
+// recorded), so a removable agent is one we can attribute.
+export async function removeMcpClient(
+  client: unknown,
+  userId: string,
+  clientId: string
+): Promise<{ revokedTokens: number }> {
+  const db = client as SupabaseLikeClient;
+
+  // 1. Revoke matching OAuth grants so the agent can't silently reconnect on
+  //    its next read with a still-valid access or refresh token.
+  const { data: tokenRows, error: tokenError } = await db
+    .from("oauth_tokens")
+    .select("id, client_id")
+    .eq("user_id", userId)
+    .is("revoked_at", null);
+  assertNoError(tokenError, "Could not load MCP tokens.");
+
+  const tokens = (tokenRows as { id: string; client_id: string }[] | null) ?? [];
+  let revokedTokens = 0;
+  if (tokens.length > 0) {
+    const uniqueClientIds = [...new Set(tokens.map((row) => row.client_id))];
+    const { data: clientRows, error: clientError } = await db
+      .from("oauth_clients")
+      .select("client_id, client_name")
+      .in("client_id", uniqueClientIds);
+    assertNoError(clientError, "Could not load MCP client registrations.");
+
+    const nameByClientId = new Map(
+      ((clientRows as { client_id: string; client_name: string }[] | null) ?? []).map((row) => [
+        row.client_id,
+        row.client_name,
+      ])
+    );
+    const tokenIdsToRevoke = tokens
+      .filter((row) => normalizeMcpClientId(nameByClientId.get(row.client_id)) === clientId)
+      .map((row) => row.id);
+
+    if (tokenIdsToRevoke.length > 0) {
+      const { error: revokeError } = await db
+        .from("oauth_tokens")
+        .update({ revoked_at: new Date().toISOString() })
+        .in("id", tokenIdsToRevoke);
+      assertNoError(revokeError, "Could not revoke MCP tokens.");
+      revokedTokens = tokenIdsToRevoke.length;
+    }
+  }
+
+  // 2. Drop the roster row so the agent leaves the connected list.
+  const { error: rosterError } = await db
+    .from("creed_mcp_clients")
+    .delete()
+    .eq("user_id", userId)
+    .eq("client_id", clientId);
+  assertNoError(rosterError, "Could not remove MCP client.");
+
+  // 3. Clear the per-agent daily read rollups behind the health dashboard.
+  const { error: readEventError } = await db
+    .from("creed_mcp_read_events")
+    .delete()
+    .eq("user_id", userId)
+    .eq("client_id", clientId);
+  assertNoError(readEventError, "Could not clear MCP read events.");
+
+  return { revokedTokens };
+}
+
 export async function buildAgentPayloadForToken(
   client: unknown,
   token: string,

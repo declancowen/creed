@@ -5,6 +5,8 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  ArrowDown,
+  ArrowBendUpLeft,
   Archive,
   Bell,
   CaretDown,
@@ -92,6 +94,8 @@ function icon(Component: PhosphorIcon) {
 const ArrowLeftIcon = icon(ArrowLeft);
 const ArrowRightIcon = icon(ArrowRight);
 const ArrowUpIcon = icon(ArrowUp);
+const ArrowDownIcon = icon(ArrowDown);
+const ArrowBendUpLeftIcon = icon(ArrowBendUpLeft);
 const ArchiveIcon = icon(Archive);
 const BellIcon = icon(Bell);
 const BoldIcon = icon(TextB);
@@ -165,6 +169,9 @@ export const XIcon = icon(X);
 export {
   ArrowLeftIcon as ArrowLeft,
   ArrowRightIcon as ArrowRight,
+  ArrowUpIcon as ArrowUp,
+  ArrowDownIcon as ArrowDown,
+  ArrowBendUpLeftIcon as Reply,
   ArchiveIcon as Archive,
   AlertTriangleIcon as AlertTriangle,
   BellIcon as Bell,
@@ -226,6 +233,7 @@ export {
   StampIcon as Stamp,
   StrikethroughIcon as Strikethrough,
   TagIcon as Tag,
+  FolderTreeIcon as TreeStructure,
   TShirtIcon as TShirt,
   UnplugIcon as Unplug,
   XIcon as X,

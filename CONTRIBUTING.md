@@ -79,7 +79,6 @@ but a few things are non-negotiable:
 - `components/ui/*` — shadcn-style primitives.
 - `lib/creed-data.ts` — shared types + section constants.
 - `lib/creed-backend.ts` — Supabase reads / writes for product state.
-- `lib/ai/*` — OpenRouter calls, prompt construction, model catalog.
 - `supabase/migrations/*` — every schema change goes here.
 
 For deeper notes, see the comment block at the top of each file or

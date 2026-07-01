@@ -43,6 +43,6 @@ export async function requireApiJson(request: Request): Promise<JsonAuthContext 
 export function apiResultErrorResponse(error: string, code?: string) {
   return NextResponse.json(
     { error },
-    { status: code === "conflict" ? 409 : code === "not-found" ? 404 : 400 }
+    { status: code === "conflict" ? 409 : code === "not-found" ? 404 : code === "forbidden" ? 403 : 400 }
   );
 }

@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import "server-only";
 import {
   DEFAULT_DOCUMENT_DASHBOARD_PREFERENCES,
@@ -26,7 +25,7 @@ import {
   isDocumentType,
   isDocumentViewMode,
 } from "@/lib/document-properties";
-import { parseDocumentFile, serializeDocumentFile } from "@/lib/document-markdown";
+import { parseDocumentFile } from "@/lib/document-markdown";
 import type { SupabaseLikeClient } from "@/lib/supabase/types";
 
 export type SharedDocumentFolder = {
@@ -153,10 +152,6 @@ function assertNoError(error: { message: string } | null, message: string) {
 
 function nowIso() {
   return new Date().toISOString();
-}
-
-function contentHash(value: string) {
-  return createHash("sha256").update(value).digest("hex");
 }
 
 function slugifyDocumentPart(value: string) {
@@ -751,6 +746,38 @@ export async function archiveSharedDocument(
   return { ok: true, value: { ...mapDocumentSummary(data), content: data.content ?? "" } };
 }
 
+// Collects a folder and all of its descendant folder ids (depth-first). Includes
+// archived descendants so cascade archive/delete cover the whole subtree. The
+// root id is always the first element.
+async function collectFolderSubtreeIds(client: unknown, rootId: string) {
+  const db = client as SupabaseLikeClient;
+  const { data, error } = (await db
+    .from("creed_document_folders")
+    .select("id, parent_id")) as {
+    data: Array<{ id: string; parent_id: string | null }> | null;
+    error: { message: string } | null;
+  };
+  assertNoError(error, "Could not load folder tree.");
+
+  const childrenByParent = new Map<string, string[]>();
+  for (const row of data ?? []) {
+    if (!row.parent_id) continue;
+    childrenByParent.set(row.parent_id, [...(childrenByParent.get(row.parent_id) ?? []), row.id]);
+  }
+
+  const ids: string[] = [];
+  const stack = [rootId];
+  const seen = new Set<string>();
+  while (stack.length) {
+    const current = stack.pop()!;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    ids.push(current);
+    stack.push(...(childrenByParent.get(current) ?? []));
+  }
+  return ids;
+}
+
 export async function archiveSharedDocumentFolder(
   client: unknown,
   input: {
@@ -764,29 +791,42 @@ export async function archiveSharedDocumentFolder(
   }
 
   const db = client as SupabaseLikeClient;
-  const [{ data: childFolders, error: childFoldersError }, { data: childDocuments, error: childDocumentsError }] =
-    (await Promise.all([
-      db
-        .from("creed_document_folders")
-        .select("id")
-        .eq("parent_id", input.id)
-        .is("archived_at", null)
-        .limit(1),
-      db
-        .from("creed_documents")
-        .select("id")
-        .eq("folder_id", input.id)
-        .is("archived_at", null)
-        .limit(1),
-    ])) as Array<{ data: Array<{ id: string }> | null; error: { message: string } | null }>;
+  const now = nowIso();
 
-  assertNoError(childFoldersError, "Could not check folder contents.");
-  assertNoError(childDocumentsError, "Could not check folder contents.");
-  if ((childFolders?.length ?? 0) > 0 || (childDocuments?.length ?? 0) > 0) {
-    return { ok: false, code: "conflict", error: "Archive or move the folder contents first." };
+  // Cascade: archiving a folder archives every nested document and subfolder so
+  // nothing is left orphaned or stranded in a now-hidden folder.
+  const subtreeIds = await collectFolderSubtreeIds(client, input.id);
+
+  const { error: documentsError } = (await db
+    .from("creed_documents")
+    .update({
+      archived_at: now,
+      sync_status: "local-ahead",
+      updated_by: input.actorUserId ?? null,
+      updated_at: now,
+      last_edited_by: input.actorUserId ?? null,
+      last_edited_via: "creed",
+    })
+    .in("folder_id", subtreeIds)
+    .is("archived_at", null)) as { error: { message: string } | null };
+  assertNoError(documentsError, "Could not archive folder documents.");
+
+  // Archive descendant folders first, then the target folder itself last so its
+  // returned row reflects the final state.
+  const descendantIds = subtreeIds.filter((id) => id !== input.id);
+  if (descendantIds.length) {
+    const { error: descendantsError } = (await db
+      .from("creed_document_folders")
+      .update({
+        archived_at: now,
+        updated_by: input.actorUserId ?? null,
+        updated_at: now,
+      })
+      .in("id", descendantIds)
+      .is("archived_at", null)) as { error: { message: string } | null };
+    assertNoError(descendantsError, "Could not archive subfolders.");
   }
 
-  const now = nowIso();
   const { data, error } = (await db
     .from("creed_document_folders")
     .update({
@@ -810,6 +850,236 @@ export async function archiveSharedDocumentFolder(
   }
 
   return { ok: true, value: mapFolder(data) };
+}
+
+export async function listArchivedSharedDocuments(client: unknown) {
+  const db = client as SupabaseLikeClient;
+  const { data, error } = (await db
+    .from("creed_documents")
+    .select(DOCUMENT_COLUMNS)
+    .not("archived_at", "is", null)
+    .order("archived_at", { ascending: false })) as {
+    data: SharedDocumentRow[] | null;
+    error: { message: string } | null;
+  };
+
+  assertNoError(error, "Could not load archived documents.");
+  return (data ?? []).map(mapDocumentSummary);
+}
+
+export async function listArchivedSharedDocumentFolders(client: unknown) {
+  const db = client as SupabaseLikeClient;
+  const { data, error } = (await db
+    .from("creed_document_folders")
+    .select("id, slug, name, path, parent_id, archived_at, updated_at")
+    .not("archived_at", "is", null)
+    .order("archived_at", { ascending: false })) as {
+    data: SharedDocumentFolderRow[] | null;
+    error: { message: string } | null;
+  };
+
+  assertNoError(error, "Could not load archived folders.");
+  return (data ?? []).map(mapFolder);
+}
+
+export async function restoreSharedDocument(
+  client: unknown,
+  input: {
+    id: string;
+    actorUserId?: string | null;
+  }
+): Promise<MutationResult<SharedDocumentSummary>> {
+  if (!input.id.trim()) {
+    return { ok: false, code: "invalid", error: "Document id is required." };
+  }
+
+  const now = nowIso();
+  const db = client as SupabaseLikeClient;
+
+  // If the document's folder is archived or gone (e.g. the doc is being
+  // individually restored out of a cascade-archived folder), detach it to the
+  // root so the restored document is not stranded under an unreachable folder.
+  const { data: existingDoc } = (await db
+    .from("creed_documents")
+    .select("folder_id")
+    .eq("id", input.id)
+    .maybeSingle()) as { data: { folder_id: string | null } | null };
+  const detachFolder = existingDoc?.folder_id
+    ? (await readFolderById(client, existingDoc.folder_id)) === null
+    : false;
+
+  const { data, error } = (await db
+    .from("creed_documents")
+    .update({
+      archived_at: null,
+      ...(detachFolder ? { folder_id: null } : {}),
+      sync_status: "local-ahead",
+      updated_by: input.actorUserId ?? null,
+      updated_at: now,
+      last_edited_by: input.actorUserId ?? null,
+      last_edited_via: "creed",
+    })
+    .eq("id", input.id)
+    .not("archived_at", "is", null)
+    .select(DOCUMENT_COLUMNS)
+    .maybeSingle()) as {
+    data: SharedDocumentRow | null;
+    error: { message: string } | null;
+  };
+
+  if (error) {
+    return { ok: false, code: "invalid", error: error.message };
+  }
+  if (!data) {
+    return { ok: false, code: "not-found", error: "Archived document not found." };
+  }
+
+  return { ok: true, value: mapDocumentSummary(data) };
+}
+
+export async function restoreSharedDocumentFolder(
+  client: unknown,
+  input: {
+    id: string;
+    actorUserId?: string | null;
+  }
+): Promise<MutationResult<SharedDocumentFolder>> {
+  if (!input.id.trim()) {
+    return { ok: false, code: "invalid", error: "Folder id is required." };
+  }
+
+  const now = nowIso();
+  const db = client as SupabaseLikeClient;
+
+  // If the folder's parent is archived or gone, detach it to the root so the
+  // restored folder is not stranded under an unreachable parent.
+  const { data: existingFolder } = (await db
+    .from("creed_document_folders")
+    .select("parent_id")
+    .eq("id", input.id)
+    .maybeSingle()) as { data: { parent_id: string | null } | null };
+  const detachParent = existingFolder?.parent_id
+    ? (await readFolderById(client, existingFolder.parent_id)) === null
+    : false;
+
+  const { data, error } = (await db
+    .from("creed_document_folders")
+    .update({
+      archived_at: null,
+      ...(detachParent ? { parent_id: null } : {}),
+      updated_by: input.actorUserId ?? null,
+      updated_at: now,
+    })
+    .eq("id", input.id)
+    .not("archived_at", "is", null)
+    .select("id, slug, name, path, parent_id, archived_at, updated_at")
+    .maybeSingle()) as {
+    data: SharedDocumentFolderRow | null;
+    error: { message: string } | null;
+  };
+
+  if (error) {
+    return { ok: false, code: "invalid", error: error.message };
+  }
+  if (!data) {
+    return { ok: false, code: "not-found", error: "Archived folder not found." };
+  }
+
+  return { ok: true, value: mapFolder(data) };
+}
+
+// Permanent delete. Related rows (versions, proposals, comments, activity,
+// notifications) cascade via `on delete cascade`. Folder deletes remove their
+// documents explicitly (see deleteSharedDocumentFolder). Only archived items
+// may be hard-deleted.
+export async function deleteSharedDocument(
+  client: unknown,
+  input: {
+    id: string;
+  }
+): Promise<MutationResult<{ id: string }>> {
+  if (!input.id.trim()) {
+    return { ok: false, code: "invalid", error: "Document id is required." };
+  }
+
+  const db = client as SupabaseLikeClient;
+  const { data, error } = (await db
+    .from("creed_documents")
+    .delete()
+    .eq("id", input.id)
+    .not("archived_at", "is", null)
+    .select("id")
+    .maybeSingle()) as {
+    data: { id: string } | null;
+    error: { message: string } | null;
+  };
+
+  if (error) {
+    return { ok: false, code: "invalid", error: error.message };
+  }
+  if (!data) {
+    return { ok: false, code: "not-found", error: "Archived document not found." };
+  }
+
+  return { ok: true, value: { id: data.id } };
+}
+
+export async function deleteSharedDocumentFolder(
+  client: unknown,
+  input: {
+    id: string;
+  }
+): Promise<MutationResult<{ id: string }>> {
+  if (!input.id.trim()) {
+    return { ok: false, code: "invalid", error: "Folder id is required." };
+  }
+
+  const db = client as SupabaseLikeClient;
+
+  // Only archived folders may be permanently deleted. Read the row directly
+  // (readFolderById filters to non-archived, so it can't be used here).
+  const { data: root, error: rootError } = (await db
+    .from("creed_document_folders")
+    .select("id, archived_at")
+    .eq("id", input.id)
+    .maybeSingle()) as {
+    data: { id: string; archived_at: string | null } | null;
+    error: { message: string } | null;
+  };
+  assertNoError(rootError, "Could not load folder.");
+  if (!root) {
+    return { ok: false, code: "not-found", error: "Folder not found." };
+  }
+  if (!root.archived_at) {
+    return { ok: false, code: "conflict", error: "Archive the folder before deleting it." };
+  }
+
+  // Cascade: remove every ARCHIVED document in the subtree (their versions,
+  // proposals, comments, activity and notifications cascade via `on delete
+  // cascade`), then remove every folder in the subtree. Documents that were
+  // individually restored (archived_at IS NULL) must NOT be hard-deleted here;
+  // when their folder row is removed below, `documents.folder_id` is
+  // `on delete set null`, so they survive and fall back to the root view.
+  const subtreeIds = await collectFolderSubtreeIds(client, input.id);
+
+  const { error: documentsError } = (await db
+    .from("creed_documents")
+    .delete()
+    .in("folder_id", subtreeIds)
+    .not("archived_at", "is", null)) as { error: { message: string } | null };
+  if (documentsError) {
+    return { ok: false, code: "invalid", error: documentsError.message };
+  }
+
+  const { error: foldersError } = (await db
+    .from("creed_document_folders")
+    .delete()
+    .in("id", subtreeIds)) as { error: { message: string } | null };
+  if (foldersError) {
+    return { ok: false, code: "invalid", error: foldersError.message };
+  }
+
+  return { ok: true, value: { id: input.id } };
 }
 
 export async function readDocumentDashboardPreferences(
@@ -920,126 +1190,7 @@ export async function saveDocumentDashboardPreferences(
   return { ok: true, value: mapDashboardPreferences(data) };
 }
 
-export function hashDocumentContent(content: string) {
-  return contentHash(content);
-}
-
-// The canonical GitHub representation of a document: property frontmatter
-// followed by the body. This is what we push and what we hash for sync-status.
-export function serializeSharedDocument(document: SharedDocument) {
-  return serializeDocumentFile(document, document.content);
-}
-
-export async function markSharedDocumentSynced(
-  client: unknown,
-  input: {
-    id: string;
-    remoteSha: string;
-    content: string;
-    revision: number;
-    actorUserId?: string | null;
-  }
-): Promise<MutationResult<SharedDocument>> {
-  const now = nowIso();
-  const db = client as SupabaseLikeClient;
-  // Guard on the revision we pushed. If a concurrent Creed edit moved the
-  // document on while the push was in flight, no row matches and we must not
-  // stamp "up-to-date" over content that is actually ahead of GitHub.
-  const { data, error } = (await db
-    .from("creed_documents")
-    .update({
-      last_remote_sha: input.remoteSha,
-      last_synced_content_hash: contentHash(input.content),
-      last_synced_revision: input.revision,
-      sync_status: "up-to-date",
-      updated_by: input.actorUserId ?? null,
-      updated_at: now,
-    })
-    .eq("id", input.id)
-    .eq("revision", input.revision)
-    .is("archived_at", null)
-    .select(DOCUMENT_COLUMNS)
-    .maybeSingle()) as {
-    data: SharedDocumentRow | null;
-    error: { message: string } | null;
-  };
-
-  if (error) {
-    return { ok: false, code: "invalid", error: error.message };
-  }
-  if (!data) {
-    return {
-      ok: false,
-      code: "conflict",
-      error: "Document changed in Creed during publish. Publish again to sync the latest revision.",
-    };
-  }
-
-  return { ok: true, value: { ...mapDocumentSummary(data), content: data.content ?? "" } };
-}
-
-// Pull is authoritative: the remote Markdown replaces the Supabase content
-// wholesale, mirroring the creed.md pull/apply behaviour. Property frontmatter
-// from the remote file is applied to the columns in the same write. Guarded on
-// `expectedRevision` so a concurrent Creed edit can't be silently clobbered.
-export async function applyRemoteDocumentPull(
-  client: unknown,
-  input: {
-    id: string;
-    content: string;
-    metadata: DocumentMetadataPatch;
-    syncedContentHash: string;
-    remoteSha: string;
-    expectedRevision: number;
-    actorUserId?: string | null;
-  }
-): Promise<MutationResult<SharedDocument>> {
-  if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1) {
-    return { ok: false, code: "invalid", error: "A valid expectedRevision is required." };
-  }
-
-  const cleaned = cleanMetadataPatch(input.metadata);
-  if (!cleaned.ok) {
-    return { ok: false, code: "invalid", error: cleaned.error };
-  }
-
-  const now = nowIso();
-  const nextRevision = input.expectedRevision + 1;
-  const db = client as SupabaseLikeClient;
-  const { data, error } = (await db
-    .from("creed_documents")
-    .update({
-      content: input.content,
-      ...cleaned.patch,
-      revision: nextRevision,
-      last_remote_sha: input.remoteSha,
-      last_synced_content_hash: input.syncedContentHash,
-      last_synced_revision: nextRevision,
-      sync_status: "up-to-date",
-      updated_by: input.actorUserId ?? null,
-      updated_at: now,
-      last_edited_by: input.actorUserId ?? null,
-      last_edited_via: "github",
-    })
-    .eq("id", input.id)
-    .eq("revision", input.expectedRevision)
-    .is("archived_at", null)
-    .select(DOCUMENT_COLUMNS)
-    .maybeSingle()) as {
-    data: SharedDocumentRow | null;
-    error: { message: string } | null;
-  };
-
-  if (error) {
-    return { ok: false, code: "invalid", error: error.message };
-  }
-  if (!data) {
-    return {
-      ok: false,
-      code: "conflict",
-      error: "Document changed since it was previewed. Re-open the pull and try again.",
-    };
-  }
-
-  return { ok: true, value: { ...mapDocumentSummary(data), content: data.content ?? "" } };
-}
+// Document versioning and review now live entirely in Supabase (see
+// lib/document-editing.ts and lib/document-versions.ts). The former GitHub
+// sync helpers (serialize/markSynced/applyRemotePull) were removed with the
+// document GitHub routes.

@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "NODE_OPTIONS=--max-http-header-size=65536 next start",
     "lint": "eslint",
-    "test": "node --test --experimental-strip-types 'tests/**/*.test.ts'"
+    "test": "vitest run"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
@@ -25,6 +25,7 @@
     "diff": "^9.0.0",
     "framer-motion": "^12.38.0",
     "lowlight": "^3.3.0",
+    "mermaid": "^11.16.0",
     "motion": "^12.38.0",
     "next": "^16.2.9",
     "radix-ui": "^1.4.3",
@@ -45,7 +46,8 @@
     "eslint": "^9",
     "eslint-config-next": "^16.2.9",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "4.1.9"
   },
   "overrides": {
     "postcss": "^8.5.16"

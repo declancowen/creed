@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { sectionToMarkdown } from "../lib/creed-data.ts";
 import { parseCreedMarkdown } from "../lib/creed-markdown.ts";

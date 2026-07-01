@@ -2,15 +2,19 @@ import { NextResponse } from "next/server";
 import { apiResultErrorResponse, requireApiAuth, requireApiJson } from "@/lib/api-auth";
 import {
   createSharedDocumentFolder,
+  listArchivedSharedDocumentFolders,
   listSharedDocumentFolders,
 } from "@/lib/shared-documents";
 import { getSupabaseAdminClient } from "@/lib/supabase/admin";
 
-export async function GET() {
+export async function GET(request: Request) {
   const auth = await requireApiAuth();
   if (auth instanceof NextResponse) return auth;
 
-  const folders = await listSharedDocumentFolders(auth.supabase);
+  const archived = new URL(request.url).searchParams.get("archived") === "true";
+  const folders = archived
+    ? await listArchivedSharedDocumentFolders(auth.supabase)
+    : await listSharedDocumentFolders(auth.supabase);
   return NextResponse.json({ folders });
 }
 
