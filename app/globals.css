@@ -1253,6 +1253,88 @@
   cursor: text;
 }
 
+[data-file-export-title] {
+  display: none;
+}
+
+@media print {
+  @page {
+    margin: 18mm 16mm;
+  }
+
+  html,
+  body {
+    overflow: visible !important;
+    background: #ffffff !important;
+    color: #1c1c1a !important;
+  }
+
+  body * {
+    visibility: hidden !important;
+  }
+
+  [data-file-export-content],
+  [data-file-export-content] * {
+    visibility: visible !important;
+  }
+
+  [data-file-export-content] {
+    position: absolute !important;
+    inset: 0 auto auto 0 !important;
+    width: 100% !important;
+    max-width: none !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+    color: #1c1c1a !important;
+  }
+
+  [data-file-export-scroll],
+  [data-file-export-shell] {
+    display: block !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+  }
+
+  [data-file-export-hidden],
+  [data-file-export-hidden] * {
+    display: none !important;
+    visibility: hidden !important;
+  }
+
+  [data-file-export-title] {
+    display: block !important;
+    margin: 0 0 1.4rem !important;
+    font-family: var(--font-geist-sans), sans-serif !important;
+    font-size: 24px !important;
+    font-weight: 500 !important;
+    line-height: 1.2 !important;
+    letter-spacing: 0 !important;
+    color: #1c1c1a !important;
+  }
+
+  [data-section-id] {
+    break-inside: avoid-page;
+    page-break-inside: avoid;
+    scroll-margin: 0 !important;
+  }
+
+  .ProseMirror {
+    color: #1c1c1a !important;
+  }
+
+  .ProseMirror .creed-callout,
+  .ProseMirror .creed-code-block,
+  .ProseMirror .creed-mermaid,
+  .ProseMirror .creed-url-ref-bookmark,
+  .ProseMirror .creed-url-ref-embed,
+  .creed-table th {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+}
+
 /* Document/folder reference chip - an inline link to another document or a
  * folder. Rendered by the docReferenceInline node (see
  * components/creed/extensions/doc-reference.tsx). */

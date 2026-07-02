@@ -29,6 +29,7 @@ export type DocumentComment = {
   resolvedAt: string | null;
   resolvedBy: string | null;
   createdBy: string | null;
+  publicAuthorLabel: string | null;
   authorLabel: string;
   authorEmail: string;
   mentionedUserIds: string[];
@@ -82,6 +83,7 @@ type CommentRow = {
   resolved_by: string | null;
   created_by: string | null;
   updated_by: string | null;
+  public_author_label: string | null;
   created_at: string;
   updated_at: string;
   proposal_status: string | null;
@@ -147,6 +149,7 @@ const COMMENT_COLUMNS = [
   "resolved_by",
   "created_by",
   "updated_by",
+  "public_author_label",
   "created_at",
   "updated_at",
   "proposal_status",
@@ -210,6 +213,11 @@ function buildUserLabel(user: WorkspaceUser | undefined, fallback?: string | nul
   return user?.label || fallback || "Someone";
 }
 
+function cleanPublicAuthorLabel(value: string | null | undefined) {
+  const trimmed = value?.trim().replace(/\s+/g, " ") ?? "";
+  return trimmed.slice(0, 80);
+}
+
 function mapMetadata(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {};
@@ -223,6 +231,7 @@ function mapComment(
   mentionsByComment: Map<string, string[]>
 ): DocumentComment {
   const author = row.created_by ? users.get(row.created_by) : undefined;
+  const publicAuthorLabel = cleanPublicAuthorLabel(row.public_author_label) || null;
   return {
     id: row.id,
     documentId: row.document_id,
@@ -235,7 +244,8 @@ function mapComment(
     resolvedAt: row.resolved_at,
     resolvedBy: row.resolved_by,
     createdBy: row.created_by,
-    authorLabel: buildUserLabel(author, row.created_by),
+    publicAuthorLabel,
+    authorLabel: buildUserLabel(author, publicAuthorLabel ?? row.created_by),
     authorEmail: author?.email ?? "",
     mentionedUserIds: mentionsByComment.get(row.id) ?? [],
     createdAt: row.created_at,
@@ -246,14 +256,18 @@ function mapComment(
 }
 
 function mapActivity(row: ActivityRow, users: Map<string, WorkspaceUser>): DocumentActivityEvent {
+  const metadata = mapMetadata(row.metadata);
   return {
     id: row.id,
     documentId: row.document_id,
     actorUserId: row.actor_user_id,
-    actorLabel: buildUserLabel(row.actor_user_id ? users.get(row.actor_user_id) : undefined, row.actor_user_id),
+    actorLabel: buildUserLabel(
+      row.actor_user_id ? users.get(row.actor_user_id) : undefined,
+      metadataString(metadata, ["actorLabel", "publicAuthorLabel"]) || row.actor_user_id
+    ),
     action: row.action,
     summary: row.summary ?? "",
-    metadata: mapMetadata(row.metadata),
+    metadata,
     createdAt: row.created_at,
   };
 }
@@ -578,7 +592,8 @@ export async function createDocumentComment(
     // accepted or rejected.
     proposalId?: string | null;
     mentionedUserIds?: string[];
-    source?: "creed" | "mcp";
+    source?: "creed" | "mcp" | "public";
+    publicAuthorLabel?: string | null;
     // When "pending", the comment is a private agent proposal: it is stored
     // with its mentions but produces no notifications, emails, or activity
     // until the proposer approves it. Defaults to "shared" (normal comment).
@@ -589,6 +604,11 @@ export async function createDocumentComment(
   const body = input.body.trim();
   if (!body) {
     return { ok: false, code: "invalid", error: "Comment body is required." };
+  }
+  const publicAuthorLabel =
+    input.source === "public" ? cleanPublicAuthorLabel(input.publicAuthorLabel) : "";
+  if (input.source === "public" && !publicAuthorLabel) {
+    return { ok: false, code: "invalid", error: "Name is required." };
   }
 
   const document = await readSharedDocumentById(client, input.documentId);
@@ -619,12 +639,10 @@ export async function createDocumentComment(
     effectiveParentId = data.parent_id ?? data.id;
   }
 
-  const { userIds: mentionedUserIds, users } = await mentionUserIds(
-    client,
-    body,
-    input.mentionedUserIds,
-    input.actorUserId
-  );
+  const { userIds: mentionedUserIds, users } =
+    input.source === "public"
+      ? { userIds: [], users: [] }
+      : await mentionUserIds(client, body, input.mentionedUserIds, input.actorUserId);
   const now = nowIso();
   const db = client as SupabaseLikeClient;
   const { data, error } = (await db
@@ -639,6 +657,7 @@ export async function createDocumentComment(
       status: "open",
       proposal_status: input.proposalStatus === "pending" ? "pending" : "shared",
       proposed_by_agent_label: input.proposedByAgentLabel ?? null,
+      public_author_label: publicAuthorLabel || null,
       created_by: input.actorUserId ?? null,
       updated_by: input.actorUserId ?? null,
       created_at: now,
@@ -687,7 +706,9 @@ export async function createDocumentComment(
 
   const actorLabel = buildUserLabel(
     users.find((user) => user.id === input.actorUserId),
-    input.source === "mcp" ? "MCP agent" : "Someone"
+    input.source === "public"
+      ? publicAuthorLabel
+      : input.source === "mcp" ? "MCP agent" : "Someone"
   );
   const { notifications, pendingEmails } = await publishCommentSideEffects(client, {
     document,
@@ -764,7 +785,11 @@ async function publishCommentSideEffects(
     actorUserId: input.actorUserId,
     action: input.parentId ? "comment.reply.created" : "comment.created",
     summary: input.parentId ? "Replied to a comment" : "Added a comment",
-    metadata: { commentId: input.commentId, mentionedUserIds: input.mentionedUserIds },
+    metadata: {
+      commentId: input.commentId,
+      mentionedUserIds: input.mentionedUserIds,
+      actorLabel: input.actorLabel,
+    },
   });
 
   const pendingEmails = notifications.flatMap((notification) => {

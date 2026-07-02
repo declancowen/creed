@@ -1,4 +1,5 @@
 import "server-only";
+import { randomBytes } from "node:crypto";
 import {
   DEFAULT_DOCUMENT_DASHBOARD_PREFERENCES,
   DEFAULT_VISIBLE_DOCUMENT_PROPERTIES,
@@ -61,6 +62,9 @@ export type SharedDocumentSummary = {
   priority: DocumentPriority | null;
   size: DocumentSize | null;
   archivedAt: string | null;
+  publicShareId: string | null;
+  publicShareEnabled: boolean;
+  publicSharedAt: string | null;
   updatedAt: string;
 };
 
@@ -102,6 +106,9 @@ type SharedDocumentRow = {
   priority: string | null;
   size: string | null;
   archived_at: string | null;
+  public_share_id: string | null;
+  public_share_enabled: boolean | null;
+  public_shared_at: string | null;
   updated_at: string;
 };
 
@@ -141,6 +148,9 @@ const DOCUMENT_COLUMNS = [
   "priority",
   "size",
   "archived_at",
+  "public_share_id",
+  "public_share_enabled",
+  "public_shared_at",
   "updated_at",
 ].join(", ");
 
@@ -152,6 +162,10 @@ function assertNoError(error: { message: string } | null, message: string) {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function newPublicShareId() {
+  return randomBytes(18).toString("base64url");
 }
 
 function slugifyDocumentPart(value: string) {
@@ -332,6 +346,9 @@ function mapDocumentSummary(row: SharedDocumentRow): SharedDocumentSummary {
     priority: isDocumentPriority(row.priority) ? row.priority : null,
     size: isDocumentSize(row.size) ? row.size : null,
     archivedAt: row.archived_at,
+    publicShareId: row.public_share_id,
+    publicShareEnabled: row.public_share_enabled === true,
+    publicSharedAt: row.public_shared_at,
     updatedAt: row.updated_at,
   };
 }
@@ -487,6 +504,79 @@ export async function readSharedDocumentById(client: unknown, id: string) {
     ...mapDocumentSummary(data),
     content: data.content ?? "",
   } satisfies SharedDocument;
+}
+
+export async function readPublicSharedDocument(client: unknown, publicShareId: string) {
+  const db = client as SupabaseLikeClient;
+  const { data, error } = (await db
+    .from("creed_documents")
+    .select(DOCUMENT_COLUMNS)
+    .eq("public_share_id", publicShareId.trim())
+    .eq("public_share_enabled", true)
+    .is("archived_at", null)
+    .maybeSingle()) as {
+    data: SharedDocumentRow | null;
+    error: { message: string } | null;
+  };
+
+  assertNoError(error, "Could not load shared document.");
+  if (!data) return null;
+
+  return {
+    ...mapDocumentSummary(data),
+    content: data.content ?? "",
+  } satisfies SharedDocument;
+}
+
+export async function ensurePublicDocumentShare(
+  client: unknown,
+  input: {
+    id: string;
+    actorUserId?: string | null;
+  }
+): Promise<MutationResult<SharedDocument>> {
+  const current = await readSharedDocumentById(client, input.id);
+  if (!current) {
+    return { ok: false, code: "not-found", error: "Document not found." };
+  }
+
+  if (current.publicShareEnabled && current.publicShareId) {
+    return { ok: true, value: current };
+  }
+
+  const now = nowIso();
+  const db = client as SupabaseLikeClient;
+  const { data, error } = (await db
+    .from("creed_documents")
+    .update({
+      public_share_id: current.publicShareId ?? newPublicShareId(),
+      public_share_enabled: true,
+      public_shared_at: current.publicSharedAt ?? now,
+      updated_by: input.actorUserId ?? null,
+      updated_at: now,
+    })
+    .eq("id", input.id)
+    .is("archived_at", null)
+    .select(DOCUMENT_COLUMNS)
+    .maybeSingle()) as {
+    data: SharedDocumentRow | null;
+    error: { message: string } | null;
+  };
+
+  if (error) {
+    return { ok: false, code: "conflict", error: error.message };
+  }
+  if (!data) {
+    return { ok: false, code: "not-found", error: "Document not found." };
+  }
+
+  return {
+    ok: true,
+    value: {
+      ...mapDocumentSummary(data),
+      content: data.content ?? "",
+    },
+  };
 }
 
 export async function createSharedDocumentFolder(

@@ -29,6 +29,7 @@ import {
   Delete,
   Download,
   Ellipsis,
+  FileText,
   FileStack,
   Flag,
   FolderUp,
@@ -43,6 +44,7 @@ import {
   Reply,
   RotateCcw,
   Save,
+  Share,
   SquarePen,
   Stamp,
   Tag,
@@ -105,11 +107,14 @@ import {
 import { useCreed } from "@/components/creed/creed-provider";
 import { parseCreedMarkdown } from "@/lib/creed-markdown";
 import {
+  documentSectionsToMarkdown,
+  parseDocumentSections,
+} from "@/lib/document-sections";
+import {
   accentColorMap,
   accentLabelMap,
   accentTintMap,
   VISIBLE_ACCENT_KEYS,
-  buildVisibleCreedMarkdown,
   getProposalPreviewText,
   normalizeLegacyProposalDraft,
   normalizeProposalForSection,
@@ -700,40 +705,6 @@ function DocumentPropertyTypeIcon({ property }: { property: DocumentPropertyName
   return <TShirt className={className} />;
 }
 
-function parseDocumentSections(markdown: string): CreedSection[] {
-  const normalized = markdown.replace(/\r\n/g, "\n").trim();
-  const withoutDocumentTitle = normalized.replace(/^#\s+.+\n?/i, "");
-  const parsed = parseCreedMarkdown(withoutDocumentTitle.trim());
-  if (parsed.sections.length > 0) {
-    return parsed.sections;
-  }
-
-  return [
-    {
-      id: "document",
-      kind: "rich-text",
-      template: "freeform",
-      name: "Overview",
-      accent: "identity",
-      content: "Start shaping this document.",
-      agentWritable: true,
-      agentPermission: "propose",
-      lastEditedBy: "Creed",
-      lastEditedType: "user",
-      lastEditedLabel: "just now",
-    },
-  ];
-}
-
-function documentSectionsToMarkdown(sections: CreedSection[], title?: string) {
-  const body = buildVisibleCreedMarkdown(sections).trim();
-  const heading = title?.trim();
-  if (!heading) {
-    return body ? `${body}\n` : "";
-  }
-  return body ? `# ${heading}\n\n${body}\n` : `# ${heading}\n`;
-}
-
 function formatDocumentTimestamp(value: string) {
   return formatRelativeTime(value);
 }
@@ -966,6 +937,9 @@ export function FileScreen({
   const [documentProposals, setDocumentProposals] = useState<DocumentReviewProposal[]>([]);
   const [busyDocumentProposalId, setBusyDocumentProposalId] = useState<string | null>(null);
   const [savingDocumentProperty, setSavingDocumentProperty] = useState<DocumentPropertyName | null>(null);
+  const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  const [shareUrl, setShareUrl] = useState("");
+  const [shareUrlBusy, setShareUrlBusy] = useState(false);
   const documentUsers = useMemo(() => sharedDocument?.users ?? [], [sharedDocument]);
   const currentUserId = sharedDocument?.currentUserId ?? null;
   // People you can @mention: everyone except yourself (tagging yourself is a
@@ -987,6 +961,8 @@ export function FileScreen({
       setActiveDocumentCommentId(null);
       setRenameDocumentOpen(false);
       setRenameDocumentTitle("");
+      setShareDialogOpen(false);
+      setShareUrl("");
       return;
     }
 
@@ -1003,6 +979,11 @@ export function FileScreen({
     setReplyBody("");
     setRenameDocumentOpen(false);
     setRenameDocumentTitle(sharedDocument.document.title);
+    setShareUrl(
+      sharedDocument.document.publicShareEnabled && sharedDocument.document.publicShareId
+        ? `${window.location.origin}/share/${encodeURIComponent(sharedDocument.document.publicShareId)}`
+        : ""
+    );
   }, [sharedDocument]);
 
   const documentMarkdown = useMemo(
@@ -1466,6 +1447,45 @@ export function FileScreen({
     window.setTimeout(() => setCopiedAction(null), 1400);
   }
 
+  async function loadPublicShareLink() {
+    if (!currentDocument) {
+      return "";
+    }
+
+    try {
+      setShareUrlBusy(true);
+      const response = await fetch(
+        `/api/app/documents/${encodeURIComponent(currentDocument.id)}/public-link`,
+        { method: "POST" }
+      );
+      const payload = (await response.json()) as {
+        document?: SharedDocument;
+        url?: string;
+        error?: string;
+      };
+      if (!response.ok || !payload.url) {
+        throw new Error(payload.error || "Could not create a public link.");
+      }
+      if (payload.document) {
+        setCurrentDocument(payload.document);
+      }
+      setShareUrl(payload.url);
+      return payload.url;
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not create the public link.");
+      return "";
+    } finally {
+      setShareUrlBusy(false);
+    }
+  }
+
+  function openPublicShareDialog() {
+    setShareDialogOpen(true);
+    if (!shareUrl) {
+      void loadPublicShareLink();
+    }
+  }
+
   function markActionComplete(key: string) {
     setCopiedAction(key);
     window.setTimeout(() => setCopiedAction(null), 1400);
@@ -1480,6 +1500,28 @@ export function FileScreen({
     link.click();
     URL.revokeObjectURL(url);
     markActionComplete("download");
+  }
+
+  function handleExportPdf() {
+    const exportName =
+      documentMode && currentDocument
+        ? currentDocument.path.split("/").pop()?.replace(/\.[^.]+$/, "") || currentDocument.title
+        : "creed";
+    const previousTitle = window.document.title;
+
+    window.document.title = `${exportName}.pdf`;
+    markActionComplete("pdf");
+
+    const restoreTitle = () => {
+      window.document.title = previousTitle;
+      window.removeEventListener("afterprint", restoreTitle);
+    };
+
+    window.addEventListener("afterprint", restoreTitle, { once: true });
+    window.setTimeout(() => {
+      window.print();
+      window.setTimeout(restoreTitle, 1000);
+    }, 120);
   }
 
   async function handleImportFile(file: File) {
@@ -2320,10 +2362,18 @@ export function FileScreen({
 
   return (
     <>
-      <div className="relative flex h-full min-h-0 bg-[var(--creed-surface)] transition-colors duration-200">
+      <div
+        data-file-export-shell
+        className="relative flex h-full min-h-0 bg-[var(--creed-surface)] transition-colors duration-200"
+      >
         <div className="min-w-0 flex-1">
-          <div ref={editorScrollRef} className="h-full overflow-y-auto overscroll-contain creed-scrollbar">
+          <div
+            ref={editorScrollRef}
+            data-file-export-scroll
+            className="h-full overflow-y-auto overscroll-contain creed-scrollbar"
+          >
             <div
+              data-file-export-content
               className="mx-auto px-4 py-6 pb-28 md:px-12 md:py-10 md:pb-10 xl:px-16"
               style={{
                 maxWidth: EDITOR_WIDTH_PX[editorView.width],
@@ -2332,8 +2382,12 @@ export function FileScreen({
                 "--editor-font-scale": String(EDITOR_FONT_SCALE[editorView.textScale]),
               } as CSSProperties}
             >
+              <div data-file-export-title>
+                {documentMode ? currentDocument?.title ?? "Document" : `${state.user.name} / Creed`}
+              </div>
               <div
                 data-file-sticky-header
+                data-file-export-hidden
                 className="sticky top-0 z-20 mb-8 -mx-4 bg-[color:var(--creed-surface)]/95 px-4 pb-5 pt-2 backdrop-blur-sm md:-mx-12 md:mb-12 md:px-12 md:pb-7 xl:-mx-16 xl:px-16"
               >
                 <div
@@ -2703,6 +2757,33 @@ export function FileScreen({
                           ) : null}
                           {copiedAction === "download" ? "Downloaded" : "Download"}
                         </AnimatedMenuIconItem>
+                        <AnimatedMenuIconItem
+                          icon={FileText}
+                          showIcon={copiedAction !== "pdf"}
+                          className="text-sm"
+                          onSelect={(event) => {
+                            event.preventDefault();
+                            handleExportPdf();
+                          }}
+                        >
+                          {copiedAction === "pdf" ? (
+                            <AnimatedCheckmark />
+                          ) : null}
+                          {copiedAction === "pdf" ? "Exporting" : "Export PDF"}
+                        </AnimatedMenuIconItem>
+                        {documentMode ? (
+                          <AnimatedMenuIconItem
+                            icon={Share}
+                            showIcon
+                            className="text-sm"
+                            onSelect={(event) => {
+                              event.preventDefault();
+                              openPublicShareDialog();
+                            }}
+                          >
+                            Share
+                          </AnimatedMenuIconItem>
+                        ) : null}
                         <DropdownMenuSeparator />
                         <div className="px-2 py-1.5">
                           <div className="mb-1.5 px-0.5 text-[11px] font-medium uppercase tracking-wide text-[var(--creed-text-tertiary)]">
@@ -3017,7 +3098,7 @@ export function FileScreen({
               ) : null}
 
               {normalizedPendingProposals.filter((p) => p.draft.kind === "new-section").length > 0 ? (
-                <div className="mt-10 space-y-3 md:mt-16">
+                <div data-file-export-hidden className="mt-10 space-y-3 md:mt-16">
                   {normalizedPendingProposals
                     .filter((p) => p.draft.kind === "new-section")
                     .map((p) => (
@@ -3037,7 +3118,7 @@ export function FileScreen({
                 </div>
               ) : null}
 
-              <div ref={composerAreaRef} className="mt-10 md:mt-16">
+              <div ref={composerAreaRef} data-file-export-hidden className="mt-10 md:mt-16">
                 {composerOpen ? (
                   <motion.div
                     initial={{ opacity: 0, y: -8 }}
@@ -3116,6 +3197,7 @@ export function FileScreen({
         </div>
 
         {documentMode ? (
+          <div data-file-export-hidden>
           <DocumentCollaborationRail
             panel={activeDocumentPanel}
             comments={rootDocumentComments}
@@ -3141,17 +3223,66 @@ export function FileScreen({
             onOpenVersion={(versionId) => setFocusVersionId(versionId)}
             onClose={() => setActiveDocumentPanel(null)}
           />
+          </div>
         ) : (
-          <ActivityRail
-            activity={state.activity}
-            proposals={state.proposals}
-            sections={state.sections}
-            open={activityOpen}
-            onClose={() => setActivityOpen(false)}
-          />
+          <div data-file-export-hidden>
+            <ActivityRail
+              activity={state.activity}
+              proposals={state.proposals}
+              sections={state.sections}
+              open={activityOpen}
+              onClose={() => setActivityOpen(false)}
+            />
+          </div>
         )}
 
       </div>
+
+      <Dialog open={shareDialogOpen} onOpenChange={setShareDialogOpen}>
+        <DialogContent className="rounded-[var(--radius-xl)] border-[var(--creed-border)] bg-[var(--creed-surface)]">
+          <DialogHeader>
+            <DialogTitle>Share document</DialogTitle>
+            <DialogDescription>
+              Anyone with this link can read the document and add comments with a name.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <label className="block text-[12px] font-medium text-[var(--creed-text-secondary)]">
+              Public link
+            </label>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Input
+                readOnly
+                value={shareUrl || (shareUrlBusy ? "Creating link..." : "")}
+                placeholder="Create a public link"
+                className="h-10 rounded-md border-[var(--creed-border)] bg-[var(--creed-surface)] px-3 text-[13px]"
+              />
+              <Button
+                type="button"
+                className="h-10 rounded-md bg-[var(--creed-text-primary)] px-4 text-[var(--creed-button-primary-fg)] hover:bg-[var(--creed-button-primary-hover)]"
+                disabled={!shareUrl || shareUrlBusy}
+                onClick={() => {
+                  if (shareUrl) void copyValue("share", shareUrl);
+                }}
+              >
+                {shareUrlBusy ? (
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                ) : copiedAction === "share" ? (
+                  <AnimatedCheckmark />
+                ) : (
+                  <Copy className="h-4 w-4" />
+                )}
+                {copiedAction === "share" ? "Copied" : "Copy"}
+              </Button>
+            </div>
+          </div>
+          <DialogFooter className="flex-row items-center justify-between border-t-[var(--creed-border)] bg-[var(--creed-surface)] sm:justify-between">
+            <Button variant="ghost" className="rounded-md" onClick={() => setShareDialogOpen(false)}>
+              Done
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={pushDialogOpen} onOpenChange={setPushDialogOpen}>
         <DialogContent className="rounded-[var(--radius-xl)] border-[var(--creed-border)] bg-[var(--creed-surface)]">
@@ -3577,6 +3708,7 @@ function SectionCard({
         <button
           type="button"
           onPointerDown={(event) => dragControls.start(event)}
+          data-file-export-hidden
           className="group/drag absolute -left-7 top-1 hidden rounded-full p-1 text-[var(--creed-text-secondary)] transition-colors duration-150 hover:text-[var(--creed-text-primary)] xl:flex"
         >
           <GripVertical className="h-4 w-4" />
@@ -3604,6 +3736,7 @@ function SectionCard({
                   {globalLocked ? (
                     <motion.div
                       key={`${section.id}-section-lock`}
+                      data-file-export-hidden
                       initial={{ opacity: 0, scale: 0.88, width: 0 }}
                       animate={{ opacity: 1, scale: 1, width: 28 }}
                       exit={{ opacity: 0, scale: 0.88, width: 0 }}
@@ -3622,17 +3755,18 @@ function SectionCard({
             </div>
           </div>
 
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className="text-[var(--creed-text-secondary)] transition-colors duration-150 hover:text-[var(--creed-text-primary)] data-[state=open]:text-[var(--creed-text-primary)]"
-              >
-                <Ellipsis className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="border-[var(--creed-border)] bg-[var(--creed-surface)]">
+          <div data-file-export-hidden>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="text-[var(--creed-text-secondary)] transition-colors duration-150 hover:text-[var(--creed-text-primary)] data-[state=open]:text-[var(--creed-text-primary)]"
+                >
+                  <Ellipsis className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="border-[var(--creed-border)] bg-[var(--creed-surface)]">
               <AnimatedMenuIconItem
                 icon={SquarePen}
                 className="text-sm"
@@ -3747,12 +3881,13 @@ function SectionCard({
               >
                 Delete
               </AnimatedMenuIconItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
 
         {proposals.length > 0 ? (
-          <div className="mb-4 space-y-3">
+          <div data-file-export-hidden className="mb-4 space-y-3">
             {proposals.map((p) => {
               const kind = p.draft.kind;
               if (
@@ -3806,7 +3941,7 @@ function SectionCard({
         </div>
 
         {documentProposals.length > 0 ? (
-          <div className="mt-4 space-y-3">
+          <div data-file-export-hidden className="mt-4 space-y-3">
             {documentProposals.map((documentProposal) => (
               <InlineDocumentProposal
                 key={documentProposal.id}
