@@ -188,6 +188,10 @@ export type ApplySectionResult =
   | { ok: true; content: string }
   | { ok: false; reason: "conflict" };
 
+export type ApplySectionOptions = {
+  allowStaleSectionUpdate?: boolean;
+};
+
 // Insert a brand-new section into `content`. A preamble (level 0) goes to the
 // top; every other section lands next to the nearest proposed sibling that
 // still exists in the live document, so accepting added sections out of order
@@ -277,7 +281,11 @@ export function replaceSectionInMarkdown(
 // be accepted independently even as each acceptance advances the document. A
 // change that is already satisfied is a no-op success (idempotent); a section
 // that moved underneath the proposal is a conflict.
-export function applySectionChange(content: string, change: SectionChange): ApplySectionResult {
+export function applySectionChange(
+  content: string,
+  change: SectionChange,
+  options: ApplySectionOptions = {}
+): ApplySectionResult {
   const { spans } = scanSectionSpans(content);
   const existing = spans.find((span) => !span.isEmptyPreamble && span.key === change.key);
 
@@ -301,7 +309,7 @@ export function applySectionChange(content: string, change: SectionChange): Appl
       // Already gone: the desired end state is reached.
       return { ok: true, content };
     }
-    if (existing.body.trim() !== change.before.trim()) {
+    if (existing.body.trim() !== change.before.trim() && !options.allowStaleSectionUpdate) {
       return { ok: false, reason: "conflict" };
     }
     const next = replaceSectionInMarkdown(content, change.key, null);
@@ -310,12 +318,15 @@ export function applySectionChange(content: string, change: SectionChange): Appl
 
   // modified (or an "unchanged" row accepted defensively).
   if (!existing) {
+    if (options.allowStaleSectionUpdate && change.after.trim()) {
+      return { ok: true, content: insertSection(content, change) };
+    }
     return { ok: false, reason: "conflict" };
   }
   if (existing.body.trim() === change.after.trim()) {
     return { ok: true, content };
   }
-  if (existing.body.trim() !== change.before.trim()) {
+  if (existing.body.trim() !== change.before.trim() && !options.allowStaleSectionUpdate) {
     return { ok: false, reason: "conflict" };
   }
   const next = replaceSectionInMarkdown(content, change.key, change.after);

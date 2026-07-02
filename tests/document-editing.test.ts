@@ -571,4 +571,62 @@ describe("Per-section proposals (batching + independent accept)", () => {
     expect(client.rows(DOCS)[0].content).not.toContain("First draft.");
     expect(client.rows(DOCS)[0].revision).toBe(3);
   });
+
+  it("bulk accept rebases a later proposal update to the same existing section", async () => {
+    const before = ["# Doc", "Intro.", "", "## Goals", "Old goal."].join("\n");
+    const firstDraft = before.replace("Old goal.", "First accepted goal.");
+    const secondDraft = before.replace("Old goal.", "Second accepted goal.");
+    const { client, documentId } = createFakeClientWithDocument({ content: before });
+    setPolicy(client, { human: "propose" });
+
+    const firstProposed = await routeDocumentEdit(client, {
+      documentId,
+      actorType: "human",
+      author: { userId: "author-A" },
+      content: firstDraft,
+      expectedRevision: 1,
+      summary: "first goals update",
+    });
+    if (!(firstProposed.ok && firstProposed.outcome === "proposed")) throw new Error("setup failed");
+
+    const secondProposed = await routeDocumentEdit(client, {
+      documentId,
+      actorType: "human",
+      author: { userId: "author-A" },
+      content: secondDraft,
+      expectedRevision: 1,
+      summary: "second goals update",
+    });
+    if (!(secondProposed.ok && secondProposed.outcome === "proposed")) throw new Error("setup failed");
+
+    const first = firstProposed.proposals.find((p) => p.sectionHeading === "Goals")!;
+    const second = secondProposed.proposals.find((p) => p.sectionHeading === "Goals")!;
+
+    const acceptedFirst = await acceptDocumentProposal(client, {
+      documentId,
+      proposalId: first.id,
+      actorUserId: "u-B",
+    });
+    expect(acceptedFirst.ok).toBe(true);
+    expect(client.rows(DOCS)[0].content).toContain("First accepted goal.");
+
+    const strictSecond = await acceptDocumentProposal(client, {
+      documentId,
+      proposalId: second.id,
+      actorUserId: "u-B",
+    });
+    expect(strictSecond.ok).toBe(false);
+    if (!strictSecond.ok) expect(strictSecond.code).toBe("conflict");
+
+    const rebasedSecond = await acceptDocumentProposal(client, {
+      documentId,
+      proposalId: second.id,
+      actorUserId: "u-B",
+      allowStaleSectionUpdate: true,
+    });
+    expect(rebasedSecond.ok).toBe(true);
+    expect(client.rows(DOCS)[0].content).toContain("Second accepted goal.");
+    expect(client.rows(DOCS)[0].content).not.toContain("First accepted goal.");
+    expect(client.rows(DOCS)[0].revision).toBe(3);
+  });
 });

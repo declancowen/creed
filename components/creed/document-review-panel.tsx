@@ -87,6 +87,10 @@ type Person = {
   avatarUrl: string | null;
 };
 
+type ResolveProposalOptions = {
+  allowStaleSectionUpdate?: boolean;
+};
+
 function relativeTime(iso: string) {
   const deltaMs = Math.max(Date.now() - new Date(iso).getTime(), 0);
   const minutes = Math.round(deltaMs / 60000);
@@ -862,12 +866,17 @@ export function DocumentReviewPanel({
   }, [refresh]);
 
   const resolveProposal = useCallback(
-    async (id: string, action: "accept" | "reject") => {
+    async (id: string, action: "accept" | "reject", options: ResolveProposalOptions = {}) => {
       setBusyProposal(id);
       try {
+        const init: RequestInit = { method: "POST" };
+        if (action === "accept" && options.allowStaleSectionUpdate) {
+          init.headers = { "Content-Type": "application/json" };
+          init.body = JSON.stringify({ allowStaleSectionUpdate: true });
+        }
         const response = await fetch(
           `/api/app/documents/${encodeURIComponent(documentId)}/proposals/${encodeURIComponent(id)}/${action}`,
-          { method: "POST" }
+          init
         );
         const payload = (await response.json()) as EditOutcomeResponse;
         if (!response.ok) {
@@ -1058,7 +1067,7 @@ function DocumentReviewPill({
   users: WorkspaceUser[];
   resolvePerson: (authorUserId: string | null, agentLabel: string | null) => Person;
   busyProposal: string | null;
-  onResolve: (id: string, action: "accept" | "reject") => Promise<void>;
+  onResolve: (id: string, action: "accept" | "reject", options?: ResolveProposalOptions) => Promise<void>;
   onCommentPosted?: (comment: DocumentComment) => void;
 }) {
   const [listOpen, setListOpen] = useState(false);
@@ -1081,7 +1090,11 @@ function DocumentReviewPill({
     // Sequentially, so each section applies against the revision the previous
     // acceptance produced (the per-section merge guard handles ordering).
     for (const proposal of proposals) {
-      await onResolve(proposal.id, action);
+      await onResolve(
+        proposal.id,
+        action,
+        action === "accept" ? { allowStaleSectionUpdate: true } : undefined
+      );
     }
   }
 
@@ -1092,7 +1105,7 @@ function DocumentReviewPill({
   if (proposals.length === 1) {
     const proposal = proposals[0];
     return (
-      <div className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--creed-border)] bg-[var(--creed-surface)]">
+      <div className="creed-scrollbar max-h-[60vh] overflow-y-auto rounded-[var(--radius-lg)] border border-[var(--creed-border)] bg-[var(--creed-surface)]">
         <DocumentReviewPillItem
           proposal={proposal}
           currentContent={currentContent}
@@ -1159,7 +1172,7 @@ function DocumentReviewPill({
             transition={{ duration: 0.26, ease: [0.16, 1, 0.3, 1] }}
             className="overflow-hidden"
           >
-            <div className="divide-y divide-[var(--creed-border)] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--creed-border)] bg-[var(--creed-surface)]">
+            <div className="creed-scrollbar max-h-[56vh] divide-y divide-[var(--creed-border)] overflow-y-auto rounded-[var(--radius-lg)] border border-[var(--creed-border)] bg-[var(--creed-surface)]">
               {proposals.map((proposal) => (
                 <DocumentReviewPillItem
                   key={proposal.id}

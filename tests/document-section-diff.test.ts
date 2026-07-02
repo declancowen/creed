@@ -188,6 +188,18 @@ describe("applySectionChange", () => {
     if (!result.ok) expect(result.reason).toBe("conflict");
   });
 
+  it("can rebase a stale section update when bulk accepting", () => {
+    const after = doc.replace("Old goal.", "New goal.");
+    const target = change(doc, after);
+    const drifted = doc.replace("Old goal.", "Totally different goal.");
+    const result = applySectionChange(drifted, target, { allowStaleSectionUpdate: true });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.content).toContain("New goal.");
+      expect(result.content).not.toContain("Totally different goal.");
+    }
+  });
+
   it("lets two sibling section changes both land on the same document", () => {
     const goalsOnly = doc.replace("Old goal.", "New goal.");
     const workOnly = doc.replace("Do the work.", "Did the work.");

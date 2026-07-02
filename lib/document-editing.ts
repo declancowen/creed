@@ -449,7 +449,12 @@ async function releaseProposalClaim(client: unknown, proposalId: string) {
 
 export async function acceptDocumentProposal(
   client: unknown,
-  input: { documentId: string; proposalId: string; actorUserId: string }
+  input: {
+    documentId: string;
+    proposalId: string;
+    actorUserId: string;
+    allowStaleSectionUpdate?: boolean;
+  }
 ): Promise<ProposalResult<{ document: SharedDocument; version: DocumentVersion }>> {
   const claimed = await claimProposal(client, input.proposalId);
   if (!claimed) {
@@ -484,7 +489,9 @@ export async function acceptDocumentProposal(
     // Merge-guarded apply: the section must still match what the author saw, so
     // sibling section proposals from the same edit can be accepted in any order
     // even though each acceptance advances the document revision.
-    const merged = applySectionChange(document.content, section);
+    const merged = applySectionChange(document.content, section, {
+      allowStaleSectionUpdate: input.allowStaleSectionUpdate === true,
+    });
     if (!merged.ok) {
       await releaseProposalClaim(client, input.proposalId);
       return {
