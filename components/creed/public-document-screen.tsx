@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
 import { toast } from "sonner";
 import { AnimatedCheckmark } from "@/components/ui/animated-checkmark";
 import { Button } from "@/components/ui/button";
@@ -656,7 +656,7 @@ function RailButton({
   active: boolean;
   badge?: number;
   size?: "mobile" | "desktop";
-  onClick: () => void;
+  onClick: (event: MouseEvent<HTMLButtonElement>) => void;
   children: ReactNode;
 }) {
   return (
@@ -683,25 +683,20 @@ function RailButton({
 
 function PublicThemeButton({ size = "mobile" }: { size?: "mobile" | "desktop" }) {
   const { theme, toggleTheme } = useTheme();
+  const label = theme === "dark" ? "Switch to light mode" : "Switch to dark mode";
 
   return (
-    <Button
-      type="button"
-      variant="ghost"
-      size="icon"
-      className={cn(
-        "h-8 w-8 rounded-[10px] text-[var(--creed-text-secondary)] hover:text-[var(--creed-text-primary)]",
-        size === "desktop" && "h-9 w-9 rounded-[11px]"
-      )}
-      aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-      title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+    <RailButton
+      label={label}
+      active={false}
+      size={size}
       onClick={(event) => {
         const rect = event.currentTarget.getBoundingClientRect();
         toggleTheme({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
       }}
     >
-      <Contrast className={cn("h-4 w-4", size === "desktop" && "h-5 w-5")} />
-    </Button>
+      <Contrast className={size === "desktop" ? "h-5 w-5" : "h-4 w-4"} />
+    </RailButton>
   );
 }
 
