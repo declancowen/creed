@@ -1,23 +1,38 @@
 import { NextResponse } from "next/server";
-import type { EmailOtpType } from "@supabase/supabase-js";
+import type { EmailOtpType, User } from "@supabase/supabase-js";
 import { upsertGitHubIntegration } from "@/lib/creed-backend";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 const EMAIL_OTP_TYPES = new Set<EmailOtpType>([
-  "signup",
   "invite",
-  "magiclink",
   "recovery",
   "email_change",
   "email",
 ]);
 
-function isEmailOtpType(value: string | null): value is EmailOtpType {
-  return value !== null && EMAIL_OTP_TYPES.has(value as EmailOtpType);
+function normalizeEmailOtpType(value: string | null): EmailOtpType | null {
+  if (value === "magiclink" || value === "signup") {
+    return "email";
+  }
+  return value !== null && EMAIL_OTP_TYPES.has(value as EmailOtpType)
+    ? (value as EmailOtpType)
+    : null;
 }
 
 function normalizeEmail(value: string | null | undefined) {
   return value?.trim().toLowerCase() ?? "";
+}
+
+function userIdentities(user: User) {
+  return (
+    (user.identities as
+      | Array<{
+          provider?: string;
+          id?: string;
+          identity_data?: Record<string, unknown> | null;
+        }>
+      | undefined) ?? []
+  );
 }
 
 export async function GET(request: Request) {
@@ -37,12 +52,13 @@ export async function GET(request: Request) {
   let exchangeFailed = false;
   if (code || tokenHash) {
     const supabase = await createSupabaseServerClient();
+    const emailOtpType = normalizeEmailOtpType(type);
 
     const { data, error } =
-      tokenHash && isEmailOtpType(type)
+      tokenHash && emailOtpType
         ? await supabase.auth.verifyOtp({
             token_hash: tokenHash,
-            type,
+            type: emailOtpType,
           })
         : code
           ? await supabase.auth.exchangeCodeForSession(code)
@@ -61,6 +77,20 @@ export async function GET(request: Request) {
       exchangeFailed = true;
     }
 
+    if (user && !isLinkFlow) {
+      const identities = userIdentities(user);
+      const hasGoogleIdentity = identities.some((identity) => identity.provider === "google");
+      const hasEmailIdentity = identities.some((identity) => identity.provider === "email");
+
+      if (hasGoogleIdentity && !hasEmailIdentity) {
+        await supabase.auth.signOut();
+        const redirectUrl = new URL("/login", origin);
+        redirectUrl.searchParams.set("next", "/accept-invite");
+        redirectUrl.searchParams.set("error", "invite_required");
+        return NextResponse.redirect(redirectUrl);
+      }
+    }
+
     if (
       expectedEmail &&
       user &&
@@ -75,15 +105,7 @@ export async function GET(request: Request) {
     }
 
     if (integration === "github" && session?.provider_token && user) {
-      const githubIdentity = (
-        (user.identities as
-          | Array<{
-              provider?: string;
-              id?: string;
-              identity_data?: Record<string, unknown> | null;
-            }>
-          | undefined) ?? []
-      ).find((identity) => identity.provider === "github");
+      const githubIdentity = userIdentities(user).find((identity) => identity.provider === "github");
 
       await upsertGitHubIntegration(supabase, user.id, {
         status: "connected",

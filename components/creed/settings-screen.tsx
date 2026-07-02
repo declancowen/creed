@@ -31,6 +31,7 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { SimpleTooltip } from "@/components/ui/tooltip";
 import { IntegrationGlyph } from "@/components/creed/brand";
+import { oauthErrorMessage } from "@/components/auth/use-oauth-sign-in";
 import { toast } from "sonner";
 import { SearchableSelect } from "@/components/creed/searchable-select";
 import { useCreed } from "@/components/creed/creed-provider";
@@ -537,7 +538,7 @@ export function SettingsScreen() {
           callbackUrl.searchParams.set("expected_email", data.user.email);
         }
 
-        const { error } = await supabase.auth.signInWithOAuth({
+        const { error } = await supabase.auth.linkIdentity({
           provider: "google",
           options: { redirectTo: callbackUrl.toString() },
         });
@@ -553,7 +554,9 @@ export function SettingsScreen() {
       // On success the browser is navigating to the provider; nothing else runs.
     } catch (error) {
       toast.error(
-        error instanceof Error ? error.message : `Couldn't connect ${LOGIN_PROVIDER_LABEL[provider]}`
+        provider === "google"
+          ? oauthErrorMessage(error, `Couldn't connect ${LOGIN_PROVIDER_LABEL[provider]}`)
+          : error instanceof Error ? error.message : `Couldn't connect ${LOGIN_PROVIDER_LABEL[provider]}`
       );
       setLinkingProvider(null);
     }
@@ -1660,4 +1663,3 @@ function EditPolicyControl({
     </div>
   );
 }
-

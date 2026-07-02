@@ -102,12 +102,12 @@ export type DocumentMetadataPatch = Partial<{
   title: string;
   description: string;
   folderId: string | null;
-  documentType: DocumentType;
-  stage: DocumentStage;
-  lifecycle: DocumentLifecycle;
-  status: DocumentStatus;
-  priority: DocumentPriority;
-  size: DocumentSize;
+  documentType: DocumentType | null;
+  stage: DocumentStage | null;
+  lifecycle: DocumentLifecycle | null;
+  status: DocumentStatus | null;
+  priority: DocumentPriority | null;
+  size: DocumentSize | null;
 }>;
 
 export const DEFAULT_VISIBLE_DOCUMENT_PROPERTIES: DocumentPropertyKey[] = [
@@ -282,7 +282,8 @@ const DOCUMENT_SIZE_TONE: Record<DocumentSize, DocumentTone> = {
   xl: "purple",
 };
 
-export function documentPropertyTone(property: DocumentPropertyKey, value: string): DocumentTone {
+export function documentPropertyTone(property: DocumentPropertyKey, value: string | null | undefined): DocumentTone {
+  if (!value) return "slate";
   if (property === "status") return DOCUMENT_STATUS_TONE[value as DocumentStatus] ?? "slate";
   if (property === "priority") return DOCUMENT_PRIORITY_TONE[value as DocumentPriority] ?? "slate";
   if (property === "documentType") return DOCUMENT_TYPE_TONE[value as DocumentType] ?? "slate";
@@ -338,7 +339,8 @@ export function isDocumentSortDirection(value: unknown): value is DocumentSortDi
   return value === "asc" || value === "desc";
 }
 
-export function labelDocumentProperty(property: DocumentPropertyKey, value: string) {
+export function labelDocumentProperty(property: DocumentPropertyKey, value: string | null | undefined) {
+  if (!value) return "None";
   const options = {
     status: DOCUMENT_STATUS_OPTIONS,
     documentType: DOCUMENT_TYPE_OPTIONS,
@@ -361,16 +363,35 @@ export function defaultLifecycleForStage(stage: DocumentStage): DocumentLifecycl
 
 export function documentMetadataPatchFromRecord(input: Record<string, unknown>): DocumentMetadataPatch {
   const patch: DocumentMetadataPatch = {};
+  const hasOwn = (key: string) => Object.prototype.hasOwnProperty.call(input, key);
   if (typeof input.title === "string") patch.title = input.title;
   if (typeof input.description === "string") patch.description = input.description;
   if (typeof input.folderId === "string" || input.folderId === null) {
     patch.folderId = input.folderId;
   }
-  if (isDocumentType(input.documentType)) patch.documentType = input.documentType;
-  if (isDocumentStage(input.stage)) patch.stage = input.stage;
-  if (isDocumentLifecycle(input.lifecycle)) patch.lifecycle = input.lifecycle;
-  if (isDocumentStatus(input.status)) patch.status = input.status;
-  if (isDocumentPriority(input.priority)) patch.priority = input.priority;
-  if (isDocumentSize(input.size)) patch.size = input.size;
+  if (hasOwn("documentType")) {
+    if (input.documentType === null) patch.documentType = null;
+    else if (isDocumentType(input.documentType)) patch.documentType = input.documentType;
+  }
+  if (hasOwn("stage")) {
+    if (input.stage === null) patch.stage = null;
+    else if (isDocumentStage(input.stage)) patch.stage = input.stage;
+  }
+  if (hasOwn("lifecycle")) {
+    if (input.lifecycle === null) patch.lifecycle = null;
+    else if (isDocumentLifecycle(input.lifecycle)) patch.lifecycle = input.lifecycle;
+  }
+  if (hasOwn("status")) {
+    if (input.status === null) patch.status = null;
+    else if (isDocumentStatus(input.status)) patch.status = input.status;
+  }
+  if (hasOwn("priority")) {
+    if (input.priority === null) patch.priority = null;
+    else if (isDocumentPriority(input.priority)) patch.priority = input.priority;
+  }
+  if (hasOwn("size")) {
+    if (input.size === null) patch.size = null;
+    else if (isDocumentSize(input.size)) patch.size = input.size;
+  }
   return patch;
 }

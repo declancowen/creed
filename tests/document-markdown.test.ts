@@ -39,6 +39,27 @@ describe("serializeDocumentFile / parseDocumentFile round-trip", () => {
     expect(parsed.body).toBe(body);
     expect(parsed.body).toContain("---");
   });
+
+  it("omits missing optional properties from serialized frontmatter", () => {
+    const file = serializeDocumentFile(
+      {
+        title: "No Properties",
+        documentType: null,
+        status: null,
+        stage: null,
+        lifecycle: null,
+        priority: null,
+        size: null,
+      },
+      "# Body"
+    );
+
+    expect(file).toContain('title: "No Properties"');
+    expect(file).not.toContain("type:");
+    expect(file).not.toContain("status:");
+    expect(file).not.toContain("stage:");
+    expect(parseDocumentFile(file).metadata.title).toBe("No Properties");
+  });
 });
 
 describe("parseDocumentFile frontmatter guard", () => {

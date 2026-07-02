@@ -498,12 +498,12 @@ const tools = [
           description:
             "Document body in Markdown. Body only - set properties via the structured fields below, not YAML frontmatter. Supports rich components: `##`/`###` headings, bullet + numbered lists, `>` callouts, `---` dividers, inline `#tags`, fenced code blocks, GFM pipe tables (`| A | B |` over a `| --- | --- |` row), ```mermaid diagrams, document references (`[[doc:SLUG]]` / `[[folder:SLUG]]` inline chips, `![[doc:SLUG]]` on its own line for a full-width card), and external URL references (`[mention](https://url)` inline chip, `[bookmark](https://url)` / `[embed](https://url)` on their own line for a card / full-width preview). A `##` heading starts a section; nest a subsection with `## Name <!-- creed:depth=1 -->` (max depth 2). Use a table to compare items across shared attributes, and a mermaid flowchart/sequence/ER/journey diagram instead of deeply nested bullets or step lists for branching flows.",
         },
-        documentType: { type: "string", enum: DOCUMENT_TYPE_OPTIONS.map((option) => option.value) },
-        status: { type: "string", enum: DOCUMENT_STATUS_OPTIONS.map((option) => option.value) },
-        stage: { type: "string", enum: DOCUMENT_STAGE_OPTIONS.map((option) => option.value) },
-        lifecycle: { type: "string", enum: DOCUMENT_LIFECYCLE_OPTIONS.map((option) => option.value) },
-        priority: { type: "string", enum: DOCUMENT_PRIORITY_OPTIONS.map((option) => option.value) },
-        size: { type: "string", enum: DOCUMENT_SIZE_OPTIONS.map((option) => option.value) },
+        documentType: { type: ["string", "null"], enum: [null, ...DOCUMENT_TYPE_OPTIONS.map((option) => option.value)] },
+        status: { type: ["string", "null"], enum: [null, ...DOCUMENT_STATUS_OPTIONS.map((option) => option.value)] },
+        stage: { type: ["string", "null"], enum: [null, ...DOCUMENT_STAGE_OPTIONS.map((option) => option.value)] },
+        lifecycle: { type: ["string", "null"], enum: [null, ...DOCUMENT_LIFECYCLE_OPTIONS.map((option) => option.value)] },
+        priority: { type: ["string", "null"], enum: [null, ...DOCUMENT_PRIORITY_OPTIONS.map((option) => option.value)] },
+        size: { type: ["string", "null"], enum: [null, ...DOCUMENT_SIZE_OPTIONS.map((option) => option.value)] },
       },
       required: ["title"],
     },
@@ -537,12 +537,12 @@ const tools = [
         expectedRevision: { type: "number", description: "Optional. Pass the latest revision if you have it." },
         title: { type: "string" },
         description: { type: "string" },
-        documentType: { type: "string", enum: DOCUMENT_TYPE_OPTIONS.map((option) => option.value) },
-        status: { type: "string", enum: DOCUMENT_STATUS_OPTIONS.map((option) => option.value) },
-        stage: { type: "string", enum: DOCUMENT_STAGE_OPTIONS.map((option) => option.value) },
-        lifecycle: { type: "string", enum: DOCUMENT_LIFECYCLE_OPTIONS.map((option) => option.value) },
-        priority: { type: "string", enum: DOCUMENT_PRIORITY_OPTIONS.map((option) => option.value) },
-        size: { type: "string", enum: DOCUMENT_SIZE_OPTIONS.map((option) => option.value) },
+        documentType: { type: ["string", "null"], enum: [null, ...DOCUMENT_TYPE_OPTIONS.map((option) => option.value)] },
+        status: { type: ["string", "null"], enum: [null, ...DOCUMENT_STATUS_OPTIONS.map((option) => option.value)] },
+        stage: { type: ["string", "null"], enum: [null, ...DOCUMENT_STAGE_OPTIONS.map((option) => option.value)] },
+        lifecycle: { type: ["string", "null"], enum: [null, ...DOCUMENT_LIFECYCLE_OPTIONS.map((option) => option.value)] },
+        priority: { type: ["string", "null"], enum: [null, ...DOCUMENT_PRIORITY_OPTIONS.map((option) => option.value)] },
+        size: { type: ["string", "null"], enum: [null, ...DOCUMENT_SIZE_OPTIONS.map((option) => option.value)] },
       },
       required: ["documentId"],
     },
@@ -1965,13 +1965,29 @@ async function handleRpcRequest(
 }
 
 // 401 that triggers a spec-compliant client's OAuth discovery: the
-// WWW-Authenticate header points at our protected-resource metadata.
-function unauthorized() {
+// WWW-Authenticate header points at our protected-resource metadata. If a
+// bearer was presented but failed lookup, include RFC 6750's invalid_token
+// marker so clients know to refresh or restart authorization.
+function unauthorized(reason: "missing_token" | "invalid_token" = "missing_token") {
   const site = getSiteUrl().replace(/\/$/, "");
+  const authParams = [
+    'realm="Creed"',
+    `resource_metadata="${site}/.well-known/oauth-protected-resource/mcp"`,
+    'scope="read propose direct_edit"',
+  ];
+  if (reason === "invalid_token") {
+    authParams.push(
+      'error="invalid_token"',
+      'error_description="The access token is expired, revoked, or invalid. Reauthorize Creed."'
+    );
+  }
   return NextResponse.json(
     {
-      error: "unauthorized",
-      message: "Connect Creed via OAuth. Your client will open a browser to authorize.",
+      error: reason === "invalid_token" ? "invalid_token" : "unauthorized",
+      message:
+        reason === "invalid_token"
+          ? "Your Creed OAuth token is expired, revoked, or invalid. Reauthorize Creed from your MCP client."
+          : "Connect Creed via OAuth. Your client will open a browser to authorize.",
     },
     {
       status: 401,
@@ -1980,7 +1996,7 @@ function unauthorized() {
         // Point at the RFC 9728 path-inserted metadata URL (matches where
         // ChatGPT / Claude.ai probe). The root document is also served. Advertise
         // the scope so clients request exactly what the consent flow grants.
-        "WWW-Authenticate": `Bearer resource_metadata="${site}/.well-known/oauth-protected-resource/mcp", scope="read propose direct_edit"`,
+        "WWW-Authenticate": `Bearer ${authParams.join(", ")}`,
       },
     }
   );
@@ -2034,7 +2050,7 @@ export async function POST(request: Request) {
 
   const resolved = await findOAuthAccessToken(bearer);
   if (!resolved) {
-    return unauthorized();
+    return unauthorized("invalid_token");
   }
   const userId = resolved.userId;
 

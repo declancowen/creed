@@ -54,12 +54,12 @@ export type SharedDocumentSummary = {
   lastSyncedRevision: number | null;
   syncStatus: string;
   revision: number;
-  documentType: DocumentType;
-  stage: DocumentStage;
-  lifecycle: DocumentLifecycle;
-  status: DocumentStatus;
-  priority: DocumentPriority;
-  size: DocumentSize;
+  documentType: DocumentType | null;
+  stage: DocumentStage | null;
+  lifecycle: DocumentLifecycle | null;
+  status: DocumentStatus | null;
+  priority: DocumentPriority | null;
+  size: DocumentSize | null;
   archivedAt: string | null;
   updatedAt: string;
 };
@@ -215,44 +215,74 @@ function cleanMetadataPatch(input: DocumentMetadataPatch) {
     patch.folder_id = input.folderId;
   }
   if (input.documentType !== undefined) {
-    if (!isDocumentType(input.documentType)) {
-      return { ok: false as const, error: "Invalid document type." };
+    if (input.documentType === null) {
+      patch.document_type = null;
+    } else {
+      if (!isDocumentType(input.documentType)) {
+        return { ok: false as const, error: "Invalid document type." };
+      }
+      patch.document_type = input.documentType;
     }
-    patch.document_type = input.documentType;
   }
   if (input.stage !== undefined) {
-    if (!isDocumentStage(input.stage)) {
-      return { ok: false as const, error: "Invalid stage." };
-    }
-    patch.stage = input.stage;
-    if (input.lifecycle === undefined) {
-      patch.lifecycle = defaultLifecycleForStage(input.stage);
+    if (input.stage === null) {
+      patch.stage = null;
+      if (input.lifecycle === undefined) {
+        patch.lifecycle = null;
+      }
+    } else {
+      if (!isDocumentStage(input.stage)) {
+        return { ok: false as const, error: "Invalid stage." };
+      }
+      patch.stage = input.stage;
+      if (input.lifecycle === undefined) {
+        patch.lifecycle = defaultLifecycleForStage(input.stage);
+      }
     }
   }
   if (input.lifecycle !== undefined) {
-    if (!isDocumentLifecycle(input.lifecycle)) {
-      return { ok: false as const, error: "Invalid lifecycle." };
+    if (input.lifecycle === null) {
+      patch.lifecycle = null;
+      if (input.stage === undefined) {
+        patch.stage = null;
+      }
+    } else {
+      if (!isDocumentLifecycle(input.lifecycle)) {
+        return { ok: false as const, error: "Invalid lifecycle." };
+      }
+      patch.lifecycle = input.lifecycle;
+      patch.stage = lifecycleStage(input.lifecycle);
     }
-    patch.lifecycle = input.lifecycle;
-    patch.stage = lifecycleStage(input.lifecycle);
   }
   if (input.status !== undefined) {
-    if (!isDocumentStatus(input.status)) {
-      return { ok: false as const, error: "Invalid status." };
+    if (input.status === null) {
+      patch.status = null;
+    } else {
+      if (!isDocumentStatus(input.status)) {
+        return { ok: false as const, error: "Invalid status." };
+      }
+      patch.status = input.status;
     }
-    patch.status = input.status;
   }
   if (input.priority !== undefined) {
-    if (!isDocumentPriority(input.priority)) {
-      return { ok: false as const, error: "Invalid priority." };
+    if (input.priority === null) {
+      patch.priority = null;
+    } else {
+      if (!isDocumentPriority(input.priority)) {
+        return { ok: false as const, error: "Invalid priority." };
+      }
+      patch.priority = input.priority;
     }
-    patch.priority = input.priority;
   }
   if (input.size !== undefined) {
-    if (!isDocumentSize(input.size)) {
-      return { ok: false as const, error: "Invalid size." };
+    if (input.size === null) {
+      patch.size = null;
+    } else {
+      if (!isDocumentSize(input.size)) {
+        return { ok: false as const, error: "Invalid size." };
+      }
+      patch.size = input.size;
     }
-    patch.size = input.size;
   }
 
   return { ok: true as const, patch };
@@ -287,12 +317,12 @@ function mapDocumentSummary(row: SharedDocumentRow): SharedDocumentSummary {
     lastSyncedRevision: row.last_synced_revision,
     syncStatus: row.sync_status ?? "not-configured",
     revision: row.revision ?? 1,
-    documentType: isDocumentType(row.document_type) ? row.document_type : "feature",
-    stage: isDocumentStage(row.stage) ? row.stage : "discovery",
-    lifecycle: isDocumentLifecycle(row.lifecycle) ? row.lifecycle : "ideation",
-    status: isDocumentStatus(row.status) ? row.status : "backlog",
-    priority: isDocumentPriority(row.priority) ? row.priority : "medium",
-    size: isDocumentSize(row.size) ? row.size : "m",
+    documentType: isDocumentType(row.document_type) ? row.document_type : null,
+    stage: isDocumentStage(row.stage) ? row.stage : null,
+    lifecycle: isDocumentLifecycle(row.lifecycle) ? row.lifecycle : null,
+    status: isDocumentStatus(row.status) ? row.status : null,
+    priority: isDocumentPriority(row.priority) ? row.priority : null,
+    size: isDocumentSize(row.size) ? row.size : null,
     archivedAt: row.archived_at,
     updatedAt: row.updated_at,
   };
@@ -518,12 +548,12 @@ export async function createSharedDocument(
     githubBranch?: string | null;
     githubPath?: string | null;
     lastEditedVia?: string | null;
-    documentType?: DocumentType;
-    stage?: DocumentStage;
-    lifecycle?: DocumentLifecycle;
-    status?: DocumentStatus;
-    priority?: DocumentPriority;
-    size?: DocumentSize;
+    documentType?: DocumentType | null;
+    stage?: DocumentStage | null;
+    lifecycle?: DocumentLifecycle | null;
+    status?: DocumentStatus | null;
+    priority?: DocumentPriority | null;
+    size?: DocumentSize | null;
   }
 ): Promise<MutationResult<SharedDocument>> {
   const title = input.title.trim();
@@ -553,12 +583,12 @@ export async function createSharedDocument(
   const parsed = parseDocumentFile(input.content ?? "");
   const content = (input.content !== undefined ? parsed.body : "") || `# ${title}\n`;
   const metadata = cleanMetadataPatch({
-    documentType: input.documentType ?? parsed.metadata.documentType,
-    stage: input.stage ?? parsed.metadata.stage,
-    lifecycle: input.lifecycle ?? parsed.metadata.lifecycle,
-    status: input.status ?? parsed.metadata.status,
-    priority: input.priority ?? parsed.metadata.priority,
-    size: input.size ?? parsed.metadata.size,
+    documentType: input.documentType !== undefined ? input.documentType : parsed.metadata.documentType,
+    stage: input.stage !== undefined ? input.stage : parsed.metadata.stage,
+    lifecycle: input.lifecycle !== undefined ? input.lifecycle : parsed.metadata.lifecycle,
+    status: input.status !== undefined ? input.status : parsed.metadata.status,
+    priority: input.priority !== undefined ? input.priority : parsed.metadata.priority,
+    size: input.size !== undefined ? input.size : parsed.metadata.size,
   });
   if (!metadata.ok) {
     return { ok: false, code: "invalid", error: metadata.error };
@@ -580,12 +610,12 @@ export async function createSharedDocument(
       github_path: githubPath,
       sync_status: "local-ahead",
       revision: 1,
-      document_type: metadata.patch.document_type ?? "feature",
-      stage: metadata.patch.stage ?? "discovery",
-      lifecycle: metadata.patch.lifecycle ?? "ideation",
-      status: metadata.patch.status ?? "backlog",
-      priority: metadata.patch.priority ?? "medium",
-      size: metadata.patch.size ?? "m",
+      document_type: metadata.patch.document_type ?? null,
+      stage: metadata.patch.stage ?? null,
+      lifecycle: metadata.patch.lifecycle ?? null,
+      status: metadata.patch.status ?? null,
+      priority: metadata.patch.priority ?? null,
+      size: metadata.patch.size ?? null,
       last_synced_content_hash: null,
       last_synced_revision: null,
       last_edited_by: input.actorUserId ?? null,

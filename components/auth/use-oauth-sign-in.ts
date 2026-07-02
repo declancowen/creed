@@ -17,6 +17,15 @@ export type OAuthProvider = "google" | "x";
 // surface a "Last used" hint. Written at click time (before the redirect).
 const LAST_PROVIDER_KEY = "creed:last-auth-provider";
 
+export function oauthErrorMessage(error: unknown, fallback = "Could not start sign-in. Try again.") {
+  const message = error instanceof Error ? error.message : "";
+  const normalized = message.toLowerCase();
+  if (normalized.includes("unsupported provider") && normalized.includes("provider is not enabled")) {
+    return "Google is not enabled in Supabase Auth for this deployment.";
+  }
+  return message || fallback;
+}
+
 export function readLastAuthProvider(): OAuthProvider | null {
   if (typeof window === "undefined") return null;
   try {
@@ -54,7 +63,7 @@ export function useOAuthSignIn(configured: boolean = true, redirectTo?: string) 
     // only runs when the handoff itself failed.
     if (error) {
       setPendingProvider(null);
-      toast.error(error.message || "Could not start sign-in. Try again.");
+      toast.error(oauthErrorMessage(error));
     }
   }
 

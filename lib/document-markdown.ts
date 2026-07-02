@@ -40,12 +40,12 @@ const KNOWN_KEYS = new Set([
 export type DocumentFrontmatterSource = {
   title: string;
   description?: string | null;
-  documentType: string;
-  status: string;
-  stage: string;
-  lifecycle: string;
-  priority: string;
-  size: string;
+  documentType?: string | null;
+  status?: string | null;
+  stage?: string | null;
+  lifecycle?: string | null;
+  priority?: string | null;
+  size?: string | null;
 };
 
 function quoteValue(value: string) {
@@ -72,12 +72,12 @@ export function serializeDocumentFile(source: DocumentFrontmatterSource, body: s
   if (description) {
     lines.push(`description: ${quoteValue(description)}`);
   }
-  lines.push(`type: ${source.documentType}`);
-  lines.push(`status: ${source.status}`);
-  lines.push(`stage: ${source.stage}`);
-  lines.push(`lifecycle: ${source.lifecycle}`);
-  lines.push(`priority: ${source.priority}`);
-  lines.push(`size: ${source.size}`);
+  if (source.documentType) lines.push(`type: ${source.documentType}`);
+  if (source.status) lines.push(`status: ${source.status}`);
+  if (source.stage) lines.push(`stage: ${source.stage}`);
+  if (source.lifecycle) lines.push(`lifecycle: ${source.lifecycle}`);
+  if (source.priority) lines.push(`priority: ${source.priority}`);
+  if (source.size) lines.push(`size: ${source.size}`);
   return `${FENCE}\n${lines.join("\n")}\n${FENCE}\n\n${normalizeBody(body)}`;
 }
 

@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useState, Fragment, type DragEvent, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useState, Fragment, type DragEvent, type MouseEvent, type ReactNode } from "react";
 import {
   Archive,
   ArrowUp,
   ArrowDown,
+  Check,
   ChevronRight,
   CircleDashed,
   Clock3,
@@ -14,6 +15,7 @@ import {
   FileText,
   Flag,
   Folder,
+  FolderUp,
   Funnel,
   LayoutGrid,
   List,
@@ -25,12 +27,21 @@ import {
   Search,
   SlidersHorizontal,
   Tag,
+  TreeStructure,
   TShirt,
   X,
 } from "@/components/ui/phosphor-icons";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -76,12 +87,12 @@ import { cn } from "@/lib/utils";
 type DashboardDocument = SharedDocumentSummary;
 
 type PropertyValueMap = {
-  status: DocumentStatus;
-  documentType: DocumentType;
-  stage: DocumentStage;
-  lifecycle: DocumentLifecycle;
-  priority: DocumentPriority;
-  size: DocumentSize;
+  status: DocumentStatus | null;
+  documentType: DocumentType | null;
+  stage: DocumentStage | null;
+  lifecycle: DocumentLifecycle | null;
+  priority: DocumentPriority | null;
+  size: DocumentSize | null;
 };
 
 const PROPERTY_OPTIONS = {
@@ -102,6 +113,12 @@ const STATUS_ORDER: DocumentStatus[] = [
 ];
 const PRIORITY_ORDER: DocumentPriority[] = ["urgent", "high", "medium", "low"];
 const SIZE_ORDER: DocumentSize[] = ["xs", "s", "m", "l", "xl"];
+const NONE_PROPERTY_VALUE = "__none__";
+
+type PropertySelectOption = {
+  value: string;
+  label: string;
+};
 
 function formatUpdatedAt(value: string) {
   const date = new Date(value);
@@ -118,6 +135,25 @@ function propertyLabel(property: DocumentPropertyKey) {
   return DOCUMENT_PROPERTY_OPTIONS.find((option) => option.value === property)?.label ?? property;
 }
 
+function emptyGroupLabel(property: DocumentPropertyKey) {
+  return `No ${propertyLabel(property).toLowerCase()}`;
+}
+
+function propertySelectValue(value: string | null | undefined) {
+  return value ?? NONE_PROPERTY_VALUE;
+}
+
+function propertyValueFromSelect(value: string) {
+  return value === NONE_PROPERTY_VALUE ? null : value;
+}
+
+function propertyOptionsWithNone(property: DocumentPropertyKey): PropertySelectOption[] {
+  return [
+    { value: NONE_PROPERTY_VALUE, label: "None" },
+    ...(PROPERTY_OPTIONS[property] as ReadonlyArray<PropertySelectOption>),
+  ];
+}
+
 function PropertyTypeIcon({ property }: { property: DocumentPropertyKey }) {
   const className = "h-3 w-3 shrink-0";
 
@@ -131,16 +167,19 @@ function PropertyTypeIcon({ property }: { property: DocumentPropertyKey }) {
 
 function groupLabel(groupBy: DocumentGroupKey, value: string) {
   if (groupBy === "none") return "All documents";
+  if (value === NONE_PROPERTY_VALUE) return emptyGroupLabel(groupBy);
   return labelDocumentProperty(groupBy, value);
 }
 
 function comparableValue(document: DashboardDocument, sortBy: DocumentSortKey) {
   if (sortBy === "name") return document.title.toLowerCase();
   if (sortBy === "updated") return new Date(document.updatedAt).getTime();
-  if (sortBy === "status") return STATUS_ORDER.indexOf(document.status);
-  if (sortBy === "priority") return PRIORITY_ORDER.indexOf(document.priority);
-  if (sortBy === "size") return SIZE_ORDER.indexOf(document.size);
-  return document[sortBy].toLowerCase();
+  const propertyValue = document[sortBy];
+  if (propertyValue === null) return null;
+  if (sortBy === "status") return STATUS_ORDER.indexOf(propertyValue as DocumentStatus);
+  if (sortBy === "priority") return PRIORITY_ORDER.indexOf(propertyValue as DocumentPriority);
+  if (sortBy === "size") return SIZE_ORDER.indexOf(propertyValue as DocumentSize);
+  return propertyValue.toLowerCase();
 }
 
 function sortDocuments(
@@ -152,6 +191,11 @@ function sortDocuments(
   return [...documents].sort((a, b) => {
     const aValue = comparableValue(a, sortBy);
     const bValue = comparableValue(b, sortBy);
+    if (aValue === null || bValue === null) {
+      if (aValue === null && bValue !== null) return 1;
+      if (aValue !== null && bValue === null) return -1;
+      return a.title.localeCompare(b.title);
+    }
     if (aValue < bValue) return -1 * direction;
     if (aValue > bValue) return 1 * direction;
     return a.title.localeCompare(b.title);
@@ -169,11 +213,14 @@ function groupedDocuments(
 
   const groups = new Map<string, DashboardDocument[]>();
   for (const document of documents) {
-    const value = String(document[groupBy]);
+    const value = propertySelectValue(document[groupBy]);
     groups.set(value, [...(groups.get(value) ?? []), document]);
   }
 
-  const options = PROPERTY_OPTIONS[groupBy];
+  const options = [
+    ...(PROPERTY_OPTIONS[groupBy] as ReadonlyArray<PropertySelectOption>),
+    { value: NONE_PROPERTY_VALUE, label: "None" },
+  ];
   // When the grouped-by property is also being filtered, only render the
   // groups whose value is included in the filter. This keeps empty,
   // filtered-out groups (and their "Drop documents here" placeholders) from
@@ -236,12 +283,13 @@ function PropertyPill({
   onChange,
 }: {
   property: DocumentPropertyKey;
-  value: string;
+  value: string | null;
   disabled?: boolean;
-  onChange: (property: DocumentPropertyKey, value: string) => void;
+  onChange: (property: DocumentPropertyKey, value: string | null) => void;
 }) {
-  const options = PROPERTY_OPTIONS[property] as unknown as ReadonlyArray<{ value: string; label: string }>;
-  const label = options.find((option) => option.value === value)?.label ?? value;
+  const options = propertyOptionsWithNone(property);
+  const selectedValue = propertySelectValue(value);
+  const label = options.find((option) => option.value === selectedValue)?.label ?? "None";
   const tone = documentPropertyTone(property, value);
 
   return (
@@ -262,7 +310,10 @@ function PropertyPill({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-[180px]">
         <DropdownMenuLabel>{propertyLabel(property)}</DropdownMenuLabel>
-        <DropdownMenuRadioGroup value={value} onValueChange={(next) => onChange(property, next)}>
+        <DropdownMenuRadioGroup
+          value={selectedValue}
+          onValueChange={(next) => onChange(property, propertyValueFromSelect(next))}
+        >
           {options.map((option) => (
             <DropdownMenuRadioItem key={option.value} value={option.value}>
               {option.label}
@@ -278,7 +329,10 @@ function DocumentRow({
   document,
   visibleProperties,
   updating,
+  selected,
   onPropertyChange,
+  onSelectionChange,
+  onMove,
   onArchive,
   onDragStart,
   onDragEnd,
@@ -286,7 +340,10 @@ function DocumentRow({
   document: DashboardDocument;
   visibleProperties: DocumentPropertyKey[];
   updating: boolean;
-  onPropertyChange: (property: DocumentPropertyKey, value: string) => void;
+  selected: boolean;
+  onPropertyChange: (property: DocumentPropertyKey, value: string | null) => void;
+  onSelectionChange: (selected: boolean) => void;
+  onMove: () => void;
   onArchive: () => void;
   onDragStart: (documentId: string) => void;
   onDragEnd: () => void;
@@ -298,6 +355,15 @@ function DocumentRow({
       onDragEnd={onDragEnd}
       className="group/row flex items-center gap-3 rounded-[8px] px-2.5 py-2 transition hover:bg-[var(--creed-surface-raised)]/60"
     >
+      <input
+        type="checkbox"
+        checked={selected}
+        disabled={updating}
+        onClick={(event) => event.stopPropagation()}
+        onChange={(event) => onSelectionChange(event.target.checked)}
+        aria-label={`Select ${document.title}`}
+        className="h-4 w-4 shrink-0"
+      />
       <FileText className="h-4 w-4 shrink-0 text-[var(--creed-text-tertiary)]" strokeWidth={1.8} />
       <Link
         href={`/file?document=${encodeURIComponent(document.slug)}`}
@@ -312,7 +378,7 @@ function DocumentRow({
           <PropertyPill
             key={property}
             property={property}
-            value={String(document[property])}
+            value={document[property]}
             disabled={updating}
             onChange={onPropertyChange}
           />
@@ -322,6 +388,17 @@ function DocumentRow({
       <span className="w-12 shrink-0 text-right text-[12px] text-[var(--creed-text-tertiary)]">
         {formatUpdatedAt(document.updatedAt)}
       </span>
+
+      <button
+        type="button"
+        disabled={updating}
+        onClick={onMove}
+        aria-label={`Move ${document.title}`}
+        title="Move"
+        className="inline-grid size-7 shrink-0 place-items-center rounded-[7px] text-[var(--creed-text-tertiary)] opacity-0 transition hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)] group-hover/row:opacity-100 disabled:opacity-50"
+      >
+        <FolderUp className="h-3.5 w-3.5" strokeWidth={1.8} />
+      </button>
 
       <button
         type="button"
@@ -341,7 +418,10 @@ function DocumentCard({
   document,
   visibleProperties,
   updating,
+  selected,
   onPropertyChange,
+  onSelectionChange,
+  onMove,
   onArchive,
   onDragStart,
   onDragEnd,
@@ -349,7 +429,10 @@ function DocumentCard({
   document: DashboardDocument;
   visibleProperties: DocumentPropertyKey[];
   updating: boolean;
-  onPropertyChange: (property: DocumentPropertyKey, value: string) => void;
+  selected: boolean;
+  onPropertyChange: (property: DocumentPropertyKey, value: string | null) => void;
+  onSelectionChange: (selected: boolean) => void;
+  onMove: () => void;
   onArchive: () => void;
   onDragStart: (documentId: string) => void;
   onDragEnd: () => void;
@@ -388,6 +471,15 @@ function DocumentCard({
         >
           <span className="line-clamp-2">{document.title}</span>
         </Link>
+        <input
+          type="checkbox"
+          checked={selected}
+          disabled={updating}
+          onClick={(event) => event.stopPropagation()}
+          onChange={(event) => onSelectionChange(event.target.checked)}
+          aria-label={`Select ${document.title}`}
+          className="h-4 w-4 shrink-0"
+        />
       </div>
 
       {document.description ? (
@@ -401,7 +493,7 @@ function DocumentCard({
           <PropertyPill
             key={property}
             property={property}
-            value={String(document[property])}
+            value={document[property]}
             disabled={updating}
             onChange={onPropertyChange}
           />
@@ -413,16 +505,28 @@ function DocumentCard({
           <Clock3 className="h-3.5 w-3.5" strokeWidth={1.8} />
           {formatUpdatedAt(document.updatedAt)}
         </span>
-        <button
-          type="button"
-          disabled={updating}
-          onClick={onArchive}
-          aria-label={`Archive ${document.title}`}
-          title="Archive"
-          className="inline-grid size-7 place-items-center rounded-[7px] text-[var(--creed-text-tertiary)] opacity-0 transition hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)] group-hover/card:opacity-100 disabled:opacity-50"
-        >
-          {updating ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Archive className="h-3.5 w-3.5" />}
-        </button>
+        <span className="inline-flex items-center gap-1">
+          <button
+            type="button"
+            disabled={updating}
+            onClick={onMove}
+            aria-label={`Move ${document.title}`}
+            title="Move"
+            className="inline-grid size-7 place-items-center rounded-[7px] text-[var(--creed-text-tertiary)] opacity-0 transition hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)] group-hover/card:opacity-100 disabled:opacity-50"
+          >
+            <FolderUp className="h-3.5 w-3.5" strokeWidth={1.8} />
+          </button>
+          <button
+            type="button"
+            disabled={updating}
+            onClick={onArchive}
+            aria-label={`Archive ${document.title}`}
+            title="Archive"
+            className="inline-grid size-7 place-items-center rounded-[7px] text-[var(--creed-text-tertiary)] opacity-0 transition hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)] group-hover/card:opacity-100 disabled:opacity-50"
+          >
+            {updating ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Archive className="h-3.5 w-3.5" />}
+          </button>
+        </span>
       </div>
     </div>
   );
@@ -508,6 +612,121 @@ function FolderTile({
   );
 }
 
+type FolderTreeNode = SharedDocumentFolder & {
+  children: FolderTreeNode[];
+};
+
+function folderTree(folders: SharedDocumentFolder[]) {
+  const nodes = new Map<string, FolderTreeNode>();
+  for (const folder of folders) {
+    nodes.set(folder.id, { ...folder, children: [] });
+  }
+
+  const roots: FolderTreeNode[] = [];
+  for (const node of nodes.values()) {
+    if (node.parentId && nodes.has(node.parentId)) {
+      nodes.get(node.parentId)!.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+
+  const sort = (items: FolderTreeNode[]) => {
+    items.sort((a, b) => a.name.localeCompare(b.name));
+    for (const item of items) sort(item.children);
+  };
+  sort(roots);
+  return roots;
+}
+
+function MoveDocumentsDialog({
+  open,
+  onOpenChange,
+  folders,
+  currentFolderId,
+  selectedCount,
+  moving,
+  onMove,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  folders: SharedDocumentFolder[];
+  currentFolderId: string | null;
+  selectedCount: number;
+  moving: boolean;
+  onMove: (folderId: string | null) => void;
+}) {
+  const [destinationId, setDestinationId] = useState<string | null>(currentFolderId);
+  const tree = useMemo(() => folderTree(folders), [folders]);
+
+  useEffect(() => {
+    if (open) setDestinationId(currentFolderId);
+  }, [currentFolderId, open]);
+
+  function renderNode(node: FolderTreeNode, depth: number): ReactNode {
+    const selected = destinationId === node.id;
+    return (
+      <Fragment key={node.id}>
+        <button
+          type="button"
+          onClick={() => setDestinationId(node.id)}
+          className={cn(
+            "flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left text-[13px] transition hover:bg-[var(--creed-surface-raised)]",
+            selected && "bg-[var(--creed-surface-raised)] text-[var(--creed-text-primary)]"
+          )}
+          style={{ paddingLeft: 8 + depth * 16 }}
+        >
+          <Folder className="h-4 w-4 shrink-0 text-[var(--creed-text-tertiary)]" strokeWidth={1.8} />
+          <span className="min-w-0 flex-1 truncate">{node.name}</span>
+          {selected ? <Check className="h-3.5 w-3.5 shrink-0" strokeWidth={1.8} /> : null}
+        </button>
+        {node.children.map((child) => renderNode(child, depth + 1))}
+      </Fragment>
+    );
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => {
+      if (!moving) onOpenChange(next);
+    }}>
+      <DialogContent className="sm:max-w-[460px]">
+        <DialogHeader>
+          <DialogTitle>Move documents</DialogTitle>
+          <DialogDescription>
+            Choose where to move {selectedCount === 1 ? "this document" : `${selectedCount} documents`}.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="max-h-[360px] overflow-y-auto rounded-[10px] border border-[var(--creed-border)] p-1.5">
+          <button
+            type="button"
+            onClick={() => setDestinationId(null)}
+            className={cn(
+              "flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left text-[13px] transition hover:bg-[var(--creed-surface-raised)]",
+              destinationId === null && "bg-[var(--creed-surface-raised)] text-[var(--creed-text-primary)]"
+            )}
+          >
+            <TreeStructure className="h-4 w-4 shrink-0 text-[var(--creed-text-tertiary)]" strokeWidth={1.8} />
+            <span className="min-w-0 flex-1 truncate">Documents</span>
+            {destinationId === null ? <Check className="h-3.5 w-3.5 shrink-0" strokeWidth={1.8} /> : null}
+          </button>
+          {tree.map((node) => renderNode(node, 0))}
+        </div>
+
+        <DialogFooter className="mt-1">
+          <Button type="button" variant="ghost" size="sm" disabled={moving} onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button type="button" size="sm" disabled={moving} onClick={() => onMove(destinationId)} className="gap-1.5">
+            {moving ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <FolderUp className="h-3.5 w-3.5" strokeWidth={1.8} />}
+            Move
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function DocumentsDashboardScreen({
   documents,
   folders,
@@ -536,6 +755,11 @@ export function DocumentsDashboardScreen({
   const [filter, setFilter] = useState("");
   const [propertyFilters, setPropertyFilters] = useState<Partial<Record<DocumentPropertyKey, string[]>>>({});
   const [draggedDocumentId, setDraggedDocumentId] = useState<string | null>(null);
+  const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([]);
+  const [busyDocumentIds, setBusyDocumentIds] = useState<string[]>([]);
+  const [moveDialogOpen, setMoveDialogOpen] = useState(false);
+  const [moveDocumentIds, setMoveDocumentIds] = useState<string[]>([]);
+  const [bulkAction, setBulkAction] = useState<"move" | "archive" | null>(null);
   const [savingView, setSavingView] = useState<"user" | "global" | null>(null);
   const [updatingDocumentId, setUpdatingDocumentId] = useState<string | null>(null);
   const [updatingFolderId, setUpdatingFolderId] = useState<string | null>(null);
@@ -547,6 +771,11 @@ export function DocumentsDashboardScreen({
     setCreateOpen(true);
   }
 
+  useEffect(() => {
+    const liveIds = new Set(documentRows.map((document) => document.id));
+    setSelectedDocumentIds((ids) => ids.filter((id) => liveIds.has(id)));
+  }, [documentRows]);
+
   const filteredDocuments = useMemo(() => {
     const query = filter.trim().toLowerCase();
     const searched = query
@@ -555,12 +784,12 @@ export function DocumentsDashboardScreen({
             document.title,
             document.description,
             document.path,
-            document.status,
-            document.documentType,
-            document.stage,
-            document.lifecycle,
-            document.priority,
-            document.size,
+            labelDocumentProperty("status", document.status),
+            labelDocumentProperty("documentType", document.documentType),
+            labelDocumentProperty("stage", document.stage),
+            labelDocumentProperty("lifecycle", document.lifecycle),
+            labelDocumentProperty("priority", document.priority),
+            labelDocumentProperty("size", document.size),
           ].some((value) => value.toLowerCase().includes(query))
         )
       : documentRows;
@@ -570,7 +799,7 @@ export function DocumentsDashboardScreen({
       ? searched.filter((document) =>
           activeFilters.every(
             ([property, values]) =>
-              !values.length || values.includes(String(document[property]))
+              !values.length || values.includes(propertySelectValue(document[property]))
           )
         )
       : searched;
@@ -608,6 +837,38 @@ export function DocumentsDashboardScreen({
       ),
     [filteredDocuments, groupBy, propertyFilters]
   );
+
+  const selectedDocumentSet = useMemo(() => new Set(selectedDocumentIds), [selectedDocumentIds]);
+  const busyDocumentSet = useMemo(() => new Set(busyDocumentIds), [busyDocumentIds]);
+  const visibleDocumentIds = useMemo(
+    () => filteredDocuments.map((document) => document.id),
+    [filteredDocuments]
+  );
+  const allVisibleSelected =
+    visibleDocumentIds.length > 0 && visibleDocumentIds.every((id) => selectedDocumentSet.has(id));
+
+  function toggleDocumentSelection(documentId: string, selected: boolean) {
+    setSelectedDocumentIds((current) => {
+      if (selected) {
+        return current.includes(documentId) ? current : [...current, documentId];
+      }
+      return current.filter((id) => id !== documentId);
+    });
+  }
+
+  function toggleAllVisibleDocuments(selected: boolean) {
+    setSelectedDocumentIds((current) => {
+      const visible = new Set(visibleDocumentIds);
+      if (!selected) return current.filter((id) => !visible.has(id));
+      return Array.from(new Set([...current, ...visibleDocumentIds]));
+    });
+  }
+
+  function openMoveDialog(documentIds: string[]) {
+    if (!documentIds.length || bulkAction) return;
+    setMoveDocumentIds(documentIds);
+    setMoveDialogOpen(true);
+  }
 
   function currentPreferences() {
     return {
@@ -690,14 +951,14 @@ export function DocumentsDashboardScreen({
   function updateDocumentFromString(
     documentId: string,
     property: DocumentPropertyKey,
-    value: string
+    value: string | null
   ) {
-    if (property === "status") void updateDocument(documentId, property, value as DocumentStatus);
-    if (property === "documentType") void updateDocument(documentId, property, value as DocumentType);
-    if (property === "stage") void updateDocument(documentId, property, value as DocumentStage);
-    if (property === "lifecycle") void updateDocument(documentId, property, value as DocumentLifecycle);
-    if (property === "priority") void updateDocument(documentId, property, value as DocumentPriority);
-    if (property === "size") void updateDocument(documentId, property, value as DocumentSize);
+    if (property === "status") void updateDocument(documentId, property, value as DocumentStatus | null);
+    if (property === "documentType") void updateDocument(documentId, property, value as DocumentType | null);
+    if (property === "stage") void updateDocument(documentId, property, value as DocumentStage | null);
+    if (property === "lifecycle") void updateDocument(documentId, property, value as DocumentLifecycle | null);
+    if (property === "priority") void updateDocument(documentId, property, value as DocumentPriority | null);
+    if (property === "size") void updateDocument(documentId, property, value as DocumentSize | null);
   }
 
   async function archiveDocument(documentId: string) {
@@ -717,6 +978,78 @@ export function DocumentsDashboardScreen({
       toast.error(error instanceof Error ? error.message : "Could not archive document.");
     } finally {
       setUpdatingDocumentId(null);
+    }
+  }
+
+  async function moveDocuments(destinationFolderId: string | null) {
+    const ids = moveDocumentIds.length ? moveDocumentIds : selectedDocumentIds;
+    if (!ids.length || bulkAction) return;
+
+    try {
+      setBulkAction("move");
+      setBusyDocumentIds(ids);
+      const updatedDocuments: SharedDocumentSummary[] = [];
+      for (const documentId of ids) {
+        const response = await fetch(`/api/app/documents/${encodeURIComponent(documentId)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ folderId: destinationFolderId }),
+        });
+        if (!response.ok) {
+          throw new Error(await readError(response, "Could not move documents."));
+        }
+        const payload = (await response.json()) as { document?: SharedDocumentSummary };
+        if (payload.document) updatedDocuments.push(payload.document);
+      }
+
+      const currentFolderId = currentFolder?.id ?? null;
+      const updatedById = new Map(updatedDocuments.map((document) => [document.id, document]));
+      const movedIds = new Set(ids);
+      setDocumentRows((rows) =>
+        rows.flatMap((row) => {
+          if (!movedIds.has(row.id)) return [row];
+          const updated = updatedById.get(row.id) ?? row;
+          return (updated.folderId ?? null) === currentFolderId ? [updated] : [];
+        })
+      );
+      setSelectedDocumentIds((current) => current.filter((id) => !movedIds.has(id)));
+      setMoveDialogOpen(false);
+      setMoveDocumentIds([]);
+      toast.success(ids.length === 1 ? "Document moved" : "Documents moved");
+      router.refresh();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not move documents.");
+    } finally {
+      setBulkAction(null);
+      setBusyDocumentIds([]);
+    }
+  }
+
+  async function archiveSelectedDocuments() {
+    const ids = selectedDocumentIds;
+    if (!ids.length || bulkAction) return;
+
+    try {
+      setBulkAction("archive");
+      setBusyDocumentIds(ids);
+      for (const documentId of ids) {
+        const response = await fetch(`/api/app/documents/${encodeURIComponent(documentId)}`, {
+          method: "DELETE",
+        });
+        if (!response.ok) {
+          throw new Error(await readError(response, "Could not archive documents."));
+        }
+      }
+      const archivedIds = new Set(ids);
+      setDocumentRows((rows) => rows.filter((row) => !archivedIds.has(row.id)));
+      setSelectedDocumentIds([]);
+      toast.success(ids.length === 1 ? "Document archived" : "Documents archived");
+      router.refresh();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not archive documents.");
+    } finally {
+      setBulkAction(null);
+      setBusyDocumentIds([]);
     }
   }
 
@@ -762,14 +1095,15 @@ export function DocumentsDashboardScreen({
     setDraggedDocumentId(null);
     if (!documentId || groupBy === "none" || !value) return;
     const document = documentRows.find((row) => row.id === documentId);
-    if (!document || String(document[groupBy]) === value) return;
+    const nextValue = propertyValueFromSelect(value);
+    if (!document || document[groupBy] === nextValue) return;
 
-    if (groupBy === "status") void updateDocument(documentId, "status", value as DocumentStatus);
-    if (groupBy === "documentType") void updateDocument(documentId, "documentType", value as DocumentType);
-    if (groupBy === "stage") void updateDocument(documentId, "stage", value as DocumentStage);
-    if (groupBy === "lifecycle") void updateDocument(documentId, "lifecycle", value as DocumentLifecycle);
-    if (groupBy === "priority") void updateDocument(documentId, "priority", value as DocumentPriority);
-    if (groupBy === "size") void updateDocument(documentId, "size", value as DocumentSize);
+    if (groupBy === "status") void updateDocument(documentId, "status", nextValue as DocumentStatus | null);
+    if (groupBy === "documentType") void updateDocument(documentId, "documentType", nextValue as DocumentType | null);
+    if (groupBy === "stage") void updateDocument(documentId, "stage", nextValue as DocumentStage | null);
+    if (groupBy === "lifecycle") void updateDocument(documentId, "lifecycle", nextValue as DocumentLifecycle | null);
+    if (groupBy === "priority") void updateDocument(documentId, "priority", nextValue as DocumentPriority | null);
+    if (groupBy === "size") void updateDocument(documentId, "size", nextValue as DocumentSize | null);
   }
 
   return (
@@ -849,6 +1183,17 @@ export function DocumentsDashboardScreen({
           />
         </span>
 
+        <label className="inline-flex h-8 items-center gap-2 rounded-[8px] border border-[var(--creed-border)] px-2.5 text-[12.5px] font-medium text-[var(--creed-text-secondary)]">
+          <input
+            type="checkbox"
+            checked={allVisibleSelected}
+            disabled={visibleDocumentIds.length === 0 || Boolean(bulkAction)}
+            onChange={(event) => toggleAllVisibleDocuments(event.target.checked)}
+            className="h-3.5 w-3.5"
+          />
+          Select
+        </label>
+
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <ViewSwitcher viewMode={viewMode} onChange={setViewMode} />
           <InlineSelect
@@ -889,10 +1234,7 @@ export function DocumentsDashboardScreen({
             </summary>
             <div className="absolute right-0 z-20 mt-2 w-64 rounded-[10px] border border-[var(--creed-border)] bg-[var(--creed-surface)] p-1.5 shadow-[0_12px_30px_rgba(28,28,26,0.1)]">
               {DOCUMENT_PROPERTY_OPTIONS.map((property) => {
-                const options = PROPERTY_OPTIONS[property.value] as unknown as ReadonlyArray<{
-                  value: string;
-                  label: string;
-                }>;
+                const options = propertyOptionsWithNone(property.value);
                 const selected = propertyFilters[property.value] ?? [];
                 return (
                   <details key={property.value} className="group/filter">
@@ -999,6 +1341,49 @@ export function DocumentsDashboardScreen({
         </div>
         </div>
 
+      {selectedDocumentIds.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-2 border-y border-[var(--creed-border)] bg-[var(--creed-surface-raised)]/45 px-5 py-2 md:px-8">
+          <span className="text-[13px] font-medium text-[var(--creed-text-primary)]">
+            {selectedDocumentIds.length} selected
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={Boolean(bulkAction)}
+            onClick={() => openMoveDialog(selectedDocumentIds)}
+            className="gap-1.5"
+          >
+            <FolderUp className="h-3.5 w-3.5" strokeWidth={1.8} />
+            Move
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={Boolean(bulkAction)}
+            onClick={() => void archiveSelectedDocuments()}
+            className="gap-1.5"
+          >
+            {bulkAction === "archive" ? (
+              <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Archive className="h-3.5 w-3.5" strokeWidth={1.8} />
+            )}
+            Archive
+          </Button>
+          <button
+            type="button"
+            disabled={Boolean(bulkAction)}
+            onClick={() => setSelectedDocumentIds([])}
+            className="ml-auto inline-flex h-7 items-center gap-1.5 rounded-[8px] px-2 text-[12.5px] font-medium text-[var(--creed-text-secondary)] transition hover:bg-[var(--creed-surface)] disabled:opacity-50"
+          >
+            <X className="h-3.5 w-3.5" strokeWidth={1.8} />
+            Clear
+          </button>
+        </div>
+      ) : null}
+
       {/* Content */}
       <div className="flex-1 overflow-y-auto px-5 py-5 md:px-8">
         {filteredFolders.length > 0 ? (
@@ -1061,9 +1446,12 @@ export function DocumentsDashboardScreen({
                           key={document.id}
                           document={document}
                           visibleProperties={visibleProperties}
-                          updating={updatingDocumentId === document.id}
+                          updating={updatingDocumentId === document.id || busyDocumentSet.has(document.id)}
+                          selected={selectedDocumentSet.has(document.id)}
                           onDragStart={setDraggedDocumentId}
                           onDragEnd={() => setDraggedDocumentId(null)}
+                          onSelectionChange={(selected) => toggleDocumentSelection(document.id, selected)}
+                          onMove={() => openMoveDialog([document.id])}
                           onArchive={() => void archiveDocument(document.id)}
                           onPropertyChange={(property, value) => updateDocumentFromString(document.id, property, value)}
                         />
@@ -1076,9 +1464,12 @@ export function DocumentsDashboardScreen({
                           key={document.id}
                           document={document}
                           visibleProperties={visibleProperties}
-                          updating={updatingDocumentId === document.id}
+                          updating={updatingDocumentId === document.id || busyDocumentSet.has(document.id)}
+                          selected={selectedDocumentSet.has(document.id)}
                           onDragStart={setDraggedDocumentId}
                           onDragEnd={() => setDraggedDocumentId(null)}
+                          onSelectionChange={(selected) => toggleDocumentSelection(document.id, selected)}
+                          onMove={() => openMoveDialog([document.id])}
                           onArchive={() => void archiveDocument(document.id)}
                           onPropertyChange={(property, value) => updateDocumentFromString(document.id, property, value)}
                         />
@@ -1138,6 +1529,18 @@ export function DocumentsDashboardScreen({
         defaultFolderId={currentFolder?.id ?? null}
         onDocumentCreated={(document) => setDocumentRows((rows) => [document, ...rows])}
         onFolderCreated={(folder) => setFolderRows((rows) => [...rows, folder])}
+      />
+      <MoveDocumentsDialog
+        open={moveDialogOpen}
+        onOpenChange={(open) => {
+          setMoveDialogOpen(open);
+          if (!open) setMoveDocumentIds([]);
+        }}
+        folders={allFolders}
+        currentFolderId={currentFolder?.id ?? null}
+        selectedCount={moveDocumentIds.length || selectedDocumentIds.length}
+        moving={bulkAction === "move"}
+        onMove={(folderId) => void moveDocuments(folderId)}
       />
     </div>
   );

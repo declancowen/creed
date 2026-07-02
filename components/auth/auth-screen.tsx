@@ -51,7 +51,7 @@ export function AuthScreen({
   // Where to land after a successful auth (e.g. back to /authorize for an MCP
   // connect). Defaults to the root router.
   nextPath?: string;
-  authError?: "oauth_email_mismatch";
+  authError?: "oauth_email_mismatch" | "invite_required";
 }) {
   const t = copy;
 
@@ -88,6 +88,8 @@ export function AuthScreen({
   useEffect(() => {
     if (authError === "oauth_email_mismatch") {
       toast.error("Use the account with the same email as your Creed invite.");
+    } else if (authError === "invite_required") {
+      toast.error("Accept your Creed invite before using Google sign-in.");
     }
   }, [authError]);
 

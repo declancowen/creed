@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import { AnimatedPageTitle } from "@/components/marketing/animated-page-title";
 import { AuthShell } from "@/components/auth/auth-shell";
 import { AuthSubmitButton, PasswordField } from "@/components/auth/auth-fields";
+import { oauthErrorMessage } from "@/components/auth/use-oauth-sign-in";
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
 
 type GoogleState = "loading" | "connected" | "not-connected" | "email-mismatch";
@@ -146,7 +147,7 @@ export function AcceptInviteScreen({
         callbackUrl.searchParams.set("expected_email", effectiveEmail);
       }
 
-      const { error } = await supabase.auth.signInWithOAuth({
+      const { error } = await supabase.auth.linkIdentity({
         provider: "google",
         options: {
           redirectTo: callbackUrl.toString(),
@@ -154,8 +155,7 @@ export function AcceptInviteScreen({
       });
       if (error) throw error;
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Could not connect Google.";
-      toast.error(message);
+      toast.error(oauthErrorMessage(error, "Could not connect Google."));
       setLinkingGoogle(false);
     }
   }

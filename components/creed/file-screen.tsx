@@ -670,13 +670,14 @@ type SharedDocumentFilePayload = {
 type DocumentPropertyName = DocumentPropertyKey;
 
 type DocumentPropertyValueMap = {
-  documentType: DocumentType;
-  status: DocumentStatus;
-  stage: DocumentStage;
-  lifecycle: DocumentLifecycle;
-  priority: DocumentPriority;
-  size: DocumentSize;
+  documentType: DocumentType | null;
+  status: DocumentStatus | null;
+  stage: DocumentStage | null;
+  lifecycle: DocumentLifecycle | null;
+  priority: DocumentPriority | null;
+  size: DocumentSize | null;
 };
+const NONE_DOCUMENT_PROPERTY_VALUE = "__none__";
 
 const DOCUMENT_PROPERTY_LABELS: Record<DocumentPropertyName, string> = {
   documentType: "Type",
@@ -785,11 +786,14 @@ function DocumentPropertySelect<K extends DocumentPropertyName>({
 }: {
   property: K;
   value: DocumentPropertyValueMap[K];
-  options: ReadonlyArray<{ value: DocumentPropertyValueMap[K]; label: string }>;
+  options: ReadonlyArray<{ value: NonNullable<DocumentPropertyValueMap[K]>; label: string }>;
   disabled?: boolean;
   onChange: (property: K, value: DocumentPropertyValueMap[K]) => void;
 }) {
-  const current = options.find((option) => option.value === value)?.label ?? labelDocumentProperty(property, value);
+  const selectedValue = value ?? NONE_DOCUMENT_PROPERTY_VALUE;
+  const current = value
+    ? options.find((option) => option.value === value)?.label ?? labelDocumentProperty(property, value)
+    : "None";
   const tone = documentPropertyTone(property, value);
   return (
     <DropdownMenu>
@@ -810,9 +814,17 @@ function DocumentPropertySelect<K extends DocumentPropertyName>({
       <DropdownMenuContent align="start" className="min-w-[180px] border-[var(--creed-border)] bg-[var(--creed-surface)]">
         <DropdownMenuLabel>{DOCUMENT_PROPERTY_LABELS[property]}</DropdownMenuLabel>
         <DropdownMenuRadioGroup
-          value={value}
-          onValueChange={(next) => onChange(property, next as DocumentPropertyValueMap[K])}
+          value={selectedValue}
+          onValueChange={(next) =>
+            onChange(
+              property,
+              next === NONE_DOCUMENT_PROPERTY_VALUE ? null : (next as DocumentPropertyValueMap[K])
+            )
+          }
         >
+          <DropdownMenuRadioItem value={NONE_DOCUMENT_PROPERTY_VALUE}>
+            None
+          </DropdownMenuRadioItem>
           {options.map((option) => (
             <DropdownMenuRadioItem key={option.value} value={option.value}>
               {option.label}

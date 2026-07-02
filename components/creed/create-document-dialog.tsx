@@ -61,6 +61,7 @@ import type { SharedDocumentFolder, SharedDocumentSummary } from "@/lib/shared-d
 import { cn } from "@/lib/utils";
 
 export type CreateDialogMode = "document" | "folder";
+const NONE_PROPERTY_VALUE = "__none__";
 
 async function readError(response: Response, fallback: string) {
   const payload = (await response.json().catch(() => null)) as { error?: string } | null;
@@ -101,6 +102,56 @@ function PropertyChip<T extends string>({
       <DropdownMenuContent align="start" className="min-w-[190px]">
         <DropdownMenuLabel>{label}</DropdownMenuLabel>
         <DropdownMenuRadioGroup value={value} onValueChange={(next) => onChange(next as T)}>
+          {options.map((option) => (
+            <DropdownMenuRadioItem key={option.value} value={option.value}>
+              {option.label}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function NullablePropertyChip<T extends string>({
+  icon,
+  label,
+  value,
+  options,
+  disabled,
+  onChange,
+}: {
+  icon: ReactNode;
+  label: string;
+  value: T | null;
+  options: ReadonlyArray<{ value: T; label: string }>;
+  disabled?: boolean;
+  onChange: (value: T | null) => void;
+}) {
+  const selectedValue = value ?? NONE_PROPERTY_VALUE;
+  const current = value
+    ? options.find((option) => option.value === value)?.label ?? value
+    : "None";
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          disabled={disabled}
+          className="inline-flex h-7 items-center gap-1.5 rounded-[7px] border border-[var(--creed-border)] bg-[var(--creed-surface)] px-2 text-[12.5px] font-medium text-[var(--creed-text-secondary)] transition hover:bg-[var(--creed-surface-raised)] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <span className="text-[var(--creed-text-tertiary)]">{icon}</span>
+          <span className="text-[var(--creed-text-primary)]">{current}</span>
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-[190px]">
+        <DropdownMenuLabel>{label}</DropdownMenuLabel>
+        <DropdownMenuRadioGroup
+          value={selectedValue}
+          onValueChange={(next) => onChange(next === NONE_PROPERTY_VALUE ? null : (next as T))}
+        >
+          <DropdownMenuRadioItem value={NONE_PROPERTY_VALUE}>None</DropdownMenuRadioItem>
           {options.map((option) => (
             <DropdownMenuRadioItem key={option.value} value={option.value}>
               {option.label}
@@ -173,12 +224,12 @@ export function CreateDialog({
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [folderId, setFolderId] = useState("");
-  const [documentType, setDocumentType] = useState<DocumentType>("feature");
-  const [status, setStatus] = useState<DocumentStatus>("backlog");
-  const [stage, setStage] = useState<DocumentStage>("discovery");
-  const [lifecycle, setLifecycle] = useState<DocumentLifecycle>("ideation");
-  const [priority, setPriority] = useState<DocumentPriority>("medium");
-  const [size, setSize] = useState<DocumentSize>("m");
+  const [documentType, setDocumentType] = useState<DocumentType | null>(null);
+  const [status, setStatus] = useState<DocumentStatus | null>(null);
+  const [stage, setStage] = useState<DocumentStage | null>(null);
+  const [lifecycle, setLifecycle] = useState<DocumentLifecycle | null>(null);
+  const [priority, setPriority] = useState<DocumentPriority | null>(null);
+  const [size, setSize] = useState<DocumentSize | null>(null);
   const [folderName, setFolderName] = useState("");
   const [parentFolderId, setParentFolderId] = useState("");
   const [creating, setCreating] = useState(false);
@@ -190,12 +241,12 @@ export function CreateDialog({
     setTitle("");
     setDescription("");
     setFolderId(defaultFolderId ?? "");
-    setDocumentType("feature");
-    setStatus("backlog");
-    setStage("discovery");
-    setLifecycle("ideation");
-    setPriority("medium");
-    setSize("m");
+    setDocumentType(null);
+    setStatus(null);
+    setStage(null);
+    setLifecycle(null);
+    setPriority(null);
+    setSize(null);
     setFolderName("");
     setParentFolderId(defaultFolderId ?? "");
     setCreating(false);
@@ -210,14 +261,14 @@ export function CreateDialog({
     ...folders.map((folder) => ({ value: folder.id, label: folder.path })),
   ];
 
-  function handleStageChange(value: DocumentStage) {
+  function handleStageChange(value: DocumentStage | null) {
     setStage(value);
-    setLifecycle(defaultLifecycleForStage(value));
+    setLifecycle(value ? defaultLifecycleForStage(value) : null);
   }
 
-  function handleLifecycleChange(value: DocumentLifecycle) {
+  function handleLifecycleChange(value: DocumentLifecycle | null) {
     setLifecycle(value);
-    setStage(lifecycleStage(value));
+    setStage(value ? lifecycleStage(value) : null);
   }
 
   async function handleCreateDocument() {
@@ -387,7 +438,7 @@ export function CreateDialog({
                 disabled={creating}
                 onChange={setFolderId}
               />
-              <PropertyChip
+              <NullablePropertyChip
                 icon={<Tag className="h-3.5 w-3.5" strokeWidth={1.8} />}
                 label="Type"
                 value={documentType}
@@ -395,7 +446,7 @@ export function CreateDialog({
                 disabled={creating}
                 onChange={setDocumentType}
               />
-              <PropertyChip
+              <NullablePropertyChip
                 icon={<CircleDashed className="h-3.5 w-3.5" strokeWidth={1.8} />}
                 label="Status"
                 value={status}
@@ -403,7 +454,7 @@ export function CreateDialog({
                 disabled={creating}
                 onChange={setStatus}
               />
-              <PropertyChip
+              <NullablePropertyChip
                 icon={<LayoutGrid className="h-3.5 w-3.5" strokeWidth={1.8} />}
                 label="Stage"
                 value={stage}
@@ -411,7 +462,7 @@ export function CreateDialog({
                 disabled={creating}
                 onChange={handleStageChange}
               />
-              <PropertyChip
+              <NullablePropertyChip
                 icon={<RotateCcw className="h-3.5 w-3.5" strokeWidth={1.8} />}
                 label="Lifecycle"
                 value={lifecycle}
@@ -419,7 +470,7 @@ export function CreateDialog({
                 disabled={creating}
                 onChange={handleLifecycleChange}
               />
-              <PropertyChip
+              <NullablePropertyChip
                 icon={<Flag className="h-3.5 w-3.5" strokeWidth={1.8} />}
                 label="Priority"
                 value={priority}
@@ -427,7 +478,7 @@ export function CreateDialog({
                 disabled={creating}
                 onChange={setPriority}
               />
-              <PropertyChip
+              <NullablePropertyChip
                 icon={<TShirt className="h-3.5 w-3.5" strokeWidth={1.8} />}
                 label="Size"
                 value={size}

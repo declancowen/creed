@@ -20,8 +20,12 @@ export default async function LoginPage({
   const nextPath = params.next ? sanitizeNextPath(params.next) : "/dashboard";
   const error =
     typeof params.error === "string" &&
-    (params.error === "oauth_email_mismatch" || params.error === "google_email_mismatch")
-      ? "oauth_email_mismatch"
+    (params.error === "oauth_email_mismatch" ||
+      params.error === "google_email_mismatch" ||
+      params.error === "invite_required")
+      ? params.error === "invite_required"
+        ? "invite_required"
+        : "oauth_email_mismatch"
       : undefined;
 
   // Already signed in? Don't show the sign-in form - send them on to `next`

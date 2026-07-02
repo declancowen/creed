@@ -31,12 +31,12 @@ export type DocumentReferenceEntry = {
   path: string;
   // Documents carry the dashboard properties so the card node view can render
   // the same pills as the dashboard. Folders leave these undefined.
-  documentType?: DocumentType;
-  status?: DocumentStatus;
-  stage?: DocumentStage;
-  lifecycle?: DocumentLifecycle;
-  priority?: DocumentPriority;
-  size?: DocumentSize;
+  documentType?: DocumentType | null;
+  status?: DocumentStatus | null;
+  stage?: DocumentStage | null;
+  lifecycle?: DocumentLifecycle | null;
+  priority?: DocumentPriority | null;
+  size?: DocumentSize | null;
   updatedAt?: string;
 };
 
@@ -72,12 +72,12 @@ type DocumentRecord = {
   title: string;
   description?: string | null;
   path?: string | null;
-  documentType?: DocumentType;
-  status?: DocumentStatus;
-  stage?: DocumentStage;
-  lifecycle?: DocumentLifecycle;
-  priority?: DocumentPriority;
-  size?: DocumentSize;
+  documentType?: DocumentType | null;
+  status?: DocumentStatus | null;
+  stage?: DocumentStage | null;
+  lifecycle?: DocumentLifecycle | null;
+  priority?: DocumentPriority | null;
+  size?: DocumentSize | null;
   updatedAt?: string;
 };
 
