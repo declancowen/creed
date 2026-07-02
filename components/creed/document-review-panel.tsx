@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { diffWords } from "diff";
+import { diffArrays, diffWords } from "diff";
 import { AnimatePresence, motion } from "framer-motion";
 import { Check, ChevronDown, History, LoaderCircle, MessageSquare, RotateCcw, Send, X } from "@/components/ui/phosphor-icons";
 import { Button } from "@/components/ui/button";
@@ -147,6 +147,7 @@ function mdDiffParts(before: string, after: string) {
 }
 
 type DiffPart = ReturnType<typeof mdDiffParts>[number];
+type RichDiffTone = "added" | "removed" | "neutral";
 
 function DiffChunks({ parts }: { parts: DiffPart[] }) {
   if (parts.length === 0) {
@@ -192,10 +193,12 @@ function RenderedMarkdownPreview({
   markdown,
   tone = "neutral",
   maxHeight = "max-h-[360px]",
+  chrome = "panel",
 }: {
   markdown: string;
-  tone?: "added" | "removed" | "neutral";
+  tone?: RichDiffTone;
   maxHeight?: string;
+  chrome?: "panel" | "fragment";
 }) {
   const html = useMemo(() => markdownToRichHtml(markdown), [markdown]);
   const elementId = useId().replace(/[^a-zA-Z0-9_-]/g, "");
@@ -266,8 +269,10 @@ function RenderedMarkdownPreview({
     <div
       ref={ref}
       className={cn(
-        "creed-rendered-markdown creed-scrollbar overflow-y-auto rounded-lg border px-3.5 py-3 text-[13px] leading-6",
-        maxHeight,
+        "creed-rendered-markdown text-[13px] leading-6",
+        chrome === "panel"
+          ? cn("creed-scrollbar overflow-y-auto rounded-lg border px-3.5 py-3", maxHeight)
+          : "creed-rendered-markdown-fragment rounded-md px-3 py-2",
         tone === "added"
           ? "creed-rendered-markdown-added"
           : tone === "removed"
@@ -276,6 +281,154 @@ function RenderedMarkdownPreview({
       )}
       dangerouslySetInnerHTML={{ __html: html }}
     />
+  );
+}
+
+function isTableDelimiterRow(line: string | undefined) {
+  if (!line) return false;
+  const trimmed = line.trim();
+  if (!trimmed.includes("|")) return false;
+  return trimmed
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split(/(?<!\\)\|/)
+    .map((cell) => cell.trim())
+    .every((cell) => /^:?-+:?$/.test(cell));
+}
+
+function isBlockBoundaryStart(lines: string[], index: number) {
+  const trimmed = lines[index]?.trim() ?? "";
+  if (!trimmed) return true;
+  if (trimmed.startsWith("```")) return true;
+  if (/^#{1,6}\s+\S/.test(trimmed)) return true;
+  if (/^([-*_])\1{2,}$/.test(trimmed)) return true;
+  if (/^\s*(?:[-*+]|\d+\.)\s+/.test(lines[index] ?? "")) return true;
+  if (/^\s{0,3}>\s?/.test(lines[index] ?? "")) return true;
+  return trimmed.includes("|") && isTableDelimiterRow(lines[index + 1]);
+}
+
+function splitMarkdownBlocks(markdown: string) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const blocks: string[] = [];
+  let index = 0;
+
+  const pushBlock = (blockLines: string[]) => {
+    const block = blockLines.join("\n").trim();
+    if (block) blocks.push(block);
+  };
+
+  while (index < lines.length) {
+    const line = lines[index] ?? "";
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      index += 1;
+      continue;
+    }
+
+    if (trimmed.startsWith("```")) {
+      const blockLines = [line];
+      index += 1;
+      while (index < lines.length) {
+        const next = lines[index] ?? "";
+        blockLines.push(next);
+        index += 1;
+        if (next.trim().startsWith("```")) break;
+      }
+      pushBlock(blockLines);
+      continue;
+    }
+
+    if (trimmed.includes("|") && isTableDelimiterRow(lines[index + 1])) {
+      const blockLines = [line, lines[index + 1] ?? ""];
+      index += 2;
+      while (index < lines.length) {
+        const next = lines[index] ?? "";
+        const nextTrimmed = next.trim();
+        if (!nextTrimmed || !nextTrimmed.includes("|") || nextTrimmed.startsWith("```")) break;
+        blockLines.push(next);
+        index += 1;
+      }
+      pushBlock(blockLines);
+      continue;
+    }
+
+    if (/^#{1,6}\s+\S/.test(trimmed) || /^([-*_])\1{2,}$/.test(trimmed)) {
+      pushBlock([line]);
+      index += 1;
+      continue;
+    }
+
+    if (/^\s*(?:[-*+]|\d+\.)\s+/.test(line)) {
+      const blockLines = [line];
+      index += 1;
+      while (index < lines.length && /^\s*(?:[-*+]|\d+\.)\s+/.test(lines[index] ?? "")) {
+        blockLines.push(lines[index] ?? "");
+        index += 1;
+      }
+      pushBlock(blockLines);
+      continue;
+    }
+
+    if (/^\s{0,3}>\s?/.test(line)) {
+      const blockLines = [line];
+      index += 1;
+      while (index < lines.length && /^\s{0,3}>\s?/.test(lines[index] ?? "")) {
+        blockLines.push(lines[index] ?? "");
+        index += 1;
+      }
+      pushBlock(blockLines);
+      continue;
+    }
+
+    const blockLines = [line];
+    index += 1;
+    while (index < lines.length && !isBlockBoundaryStart(lines, index)) {
+      blockLines.push(lines[index] ?? "");
+      index += 1;
+    }
+    pushBlock(blockLines);
+  }
+
+  return blocks;
+}
+
+function buildRichDiffChunks(before: string, after: string): Array<{ tone: RichDiffTone; markdown: string }> {
+  const beforeBlocks = splitMarkdownBlocks(before);
+  const afterBlocks = splitMarkdownBlocks(after);
+
+  return diffArrays(beforeBlocks, afterBlocks)
+    .map((part): { tone: RichDiffTone; markdown: string } => ({
+      tone: part.added ? "added" : part.removed ? "removed" : "neutral",
+      markdown: part.value.join("\n\n"),
+    }))
+    .filter((part) => part.markdown.trim().length > 0);
+}
+
+function UnifiedRichDiff({ before, after }: { before: string; after: string }) {
+  const chunks = useMemo(() => buildRichDiffChunks(before, after), [before, after]);
+
+  if (chunks.length === 0) {
+    return (
+      <div className="px-3 py-3">
+        <RenderedMarkdownPreview markdown={after || before} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-3 py-3">
+      <div className="creed-rendered-diff creed-scrollbar max-h-[420px] overflow-y-auto rounded-lg border border-[var(--creed-border)] bg-[var(--creed-surface)] px-2.5 py-2.5">
+        {chunks.map((chunk, index) => (
+          <RenderedMarkdownPreview
+            key={`${chunk.tone}-${index}`}
+            markdown={chunk.markdown}
+            tone={chunk.tone}
+            chrome="fragment"
+          />
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -304,22 +457,7 @@ function RenderedProposalBody({
     );
   }
 
-  return (
-    <div className="space-y-3 px-3 py-3">
-      <div className="space-y-1.5">
-        <p className="px-1 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--creed-text-tertiary)]">
-          Current
-        </p>
-        <RenderedMarkdownPreview markdown={before} tone="removed" maxHeight="max-h-[260px]" />
-      </div>
-      <div className="space-y-1.5">
-        <p className="px-1 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--creed-text-tertiary)]">
-          Proposed
-        </p>
-        <RenderedMarkdownPreview markdown={after} tone="added" maxHeight="max-h-[360px]" />
-      </div>
-    </div>
-  );
+  return <UnifiedRichDiff before={before} after={after} />;
 }
 
 const STATUS_DOT: Record<SectionChangeStatus, string> = {
