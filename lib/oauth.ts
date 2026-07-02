@@ -300,7 +300,7 @@ export async function findOAuthAccessToken(
   const admin = adminDb();
   const { data } = await admin
     .from("oauth_tokens")
-    .select("id, client_id, user_id, scope, revoked_at, access_expires_at")
+    .select("id, client_id, user_id, scope, revoked_at, access_expires_at, refresh_expires_at")
     .eq("access_token_hash", hashSecret(token))
     .maybeSingle();
 
@@ -309,7 +309,17 @@ export async function findOAuthAccessToken(
     return null;
   }
   if (new Date(row.access_expires_at).getTime() < Date.now()) {
-    return null;
+    if (new Date(row.refresh_expires_at).getTime() < Date.now()) {
+      return null;
+    }
+    // Some MCP hosts keep an already-open connection/tool bridge on the old
+    // access token after the user reauthenticates the client. If the grant is
+    // still refreshable and has not been revoked, renew the access window in
+    // place so active clients do not drop until the refresh grant itself dies.
+    void admin
+      .from("oauth_tokens")
+      .update({ access_expires_at: new Date(Date.now() + ACCESS_TTL_MS).toISOString() })
+      .eq("id", row.id);
   }
 
   void admin
