@@ -12,12 +12,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import {
   Contrast,
@@ -27,7 +21,6 @@ import {
   History,
   LoaderCircle,
   MessageSquare,
-  MoreHorizontal,
   SlidersHorizontal,
   UserCircle,
   X,
@@ -552,7 +545,14 @@ export function PublicDocumentScreen({
             >
               <SlidersHorizontal className="h-5 w-5" />
             </RailButton>
-            <PublicMoreMenu size="desktop" onRename={openNameDialog} />
+            <RailButton
+              label="Name"
+              active={nameDialogOpen}
+              size="desktop"
+              onClick={openNameDialog}
+            >
+              <UserCircle className="h-5 w-5" />
+            </RailButton>
             <PublicThemeButton size="desktop" />
           </div>
         </div>
@@ -599,7 +599,9 @@ export function PublicDocumentScreen({
         >
           <SlidersHorizontal className="h-4 w-4" />
         </RailButton>
-        <PublicMoreMenu onRename={openNameDialog} />
+        <RailButton label="Name" active={nameDialogOpen} onClick={openNameDialog}>
+          <UserCircle className="h-4 w-4" />
+        </RailButton>
         <PublicThemeButton />
       </div>
 
@@ -700,44 +702,6 @@ function PublicThemeButton({ size = "mobile" }: { size?: "mobile" | "desktop" })
     >
       <Contrast className={cn("h-4 w-4", size === "desktop" && "h-5 w-5")} />
     </Button>
-  );
-}
-
-function PublicMoreMenu({
-  size = "mobile",
-  onRename,
-}: {
-  size?: "mobile" | "desktop";
-  onRename: () => void;
-}) {
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-label="More"
-          title="More"
-          className={cn(
-            "relative inline-flex h-8 w-8 items-center justify-center rounded-[10px] text-[var(--creed-text-secondary)] transition-colors hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)]",
-            size === "desktop" && "h-9 w-9 rounded-[11px]"
-          )}
-        >
-          <MoreHorizontal className={cn("h-4 w-4", size === "desktop" && "h-5 w-5")} />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent
-        align="end"
-        className="w-40 border-[var(--creed-border)] bg-[var(--creed-surface)]"
-      >
-        <DropdownMenuItem
-          className="gap-2 text-[13px]"
-          onSelect={onRename}
-        >
-          <UserCircle className="h-4 w-4" />
-          Change name
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
   );
 }
 
@@ -1114,13 +1078,13 @@ function ViewSegment<T extends string>({
       <div className="mb-2 text-[12px] font-medium text-[var(--creed-text-secondary)]">
         {label}
       </div>
-      <div className="grid grid-cols-2 overflow-hidden rounded-md border border-[var(--creed-border)]">
+      <div className="grid w-[118px] grid-cols-2 overflow-hidden rounded-md border border-[var(--creed-border)]">
         {options.map((option) => (
           <button
             key={option.value}
             type="button"
             className={cn(
-              "h-9 px-3 text-[13px] transition-colors",
+              "h-9 px-0 text-center text-[13px] transition-colors",
               value === option.value
                 ? "bg-[var(--creed-surface-raised)] text-[var(--creed-text-primary)]"
                 : "text-[var(--creed-text-secondary)] hover:text-[var(--creed-text-primary)]"

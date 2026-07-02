@@ -1364,6 +1364,24 @@ export function FileScreen({
     );
   }
 
+  function renameCurrentSection(sectionId: string, name: string) {
+    const trimmedName = name.trim();
+    if (!trimmedName) return;
+    if (documentMode) {
+      updateDocumentSection(sectionId, { name: trimmedName });
+    } else {
+      renameSection(sectionId, trimmedName);
+    }
+  }
+
+  function deleteCurrentSection(sectionId: string) {
+    if (documentMode) {
+      setDocumentSections((current) => current.filter((section) => section.id !== sectionId));
+    } else {
+      deleteSection(sectionId);
+    }
+  }
+
   function indentDocumentSection(sectionId: string) {
     setDocumentSections((current) => {
       const index = current.findIndex((section) => section.id === sectionId);
@@ -2445,24 +2463,6 @@ export function FileScreen({
                         <Button
                           variant="ghost"
                           size="icon-sm"
-                          aria-label="Rename document"
-                          title="Rename document"
-                          className={documentHeaderIconButtonClass}
-                          disabled={renamingDocument || documentSaving}
-                          onClick={() => {
-                            setRenameDocumentTitle(currentDocument?.title ?? "");
-                            setRenameDocumentOpen(true);
-                          }}
-                        >
-                          {renamingDocument ? (
-                            <LoaderCircle className="inline-flex h-3.5 w-3.5 shrink-0 animate-spin" />
-                          ) : (
-                            <SquarePen className="inline-flex h-3.5 w-3.5 shrink-0" />
-                          )}
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
                           aria-label="Save document"
                           title="Save document"
                           className={documentHeaderIconButtonClass}
@@ -2704,6 +2704,24 @@ export function FileScreen({
                         align="end"
                         className="w-64 border-[var(--creed-border)] bg-[var(--creed-surface)]"
                       >
+                        {documentMode ? (
+                          <AnimatedMenuIconItem
+                            icon={SquarePen}
+                            showIcon={!renamingDocument}
+                            className="text-sm"
+                            disabled={renamingDocument || documentSaving}
+                            onSelect={(event) => {
+                              event.preventDefault();
+                              setRenameDocumentTitle(currentDocument?.title ?? "");
+                              window.setTimeout(() => setRenameDocumentOpen(true), 0);
+                            }}
+                          >
+                            {renamingDocument ? "Renaming" : "Rename document"}
+                            {renamingDocument ? (
+                              <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                            ) : null}
+                          </AnimatedMenuIconItem>
+                        ) : null}
                         <AnimatedMenuIconItem
                           icon={FolderUp}
                           showIcon={!importBusy && copiedAction !== "import"}
@@ -2791,7 +2809,7 @@ export function FileScreen({
                           </div>
                           <div className="mb-1.5 flex items-center justify-between gap-3">
                             <span className="text-xs text-[var(--creed-text-secondary)]">Text</span>
-                            <div className="flex overflow-hidden rounded-md border border-[var(--creed-border)]">
+                            <div className="grid w-[118px] shrink-0 grid-cols-2 overflow-hidden rounded-md border border-[var(--creed-border)]">
                               {(["small", "large"] as const).map((value) => (
                                 <button
                                   key={value}
@@ -2802,7 +2820,7 @@ export function FileScreen({
                                     setEditorView({ textScale: value });
                                   }}
                                   className={cn(
-                                    "px-2.5 py-1 text-xs transition-colors",
+                                    "px-0 py-1 text-center text-xs transition-colors",
                                     editorView.textScale === value
                                       ? "bg-[var(--creed-surface-raised)] text-[var(--creed-text-primary)]"
                                       : "text-[var(--creed-text-secondary)] hover:text-[var(--creed-text-primary)]"
@@ -2815,7 +2833,7 @@ export function FileScreen({
                           </div>
                           <div className="flex items-center justify-between gap-3">
                             <span className="text-xs text-[var(--creed-text-secondary)]">Width</span>
-                            <div className="flex overflow-hidden rounded-md border border-[var(--creed-border)]">
+                            <div className="grid w-[118px] shrink-0 grid-cols-2 overflow-hidden rounded-md border border-[var(--creed-border)]">
                               {(["narrow", "wide"] as const).map((value) => (
                                 <button
                                   key={value}
@@ -2826,7 +2844,7 @@ export function FileScreen({
                                     setEditorView({ width: value });
                                   }}
                                   className={cn(
-                                    "px-2.5 py-1 text-xs transition-colors",
+                                    "px-0 py-1 text-center text-xs transition-colors",
                                     editorView.width === value
                                       ? "bg-[var(--creed-surface-raised)] text-[var(--creed-text-primary)]"
                                       : "text-[var(--creed-text-secondary)] hover:text-[var(--creed-text-primary)]"
@@ -3475,7 +3493,7 @@ export function FileScreen({
             className="h-11 rounded-xl border-[var(--creed-border)] bg-[var(--creed-surface)] px-4 text-[15px]"
             onKeyDown={(event) => {
               if (event.key === "Enter" && renameSectionState?.name.trim()) {
-                renameSection(renameSectionState.id, renameSectionState.name);
+                renameCurrentSection(renameSectionState.id, renameSectionState.name);
                 setRenameSectionState(null);
               }
             }}
@@ -3490,7 +3508,7 @@ export function FileScreen({
                 if (!renameSectionState?.name.trim()) {
                   return;
                 }
-                renameSection(renameSectionState.id, renameSectionState.name);
+                renameCurrentSection(renameSectionState.id, renameSectionState.name);
                 setRenameSectionState(null);
               }}
             >
@@ -3521,7 +3539,7 @@ export function FileScreen({
                 if (!deleteSectionState) {
                   return;
                 }
-                deleteSection(deleteSectionState.id);
+                deleteCurrentSection(deleteSectionState.id);
                 setDeleteSectionState(null);
               }}
             >
