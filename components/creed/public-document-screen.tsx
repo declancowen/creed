@@ -240,7 +240,7 @@ export function PublicDocumentScreen({
     >
       <aside
         data-file-export-hidden
-        className="h-screen border-r border-[var(--creed-border)] bg-[var(--creed-surface)] px-1.5 py-3"
+        className="h-screen bg-[var(--creed-surface)] px-1.5 py-3"
       >
         <div className="flex h-full flex-col items-center gap-1">
           <RailButton
