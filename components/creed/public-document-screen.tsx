@@ -242,7 +242,7 @@ export function PublicDocumentScreen({
         data-file-export-hidden
         className="h-screen bg-[var(--creed-surface)] px-1.5 py-3"
       >
-        <div className="flex h-full flex-col items-center gap-1">
+        <div className="flex h-full flex-col items-center gap-2.5">
           <RailButton
             label="Activity"
             active={panel === "activity"}
@@ -258,13 +258,6 @@ export function PublicDocumentScreen({
           >
             <MessageSquare className="h-4 w-4" />
           </RailButton>
-          <RailButton
-            label="View"
-            active={panel === "view"}
-            onClick={() => setPanel((current) => current === "view" ? null : "view")}
-          >
-            <SlidersHorizontal className="h-4 w-4" />
-          </RailButton>
           <RailButton label="Export PDF" active={false} onClick={exportPdf}>
             {copiedAction === "pdf" ? <AnimatedCheckmark /> : <FileText className="h-4 w-4" />}
           </RailButton>
@@ -273,6 +266,13 @@ export function PublicDocumentScreen({
           </RailButton>
           <RailButton label="Copy" active={false} onClick={() => void copyMarkdown()}>
             {copiedAction === "copy" ? <AnimatedCheckmark /> : <Copy className="h-4 w-4" />}
+          </RailButton>
+          <RailButton
+            label="View"
+            active={panel === "view"}
+            onClick={() => setPanel((current) => current === "view" ? null : "view")}
+          >
+            <SlidersHorizontal className="h-4 w-4" />
           </RailButton>
           <div className="min-h-0 flex-1" />
           <PublicThemeButton />
