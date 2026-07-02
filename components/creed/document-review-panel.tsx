@@ -250,6 +250,10 @@ function SectionGroupedDiff({ before, after }: { before: string; after: string }
     return <DiffText before={before} after={after} />;
   }
 
+  if (changed.length === 1) {
+    return <DiffText before={changed[0].before} after={changed[0].after} />;
+  }
+
   return (
     <div className="space-y-1.5">
       {changed.map((change) => (
@@ -438,6 +442,7 @@ export function DocumentReviewPanel({
   onCommentPosted,
   focusVersionId,
   onFocusVersionHandled,
+  onHeightChange,
 }: {
   documentId: string;
   revision: number;
@@ -449,6 +454,7 @@ export function DocumentReviewPanel({
   onCommentPosted?: (comment: DocumentComment) => void;
   focusVersionId?: string | null;
   onFocusVersionHandled?: () => void;
+  onHeightChange?: (height: number) => void;
 }) {
   const [proposals, setProposals] = useState<DocumentProposal[]>([]);
   const [versions, setVersions] = useState<DocumentVersion[]>([]);
@@ -457,6 +463,28 @@ export function DocumentReviewPanel({
   const [busyProposal, setBusyProposal] = useState<string | null>(null);
   const [revertingVersion, setRevertingVersion] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!onHeightChange) return;
+    const node = rootRef.current;
+    if (!node) {
+      onHeightChange(0);
+      return;
+    }
+
+    const notify = () => {
+      onHeightChange(Math.ceil(node.getBoundingClientRect().height));
+    };
+
+    notify();
+    const observer = new ResizeObserver(notify);
+    observer.observe(node);
+
+    return () => {
+      observer.disconnect();
+      onHeightChange(0);
+    };
+  }, [onHeightChange]);
 
   // When an activity item asks to focus a version, open history, expand that
   // version's diff, and scroll it into view. Waits for `versions` to load so a

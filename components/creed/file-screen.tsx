@@ -1142,6 +1142,7 @@ export function FileScreen({
   const inputRef = useRef<HTMLInputElement | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const editorScrollRef = useRef<HTMLDivElement | null>(null);
+  const documentReviewPanelHeightRef = useRef<number | null>(null);
   const editorView = useEditorView();
   const composerAreaRef = useRef<HTMLDivElement | null>(null);
   const lastDocumentStatusKeyRef = useRef<string | null>(null);
@@ -1152,6 +1153,33 @@ export function FileScreen({
     () => (documentMode ? documentMarkdown : exportMarkdown()),
     [documentMarkdown, documentMode, exportMarkdown]
   );
+
+  const handleDocumentReviewPanelHeightChange = useCallback((height: number) => {
+    if (height <= 0) {
+      documentReviewPanelHeightRef.current = null;
+      return;
+    }
+
+    const previous = documentReviewPanelHeightRef.current;
+    documentReviewPanelHeightRef.current = height;
+    if (previous === null) return;
+
+    const delta = height - previous;
+    if (delta <= 1) return;
+
+    const container = editorScrollRef.current;
+    if (!container || container.scrollTop <= 0) return;
+
+    const stickyHeader = container.querySelector<HTMLElement>("[data-file-sticky-header]");
+    if (!stickyHeader) return;
+
+    const containerTop = container.getBoundingClientRect().top;
+    const headerTop = stickyHeader.getBoundingClientRect().top;
+    if (Math.abs(headerTop - containerTop) > 2) return;
+
+    container.scrollTop = Math.max(container.scrollTop - delta, 0);
+  }, []);
+
   // Documents are Supabase-only (no GitHub sync); GitHub version control here
   // only applies to the profile creed.md file, never to shared documents.
   const githubConfigured =
@@ -2693,6 +2721,28 @@ export function FileScreen({
                   />
                 ) : null}
 
+                {documentMode && currentDocument ? (
+                  <DocumentReviewPanel
+                    documentId={currentDocument.id}
+                    revision={currentDocument.revision}
+                    currentContent={currentDocument.content}
+                    users={documentUsers}
+                    refreshSignal={reviewRefreshKey}
+                    onProposalsChange={setDocumentProposals}
+                    onCommentPosted={handleProposalCommentPosted}
+                    focusVersionId={focusVersionId}
+                    onFocusVersionHandled={() => setFocusVersionId(null)}
+                    onHeightChange={handleDocumentReviewPanelHeightChange}
+                    onDocumentUpdated={(doc) => {
+                      setCurrentDocument(doc);
+                      const parsed = parseDocumentSections(doc.content, doc.title);
+                      setDocumentSections(parsed);
+                      setSavedDocumentMarkdown(documentSectionsToMarkdown(parsed, doc.title));
+                      void reloadDocumentActivity(doc.id);
+                    }}
+                  />
+                ) : null}
+
                 {/* Review pill lives inside the sticky header block so both
                     pin to the top of the scroll viewport together. Visually
                     distinct via its own card chrome and a top margin - but
@@ -2744,27 +2794,6 @@ export function FileScreen({
                   </div>
                 ) : null}
               </div>
-
-              {documentMode && currentDocument ? (
-                <DocumentReviewPanel
-                  documentId={currentDocument.id}
-                  revision={currentDocument.revision}
-                  currentContent={currentDocument.content}
-                  users={documentUsers}
-                  refreshSignal={reviewRefreshKey}
-                  onProposalsChange={setDocumentProposals}
-                  onCommentPosted={handleProposalCommentPosted}
-                  focusVersionId={focusVersionId}
-                  onFocusVersionHandled={() => setFocusVersionId(null)}
-                  onDocumentUpdated={(doc) => {
-                    setCurrentDocument(doc);
-                    const parsed = parseDocumentSections(doc.content, doc.title);
-                    setDocumentSections(parsed);
-                    setSavedDocumentMarkdown(documentSectionsToMarkdown(parsed, doc.title));
-                    void reloadDocumentActivity(doc.id);
-                  }}
-                />
-              ) : null}
 
               <Reorder.Group
                 axis="y"
