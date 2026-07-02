@@ -140,6 +140,36 @@ describe("shared document renames", () => {
     expect(root?.path).toBe("old-folder/overview.md");
   });
 
+  it("allows a document rename when only an archived file has the target path", async () => {
+    const client = new FakeSupabaseClient();
+    seedFolders(client);
+    seedDocuments(client);
+    const existing = client.rows("creed_documents")[0];
+    client.seed("creed_documents", [
+      ...client.rows("creed_documents"),
+      {
+        ...existing,
+        id: "doc-archived",
+        slug: "old-folder-commercial-rules",
+        title: "Commercial Rules",
+        path: "old-folder/commercial-rules.md",
+        github_path: "old-folder/commercial-rules.md",
+        archived_at: new Date().toISOString(),
+      },
+    ]);
+
+    const result = await updateSharedDocumentMetadata(client, {
+      id: "doc-root",
+      patch: { title: "Commercial Rules" },
+      expectedRevision: 1,
+      actorUserId: "user-1",
+    });
+
+    if (!result.ok) throw new Error(result.error);
+    expect(result.value.slug).toBe("old-folder-commercial-rules");
+    expect(result.value.path).toBe("old-folder/commercial-rules.md");
+  });
+
   it("renames a folder and cascades descendant folder and file paths", async () => {
     const client = new FakeSupabaseClient();
     seedFolders(client);
@@ -199,6 +229,48 @@ describe("shared document renames", () => {
     );
     expect(client.rows("creed_documents").find((row) => row.id === "doc-root")?.path).toBe(
       "old-folder/overview.md"
+    );
+  });
+
+  it("allows a folder rename when only archived rows have the target paths", async () => {
+    const client = new FakeSupabaseClient();
+    seedFolders(client);
+    seedDocuments(client);
+    client.seed("creed_document_folders", [
+      ...client.rows("creed_document_folders"),
+      {
+        id: "folder-archived",
+        slug: "new-folder",
+        name: "New Folder",
+        path: "new-folder",
+        parent_id: null,
+        archived_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    ]);
+    const existing = client.rows("creed_documents")[0];
+    client.seed("creed_documents", [
+      ...client.rows("creed_documents"),
+      {
+        ...existing,
+        id: "doc-archived",
+        slug: "new-folder-overview",
+        path: "new-folder/overview.md",
+        github_path: "new-folder/overview.md",
+        archived_at: new Date().toISOString(),
+      },
+    ]);
+
+    const result = await updateSharedDocumentFolder(client, {
+      id: "folder-root",
+      name: "New Folder",
+      actorUserId: "user-1",
+    });
+
+    if (!result.ok) throw new Error(result.error);
+    expect(result.value.path).toBe("new-folder");
+    expect(client.rows("creed_documents").find((row) => row.id === "doc-root")?.path).toBe(
+      "new-folder/overview.md"
     );
   });
 });

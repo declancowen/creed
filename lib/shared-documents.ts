@@ -786,8 +786,18 @@ export async function updateSharedDocumentMetadata(
 
   if (pathPatch.path && pathPatch.slug) {
     const [pathConflictResult, slugConflictResult] = (await Promise.all([
-      db.from("creed_documents").select("id").eq("path", pathPatch.path).maybeSingle(),
-      db.from("creed_documents").select("id").eq("slug", pathPatch.slug).maybeSingle(),
+      db
+        .from("creed_documents")
+        .select("id")
+        .eq("path", pathPatch.path)
+        .is("archived_at", null)
+        .maybeSingle(),
+      db
+        .from("creed_documents")
+        .select("id")
+        .eq("slug", pathPatch.slug)
+        .is("archived_at", null)
+        .maybeSingle(),
     ])) as [
       { data: { id: string } | null; error: { message: string } | null },
       { data: { id: string } | null; error: { message: string } | null },
@@ -936,6 +946,8 @@ export async function updateSharedDocumentFolder(
 
   const allFolders = foldersResult.data ?? [];
   const allDocuments = documentsResult.data ?? [];
+  const activeFolders = allFolders.filter((folder) => folder.archived_at === null);
+  const activeDocuments = allDocuments.filter((document) => document.archived_at === null);
   const folderUpdates = allFolders
     .filter((folder) => folder.path === oldPath || folder.path.startsWith(`${oldPath}/`))
     .map((folder) => {
@@ -954,7 +966,7 @@ export async function updateSharedDocumentFolder(
 
   const subtreeFolderIds = new Set(folderUpdates.map((folder) => folder.id));
   const subtreeDocumentIds = new Set(documentUpdates.map((document) => document.id));
-  const conflictingFolder = allFolders.find(
+  const conflictingFolder = activeFolders.find(
     (folder) =>
       !subtreeFolderIds.has(folder.id) &&
       folderUpdates.some(
@@ -964,7 +976,7 @@ export async function updateSharedDocumentFolder(
   if (conflictingFolder) {
     return { ok: false, code: "conflict", error: "A folder with that path already exists." };
   }
-  const conflictingDocument = allDocuments.find(
+  const conflictingDocument = activeDocuments.find(
     (document) =>
       !subtreeDocumentIds.has(document.id) &&
       documentUpdates.some(

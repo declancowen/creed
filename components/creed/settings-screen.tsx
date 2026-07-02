@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useState,
   type ReactNode,
@@ -158,6 +159,7 @@ export function SettingsScreen() {
     id: string;
     name: string;
   } | null>(null);
+  const [archivedDeleteAllOpen, setArchivedDeleteAllOpen] = useState(false);
   const [expandedArchived, setExpandedArchived] = useState<string | null>(null);
   const [mcpRemoveTarget, setMcpRemoveTarget] = useState<McpClient | null>(null);
   const [mcpReauthTarget, setMcpReauthTarget] = useState<McpClient | null>(null);
@@ -168,6 +170,7 @@ export function SettingsScreen() {
   const [archivedFolders, setArchivedFolders] = useState<SharedDocumentFolder[]>([]);
   const [archivedItemsLoading, setArchivedItemsLoading] = useState(true);
   const [busyArchivedItemId, setBusyArchivedItemId] = useState<string | null>(null);
+  const [deletingAllArchived, setDeletingAllArchived] = useState(false);
   const [connectingGitHub, setConnectingGitHub] = useState(false);
   const [editPolicy, setEditPolicy] = useState<{ human: EditPolicyValue; agent: EditPolicyValue }>({
     human: "propose",
@@ -186,37 +189,33 @@ export function SettingsScreen() {
   const [versionStatus, setVersionStatus] = useState<VersionControlStatus | null>(null);
   const [githubRefreshTick, setGitHubRefreshTick] = useState(0);
 
+  const loadArchivedItems = useCallback(async () => {
+    setArchivedItemsLoading(true);
+    try {
+      const [docsRes, foldersRes] = await Promise.all([
+        fetch("/api/app/documents?archived=true"),
+        fetch("/api/app/document-folders?archived=true"),
+      ]);
+      if (docsRes.ok) {
+        const payload = (await docsRes.json()) as { documents?: SharedDocumentSummary[] };
+        setArchivedDocuments(payload.documents ?? []);
+      }
+      if (foldersRes.ok) {
+        const payload = (await foldersRes.json()) as { folders?: SharedDocumentFolder[] };
+        setArchivedFolders(payload.folders ?? []);
+      }
+    } catch {
+      // Non-fatal: the card just shows nothing rather than blocking settings.
+    } finally {
+      setArchivedItemsLoading(false);
+    }
+  }, []);
+
   // Archived documents and folders live in Supabase (not in Creed state), so
   // the Archived card loads them separately and manages restore / delete here.
   useEffect(() => {
-    let active = true;
-    async function loadArchivedItems() {
-      setArchivedItemsLoading(true);
-      try {
-        const [docsRes, foldersRes] = await Promise.all([
-          fetch("/api/app/documents?archived=true"),
-          fetch("/api/app/document-folders?archived=true"),
-        ]);
-        if (!active) return;
-        if (docsRes.ok) {
-          const payload = (await docsRes.json()) as { documents?: SharedDocumentSummary[] };
-          setArchivedDocuments(payload.documents ?? []);
-        }
-        if (foldersRes.ok) {
-          const payload = (await foldersRes.json()) as { folders?: SharedDocumentFolder[] };
-          setArchivedFolders(payload.folders ?? []);
-        }
-      } catch {
-        // Non-fatal: the card just shows nothing rather than blocking settings.
-      } finally {
-        if (active) setArchivedItemsLoading(false);
-      }
-    }
     void loadArchivedItems();
-    return () => {
-      active = false;
-    };
-  }, []);
+  }, [loadArchivedItems]);
 
   async function restoreArchivedDocument(id: string, title: string) {
     if (busyArchivedItemId) return;
@@ -266,6 +265,11 @@ export function SettingsScreen() {
       });
       if (!res.ok) {
         const payload = (await res.json().catch(() => null)) as { error?: string } | null;
+        if (res.status === 404) {
+          await loadArchivedItems();
+          toast.success("Archived list refreshed");
+          return;
+        }
         throw new Error(payload?.error || "Could not delete document.");
       }
       setArchivedDocuments((rows) => rows.filter((row) => row.id !== id));
@@ -285,9 +289,14 @@ export function SettingsScreen() {
       });
       if (!res.ok) {
         const payload = (await res.json().catch(() => null)) as { error?: string } | null;
+        if (res.status === 404) {
+          await loadArchivedItems();
+          toast.success("Archived list refreshed");
+          return;
+        }
         throw new Error(payload?.error || "Could not delete folder.");
       }
-      setArchivedFolders((rows) => rows.filter((row) => row.id !== id));
+      await loadArchivedItems();
       toast.success("Folder deleted");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not delete folder.");
@@ -303,6 +312,55 @@ export function SettingsScreen() {
     else if (kind === "document") void deleteArchivedDocument(id);
     else void deleteArchivedFolder(id);
     setArchivedDeleteTarget(null);
+  }
+
+  async function deleteArchivedDocumentPermanently(id: string) {
+    const res = await fetch(`/api/app/documents/${encodeURIComponent(id)}?permanent=true`, {
+      method: "DELETE",
+    });
+    if (!res.ok && res.status !== 404) {
+      const payload = (await res.json().catch(() => null)) as { error?: string } | null;
+      throw new Error(payload?.error || "Could not delete document.");
+    }
+  }
+
+  async function deleteArchivedFolderPermanently(id: string) {
+    const res = await fetch(`/api/app/document-folders/${encodeURIComponent(id)}?permanent=true`, {
+      method: "DELETE",
+    });
+    if (!res.ok && res.status !== 404) {
+      const payload = (await res.json().catch(() => null)) as { error?: string } | null;
+      throw new Error(payload?.error || "Could not delete folder.");
+    }
+  }
+
+  async function confirmDeleteAllArchived() {
+    if (deletingAllArchived) return;
+    setDeletingAllArchived(true);
+    try {
+      for (const section of archivedSections) {
+        deleteSection(section.id);
+      }
+      for (const document of archivedDocuments) {
+        await deleteArchivedDocumentPermanently(document.id);
+      }
+      const foldersDeepestFirst = [...archivedFolders].sort(
+        (a, b) => b.path.split("/").length - a.path.split("/").length
+      );
+      for (const folder of foldersDeepestFirst) {
+        await deleteArchivedFolderPermanently(folder.id);
+      }
+      setArchivedDeleteAllOpen(false);
+      setArchivedDocuments([]);
+      setArchivedFolders([]);
+      await loadArchivedItems();
+      toast.success("Archived items deleted");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not delete archived items.");
+      await loadArchivedItems();
+    } finally {
+      setDeletingAllArchived(false);
+    }
   }
 
   // Removes a connected MCP agent: revokes its access server-side, then pulls a
@@ -1138,9 +1196,26 @@ export function SettingsScreen() {
           <Separator className="my-10 bg-[var(--creed-border)]" />
 
           <section>
-            <h2 className="text-[16px] font-medium text-[var(--creed-text-primary)]">
-              Archived
-            </h2>
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-[16px] font-medium text-[var(--creed-text-primary)]">
+                Archived
+              </h2>
+              {hasArchivedItems ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-md border-[#FCA5A5] text-[#DC2626] hover:border-[#F87171] hover:bg-[#FEF2F2] hover:text-[#B91C1C]"
+                  disabled={deletingAllArchived}
+                  onClick={() => setArchivedDeleteAllOpen(true)}
+                >
+                  {deletingAllArchived ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                  ) : (
+                    "Delete all"
+                  )}
+                </Button>
+              ) : null}
+            </div>
             <div className="mt-4 rounded-[var(--radius-xl)] border border-[var(--creed-border)] bg-[var(--creed-surface)] p-5">
               {!hasArchivedItems && !archivedItemsLoading ? (
                 <p className="text-[14px] leading-7 text-[var(--creed-text-secondary)]">
@@ -1388,6 +1463,47 @@ export function SettingsScreen() {
               onClick={confirmDeleteArchived}
             >
               Delete permanently
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={archivedDeleteAllOpen}
+        onOpenChange={(open) => {
+          if (!open && !deletingAllArchived) setArchivedDeleteAllOpen(false);
+        }}
+      >
+        <DialogContent className="rounded-[var(--radius-xl)] border-[var(--creed-border)] bg-[var(--creed-surface)]">
+          <DialogHeader>
+            <DialogTitle>Delete all archived items</DialogTitle>
+            <DialogDescription>
+              This permanently deletes every archived section, document, and folder. This
+              can&apos;t be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex-row items-center justify-between border-t-[var(--creed-border)] bg-[var(--creed-surface)] sm:justify-between">
+            <Button
+              variant="ghost"
+              className="rounded-md"
+              disabled={deletingAllArchived}
+              onClick={() => setArchivedDeleteAllOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="rounded-md bg-[#DC2626] px-4 text-white hover:bg-[#B91C1C] hover:text-white"
+              disabled={deletingAllArchived}
+              onClick={() => void confirmDeleteAllArchived()}
+            >
+              {deletingAllArchived ? (
+                <>
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                  Deleting
+                </>
+              ) : (
+                "Delete all permanently"
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>
