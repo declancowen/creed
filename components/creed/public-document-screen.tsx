@@ -12,6 +12,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import {
   Contrast,
@@ -21,17 +27,20 @@ import {
   History,
   LoaderCircle,
   MessageSquare,
+  MoreHorizontal,
   SlidersHorizontal,
   UserCircle,
   X,
 } from "@/components/ui/phosphor-icons";
-import { Textarea } from "@/components/ui/textarea";
 import { htmlToText } from "@/components/creed/inline-proposal-diff";
+import { MentionText } from "@/components/creed/mention-text";
+import { MentionTextarea } from "@/components/creed/mention-textarea";
 import { RichTextEditor } from "@/components/creed/rich-text-editor";
 import { useTheme } from "@/components/creed/theme-provider";
 import type {
   DocumentActivityEvent,
   DocumentComment,
+  WorkspaceUser,
 } from "@/lib/document-collaboration";
 import { accentColorMap } from "@/lib/creed-data";
 import {
@@ -55,6 +64,7 @@ type PublicDocumentScreenProps = {
   document: SharedDocument;
   initialComments: DocumentComment[];
   initialActivity: DocumentActivityEvent[];
+  mentionUsers: WorkspaceUser[];
 };
 
 type PublicPanel = "comments" | "activity" | "view" | null;
@@ -98,6 +108,7 @@ export function PublicDocumentScreen({
   document,
   initialComments,
   initialActivity,
+  mentionUsers,
 }: PublicDocumentScreenProps) {
   const editorView = useEditorView();
   const sections = useMemo(() => parseDocumentSections(document.content), [document.content]);
@@ -223,10 +234,17 @@ export function PublicDocumentScreen({
     }, 120);
   }
 
+  function mentionedUserIdsForBody(body: string) {
+    return mentionUsers
+      .filter((user) => user.label && body.includes(`@${user.label}`))
+      .map((user) => user.id);
+  }
+
   async function createPublicComment(input: {
     body: string;
     parentId?: string | null;
     referenceQuote?: string | null;
+    mentionedUserIds?: string[];
   }) {
     const name = commentName.trim();
     const body = input.body.trim();
@@ -252,6 +270,7 @@ export function PublicDocumentScreen({
             body,
             parentId: input.parentId ?? null,
             referenceQuote: input.referenceQuote ?? null,
+            mentionedUserIds: input.mentionedUserIds ?? mentionedUserIdsForBody(body),
           }),
         }
       );
@@ -285,10 +304,12 @@ export function PublicDocumentScreen({
   async function createPublicCommentFromEditor(input: {
     quote: string;
     body: string;
+    mentionedUserIds: string[];
   }) {
     const created = await createPublicComment({
       body: input.body,
       referenceQuote: input.quote || null,
+      mentionedUserIds: input.mentionedUserIds,
     });
 
     if (!created) {
@@ -441,6 +462,7 @@ export function PublicDocumentScreen({
                     commentAuthorName={commentName}
                     onCommentAuthorNameChange={setCommentName}
                     requireCommentAuthorName
+                    commentUsers={mentionUsers}
                     comments={sectionCommentAnchors}
                     activeCommentId={activeCommentId}
                     onCreateComment={createPublicCommentFromEditor}
@@ -461,6 +483,7 @@ export function PublicDocumentScreen({
           panel={panel}
           comments={rootComments}
           repliesByParent={repliesByParent}
+          mentionUsers={mentionUsers}
           activity={activity}
           commentName={commentName}
           activeCommentId={activeCommentId}
@@ -529,14 +552,7 @@ export function PublicDocumentScreen({
             >
               <SlidersHorizontal className="h-5 w-5" />
             </RailButton>
-            <RailButton
-              label="Name"
-              active={nameDialogOpen}
-              size="desktop"
-              onClick={openNameDialog}
-            >
-              <UserCircle className="h-5 w-5" />
-            </RailButton>
+            <PublicMoreMenu size="desktop" onRename={openNameDialog} />
             <PublicThemeButton size="desktop" />
           </div>
         </div>
@@ -583,9 +599,7 @@ export function PublicDocumentScreen({
         >
           <SlidersHorizontal className="h-4 w-4" />
         </RailButton>
-        <RailButton label="Name" active={nameDialogOpen} onClick={openNameDialog}>
-          <UserCircle className="h-4 w-4" />
-        </RailButton>
+        <PublicMoreMenu onRename={openNameDialog} />
         <PublicThemeButton />
       </div>
 
@@ -689,10 +703,49 @@ function PublicThemeButton({ size = "mobile" }: { size?: "mobile" | "desktop" })
   );
 }
 
+function PublicMoreMenu({
+  size = "mobile",
+  onRename,
+}: {
+  size?: "mobile" | "desktop";
+  onRename: () => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label="More"
+          title="More"
+          className={cn(
+            "relative inline-flex h-8 w-8 items-center justify-center rounded-[10px] text-[var(--creed-text-secondary)] transition-colors hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)]",
+            size === "desktop" && "h-9 w-9 rounded-[11px]"
+          )}
+        >
+          <MoreHorizontal className={cn("h-4 w-4", size === "desktop" && "h-5 w-5")} />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        className="w-40 border-[var(--creed-border)] bg-[var(--creed-surface)]"
+      >
+        <DropdownMenuItem
+          className="gap-2 text-[13px]"
+          onSelect={onRename}
+        >
+          <UserCircle className="h-4 w-4" />
+          Change name
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 function PublicSidePanel({
   panel,
   comments,
   repliesByParent,
+  mentionUsers,
   activity,
   commentName,
   activeCommentId,
@@ -714,6 +767,7 @@ function PublicSidePanel({
   panel: Exclude<PublicPanel, null>;
   comments: DocumentComment[];
   repliesByParent: Map<string, DocumentComment[]>;
+  mentionUsers: WorkspaceUser[];
   activity: DocumentActivityEvent[];
   commentName: string;
   activeCommentId: string | null;
@@ -757,6 +811,7 @@ function PublicSidePanel({
         <CommentsPanel
           comments={comments}
           repliesByParent={repliesByParent}
+          mentionUsers={mentionUsers}
           commentName={commentName}
           activeCommentId={activeCommentId}
           replyingTo={replyingTo}
@@ -786,6 +841,7 @@ function PublicSidePanel({
 function CommentsPanel({
   comments,
   repliesByParent,
+  mentionUsers,
   commentName,
   activeCommentId,
   replyingTo,
@@ -800,6 +856,7 @@ function CommentsPanel({
 }: {
   comments: DocumentComment[];
   repliesByParent: Map<string, DocumentComment[]>;
+  mentionUsers: WorkspaceUser[];
   commentName: string;
   activeCommentId: string | null;
   replyingTo: string | null;
@@ -825,6 +882,7 @@ function CommentsPanel({
               key={comment.id}
               comment={comment}
               replies={repliesByParent.get(comment.id) ?? []}
+              mentionUsers={mentionUsers}
               active={activeCommentId === comment.id}
               commentName={commentName}
               replyingTo={replyingTo}
@@ -847,6 +905,7 @@ function CommentsPanel({
 function CommentThread({
   comment,
   replies,
+  mentionUsers,
   active,
   commentName,
   replyingTo,
@@ -861,6 +920,7 @@ function CommentThread({
 }: {
   comment: DocumentComment;
   replies: DocumentComment[];
+  mentionUsers: WorkspaceUser[];
   active: boolean;
   commentName: string;
   replyingTo: string | null;
@@ -883,7 +943,7 @@ function CommentThread({
       )}
       onClick={() => onActiveCommentChange(comment.id)}
     >
-      <CommentItem comment={comment} />
+      <CommentItem comment={comment} mentionUsers={mentionUsers} />
       <button
         type="button"
         className="mt-2 text-[12px] font-medium text-[var(--creed-text-secondary)] transition-colors hover:text-[var(--creed-text-primary)]"
@@ -895,7 +955,7 @@ function CommentThread({
       {replies.length > 0 ? (
         <div className="mt-4 space-y-4 border-l border-[var(--creed-border)] pl-4">
           {replies.map((reply) => (
-            <CommentItem key={reply.id} comment={reply} />
+            <CommentItem key={reply.id} comment={reply} mentionUsers={mentionUsers} />
           ))}
         </div>
       ) : null}
@@ -910,11 +970,14 @@ function CommentThread({
               className="h-9 rounded-md border-[var(--creed-border)] bg-[var(--creed-surface)] px-3 text-[13px]"
             />
           ) : null}
-          <Textarea
+          <MentionTextarea
             value={replyBody}
-            onChange={(event) => onReplyBodyChange(event.target.value)}
-            placeholder="Add a reply"
+            onChange={onReplyBodyChange}
+            users={mentionUsers}
+            placeholder={mentionUsers.length > 0 ? "Add a reply. Type @ to mention someone." : "Add a reply"}
+            autoFocus={!showNamePrompt}
             className="min-h-20 rounded-md border-[var(--creed-border)] bg-[var(--creed-surface)] px-3 py-2 text-[13px] leading-6"
+            onSubmit={onSubmitReply}
           />
           <div className="flex justify-end gap-2">
             <Button
@@ -944,7 +1007,15 @@ function CommentThread({
   );
 }
 
-function CommentItem({ comment }: { comment: DocumentComment }) {
+function CommentItem({
+  comment,
+  mentionUsers,
+}: {
+  comment: DocumentComment;
+  mentionUsers: WorkspaceUser[];
+}) {
+  const mentionLabels = mentionUsers.map((user) => user.label);
+
   return (
     <div>
       <div className="flex items-baseline justify-between gap-3">
@@ -961,7 +1032,7 @@ function CommentItem({ comment }: { comment: DocumentComment }) {
         </div>
       ) : null}
       <p className="mt-2 whitespace-pre-wrap text-[13px] leading-6 text-[var(--creed-text-secondary)]">
-        {comment.body}
+        <MentionText text={comment.body} mentionLabels={mentionLabels} />
       </p>
     </div>
   );

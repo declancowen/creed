@@ -40,6 +40,112 @@ function normalizeHeading(heading: string) {
   return heading.trim().toLowerCase();
 }
 
+function splitTableCells(row: string) {
+  let text = row.trim();
+  if (text.startsWith("|")) text = text.slice(1);
+  if (text.endsWith("|")) text = text.slice(0, -1);
+  return text
+    .split(/(?<!\\)\|/)
+    .map((cell) => cell.replace(/\\\|/g, "|").trim());
+}
+
+function isTableDelimiterRow(line: string | undefined) {
+  if (!line) return false;
+  const trimmed = line.trim();
+  if (!trimmed.includes("|")) return false;
+  return splitTableCells(trimmed).every((cell) => /^:?-+:?$/.test(cell));
+}
+
+function formatMarkdownTableForReview(rows: string[]) {
+  const parsed = rows.map(splitTableCells);
+  const colCount = Math.max(...parsed.map((row) => row.length), 0);
+  const widths = Array.from({ length: colCount }, (_unused, index) =>
+    Math.max(...parsed.map((row) => row[index]?.length ?? 0), 3)
+  );
+  return parsed
+    .map((row, rowIndex) => {
+      if (rowIndex === 1) {
+        return `| ${widths.map((width) => "-".repeat(width)).join(" | ")} |`;
+      }
+      return `| ${widths.map((width, index) => (row[index] ?? "").padEnd(width)).join(" | ")} |`;
+    })
+    .join("\n");
+}
+
+function formatTablesForReview(md: string) {
+  const lines = (md ?? "").replace(/\r\n/g, "\n").split("\n");
+  const out: string[] = [];
+  let index = 0;
+  let inCodeBlock = false;
+
+  while (index < lines.length) {
+    const line = lines[index] ?? "";
+    const trimmed = line.trim();
+    if (trimmed.startsWith("```")) {
+      inCodeBlock = !inCodeBlock;
+      out.push(line);
+      index += 1;
+      continue;
+    }
+
+    if (!inCodeBlock && trimmed.includes("|") && isTableDelimiterRow(lines[index + 1])) {
+      const tableRows = [line, lines[index + 1] ?? ""];
+      index += 2;
+      while (index < lines.length) {
+        const next = lines[index] ?? "";
+        const nextTrimmed = next.trim();
+        if (!nextTrimmed || !nextTrimmed.includes("|") || nextTrimmed.startsWith("```")) break;
+        tableRows.push(next);
+        index += 1;
+      }
+      out.push(formatMarkdownTableForReview(tableRows));
+      continue;
+    }
+
+    out.push(line);
+    index += 1;
+  }
+
+  return out.join("\n");
+}
+
+export function markdownToReviewText(md: string) {
+  return formatTablesForReview(md)
+    .replace(/\r\n/g, "\n")
+    .replace(/^\uFEFF/, "")
+    .replace(/^```mermaid\s*$/gm, "Diagram:")
+    .replace(/```[^\n]*\n?/g, "")
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+    .replace(/^\s{0,3}>\s?/gm, "")
+    .replace(/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/gm, "")
+    .replace(/^\s*(?:[-*+]|\d+\.)\s+/gm, "")
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/(\*\*|__)(.*?)\1/g, "$2")
+    .replace(/(\*|_)([^*_]+?)\1/g, "$2")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+export function hasReviewableMarkdownChange(before: string, after: string) {
+  return markdownToReviewText(before) !== markdownToReviewText(after);
+}
+
+export function sectionChangeHasReviewableDiff(change: Pick<SectionChange, "status" | "before" | "after">) {
+  if (change.status === "added") {
+    return markdownToReviewText(change.after).length > 0;
+  }
+  if (change.status === "removed") {
+    return markdownToReviewText(change.before).length > 0;
+  }
+  if (change.status === "modified") {
+    return hasReviewableMarkdownChange(change.before, change.after);
+  }
+  return false;
+}
+
 // A section span over the raw lines of a document. Carries the line range so a
 // single section can be spliced back into the original text without disturbing
 // any other section (the diff/split path only needs `body`, but the apply path
@@ -143,7 +249,10 @@ export function diffMarkdownSections(before: string, after: string): SectionChan
       continue;
     }
     const status: SectionChangeStatus =
-      previous.body.trim() === section.body.trim() ? "unchanged" : "modified";
+      previous.body.trim() === section.body.trim() ||
+      !hasReviewableMarkdownChange(previous.body, section.body)
+        ? "unchanged"
+        : "modified";
     changes.push({
       key: section.key,
       heading: section.heading,

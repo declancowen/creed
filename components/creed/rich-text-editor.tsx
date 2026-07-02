@@ -17,6 +17,7 @@ import Suggestion, {
 import { EditorContent, useEditor } from "@tiptap/react";
 import { NodeSelection, Plugin, PluginKey } from "@tiptap/pm/state";
 import { DOMSerializer } from "@tiptap/pm/model";
+import type { EditorView } from "@tiptap/pm/view";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Bold,
@@ -253,6 +254,16 @@ function withAlpha(color: string, alpha: number) {
   // the resolved colour at paint time.
   const pct = Math.max(0, Math.min(100, Math.round(alpha * 100)));
   return `color-mix(in srgb, ${color} ${pct}%, transparent)`;
+}
+
+function mountedEditorView(editor: Editor): EditorView | null {
+  try {
+    const view = editor.view;
+    void view.dom;
+    return view;
+  } catch {
+    return null;
+  }
 }
 
 function insertContentAndSelect(
@@ -1108,37 +1119,55 @@ export function RichTextEditor({
       setTableToolbar(null);
       return;
     }
-    const editorDom = editor.view.dom as HTMLElement;
+    const currentEditor = editor;
+    let raf: number | null = null;
+    let cleanupListeners: (() => void) | null = null;
 
-    function locateTable(target: EventTarget | null): HTMLElement | null {
-      if (!(target instanceof HTMLElement) || !editorDom.contains(target)) return null;
-      return target.closest(".tableWrapper, table") as HTMLElement | null;
-    }
+    function attachListeners() {
+      const view = mountedEditorView(currentEditor);
+      if (!view) {
+        raf = window.requestAnimationFrame(attachListeners);
+        return;
+      }
+      const editorDom = view.dom as HTMLElement;
 
-    function handleOver(event: MouseEvent) {
-      const tableEl = locateTable(event.target);
-      if (tableEl) {
-        clearTableHideTimer();
-        // Only recompute + re-render when the hovered table actually changes.
-        // mouseover bubbles per element, so without this guard moving within a
-        // table fires a getBoundingClientRect + setState storm (the jank).
-        if (hoveredTableRef.current === tableEl) return;
-        hoveredTableRef.current = tableEl;
-        positionTableToolbar(tableEl);
-      } else if (hoveredTableRef.current) {
+      function locateTable(target: EventTarget | null): HTMLElement | null {
+        if (!(target instanceof HTMLElement) || !editorDom.contains(target)) return null;
+        return target.closest(".tableWrapper, table") as HTMLElement | null;
+      }
+
+      function handleOver(event: MouseEvent) {
+        const tableEl = locateTable(event.target);
+        if (tableEl) {
+          clearTableHideTimer();
+          // Only recompute + re-render when the hovered table actually changes.
+          // mouseover bubbles per element, so without this guard moving within a
+          // table fires a getBoundingClientRect + setState storm (the jank).
+          if (hoveredTableRef.current === tableEl) return;
+          hoveredTableRef.current = tableEl;
+          positionTableToolbar(tableEl);
+        } else if (hoveredTableRef.current) {
+          scheduleTableToolbarHide();
+        }
+      }
+
+      function handleLeave() {
         scheduleTableToolbarHide();
       }
+
+      editorDom.addEventListener("mouseover", handleOver);
+      editorDom.addEventListener("mouseleave", handleLeave);
+      cleanupListeners = () => {
+        editorDom.removeEventListener("mouseover", handleOver);
+        editorDom.removeEventListener("mouseleave", handleLeave);
+      };
     }
 
-    function handleLeave() {
-      scheduleTableToolbarHide();
-    }
+    attachListeners();
 
-    editorDom.addEventListener("mouseover", handleOver);
-    editorDom.addEventListener("mouseleave", handleLeave);
     return () => {
-      editorDom.removeEventListener("mouseover", handleOver);
-      editorDom.removeEventListener("mouseleave", handleLeave);
+      if (raf !== null) window.cancelAnimationFrame(raf);
+      cleanupListeners?.();
       clearTableHideTimer();
     };
   }, [editor, readOnly, positionTableToolbar, scheduleTableToolbarHide, clearTableHideTimer]);
@@ -1207,8 +1236,13 @@ export function RichTextEditor({
     }
 
     if (!rect) {
-      const start = currentEditor.view.coordsAtPos(selection.from);
-      const end = currentEditor.view.coordsAtPos(selection.to);
+      const view = mountedEditorView(currentEditor);
+      if (!view) {
+        setSelectionToolbar(null);
+        return;
+      }
+      const start = view.coordsAtPos(selection.from);
+      const end = view.coordsAtPos(selection.to);
       const left = Math.min(start.left, end.left);
       const right = Math.max(start.right, end.right);
       const top = Math.min(start.top, end.top);
@@ -1451,19 +1485,36 @@ export function RichTextEditor({
   // triggers onChange / a save.
   useEffect(() => {
     if (!editor) return;
-    editor.view.dispatch(
-      editor.state.tr.setMeta(commentHighlightPluginKey, {
-        anchors: comments.map((comment) => ({ id: comment.id, quote: comment.quote })),
-        activeId: activeCommentId ?? null,
-      })
-    );
+    const currentEditor = editor;
+    let raf: number | null = null;
+
+    function dispatchHighlights() {
+      const view = mountedEditorView(currentEditor);
+      if (!view) {
+        raf = window.requestAnimationFrame(dispatchHighlights);
+        return;
+      }
+      view.dispatch(
+        currentEditor.state.tr.setMeta(commentHighlightPluginKey, {
+          anchors: comments.map((comment) => ({ id: comment.id, quote: comment.quote })),
+          activeId: activeCommentId ?? null,
+        })
+      );
+    }
+
+    dispatchHighlights();
+    return () => {
+      if (raf !== null) window.cancelAnimationFrame(raf);
+    };
   }, [editor, comments, activeCommentId]);
 
   // Hover + click behaviour on comment highlights. Delegated on the editor DOM
   // so it works for every decorated span without per-span listeners.
   useEffect(() => {
     if (!editor) return;
-    const dom = editor.view.dom as HTMLElement;
+    const currentEditor = editor;
+    let raf: number | null = null;
+    let cleanupListeners: (() => void) | null = null;
 
     function clearHoverTimer() {
       if (commentHoverTimer.current !== null) {
@@ -1478,38 +1529,54 @@ export function RichTextEditor({
       return el?.getAttribute("data-comment-id") ?? null;
     }
 
-    function onOver(event: MouseEvent) {
-      const id = findCommentId(event.target);
-      if (!id) return;
-      const el = (event.target as HTMLElement).closest("[data-comment-id]");
-      if (!el) return;
-      clearHoverTimer();
-      const rect = el.getBoundingClientRect();
-      setCommentHover({ id, x: rect.left + rect.width / 2, y: rect.top });
-    }
-
-    function onOut(event: MouseEvent) {
-      const id = findCommentId(event.target);
-      if (!id) return;
-      // Give the pointer a moment to reach the hover card before dismissing.
-      clearHoverTimer();
-      commentHoverTimer.current = window.setTimeout(() => setCommentHover(null), 160);
-    }
-
-    function onClick(event: MouseEvent) {
-      const id = findCommentId(event.target);
-      if (id && onSelectComment) {
-        onSelectComment(id);
+    function attachListeners() {
+      const view = mountedEditorView(currentEditor);
+      if (!view) {
+        raf = window.requestAnimationFrame(attachListeners);
+        return;
       }
+      const dom = view.dom as HTMLElement;
+
+      function onOver(event: MouseEvent) {
+        const id = findCommentId(event.target);
+        if (!id) return;
+        const el = (event.target as HTMLElement).closest("[data-comment-id]");
+        if (!el) return;
+        clearHoverTimer();
+        const rect = el.getBoundingClientRect();
+        setCommentHover({ id, x: rect.left + rect.width / 2, y: rect.top });
+      }
+
+      function onOut(event: MouseEvent) {
+        const id = findCommentId(event.target);
+        if (!id) return;
+        // Give the pointer a moment to reach the hover card before dismissing.
+        clearHoverTimer();
+        commentHoverTimer.current = window.setTimeout(() => setCommentHover(null), 160);
+      }
+
+      function onClick(event: MouseEvent) {
+        const id = findCommentId(event.target);
+        if (id && onSelectComment) {
+          onSelectComment(id);
+        }
+      }
+
+      dom.addEventListener("mouseover", onOver);
+      dom.addEventListener("mouseout", onOut);
+      dom.addEventListener("click", onClick);
+      cleanupListeners = () => {
+        dom.removeEventListener("mouseover", onOver);
+        dom.removeEventListener("mouseout", onOut);
+        dom.removeEventListener("click", onClick);
+      };
     }
 
-    dom.addEventListener("mouseover", onOver);
-    dom.addEventListener("mouseout", onOut);
-    dom.addEventListener("click", onClick);
+    attachListeners();
+
     return () => {
-      dom.removeEventListener("mouseover", onOver);
-      dom.removeEventListener("mouseout", onOut);
-      dom.removeEventListener("click", onClick);
+      if (raf !== null) window.cancelAnimationFrame(raf);
+      cleanupListeners?.();
       clearHoverTimer();
     };
   }, [editor, onSelectComment]);

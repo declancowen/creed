@@ -136,6 +136,7 @@ export const MermaidBlock = Node.create({
     return (props) => {
       let node = props.node;
       const editor = props.editor;
+      const view = props.view;
       const getPos = props.getPos;
       let source: string = node.attrs.source ?? "";
       let editing = false;
@@ -209,15 +210,15 @@ export const MermaidBlock = Node.create({
       function canEditDiagram() {
         return (
           editor.isEditable &&
-          !editor.view.dom.closest('[data-creed-readonly="true"]')
+          !view.dom.closest('[data-creed-readonly="true"]')
         );
       }
 
       function commit(next: string) {
         const pos = typeof getPos === "function" ? getPos() : null;
         if (pos == null) return;
-        editor.view.dispatch(
-          editor.view.state.tr.setNodeMarkup(pos, undefined, {
+        view.dispatch(
+          view.state.tr.setNodeMarkup(pos, undefined, {
             ...node.attrs,
             source: next,
           })

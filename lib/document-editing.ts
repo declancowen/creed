@@ -7,6 +7,7 @@ import {
   applySectionChange,
   diffMarkdownSections,
   sectionChangeLabel,
+  sectionChangeHasReviewableDiff,
   type SectionChange,
   type SectionChangeStatus,
 } from "@/lib/document-section-diff";
@@ -275,7 +276,7 @@ export async function createDocumentProposal(
   const db = client as SupabaseLikeClient;
 
   const changed = diffMarkdownSections(input.baseContent, input.content).filter(
-    (change) => change.status !== "unchanged"
+    sectionChangeHasReviewableDiff
   );
 
   if (changed.length === 0) {
@@ -353,7 +354,19 @@ export async function listDocumentProposals(
     throw new Error(error.message || "Could not load proposals.");
   }
 
-  return sortProposalsForReview((data ?? []).map(mapProposal));
+  const proposals = sortProposalsForReview((data ?? []).map(mapProposal));
+  if ((options?.status ?? "pending") !== "pending") {
+    return proposals;
+  }
+
+  return proposals.filter((proposal) => {
+    if (proposal.kind !== "document-section") return true;
+    return sectionChangeHasReviewableDiff({
+      status: proposal.sectionStatus ?? "modified",
+      before: proposal.sectionBefore ?? "",
+      after: proposal.sectionAfter ?? "",
+    });
+  });
 }
 
 // The single policy-gated entry point for a whole-content document edit.

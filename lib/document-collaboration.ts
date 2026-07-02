@@ -652,10 +652,12 @@ export async function createDocumentComment(
     effectiveParentId = data.parent_id ?? data.id;
   }
 
-  const { userIds: mentionedUserIds, users } =
-    input.source === "public"
-      ? { userIds: [], users: [] }
-      : await mentionUserIds(client, body, input.mentionedUserIds, input.actorUserId);
+  const { userIds: mentionedUserIds, users } = await mentionUserIds(
+    client,
+    body,
+    input.mentionedUserIds,
+    input.actorUserId
+  );
   const now = nowIso();
   const db = client as SupabaseLikeClient;
   const { data, error } = (await db

@@ -4,6 +4,7 @@ import { PublicDocumentScreen } from "@/components/creed/public-document-screen"
 import {
   listDocumentActivity,
   listDocumentComments,
+  listWorkspaceUsers,
 } from "@/lib/document-collaboration";
 import { readPublicSharedDocument } from "@/lib/shared-documents";
 import { getSupabaseAdminClient } from "@/lib/supabase/admin";
@@ -80,10 +81,17 @@ export default async function PublicDocumentPage({
     }
   }
 
-  const [comments, activity] = await Promise.all([
+  const [comments, activity, workspaceUsers] = await Promise.all([
     listDocumentComments(admin, document.id),
     listDocumentActivity(admin, document.id),
+    listWorkspaceUsers(admin),
   ]);
+  const mentionUsers = workspaceUsers.map((user) => ({
+    id: user.id,
+    email: "",
+    label: user.label,
+    avatarUrl: null,
+  }));
 
   return (
     <PublicDocumentScreen
@@ -91,6 +99,7 @@ export default async function PublicDocumentPage({
       document={document}
       initialComments={comments}
       initialActivity={activity}
+      mentionUsers={mentionUsers}
     />
   );
 }

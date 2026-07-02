@@ -10,6 +10,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { DiffBadge, summarizeDiff } from "@/components/creed/inline-proposal-diff";
 import {
   diffMarkdownSections,
+  markdownToReviewText,
   sectionChangeLabel,
   type SectionChange,
   type SectionChangeStatus,
@@ -137,59 +138,6 @@ function isTableDelimiterRow(line: string | undefined) {
   const trimmed = line.trim();
   if (!trimmed.includes("|")) return false;
   return splitTableCells(trimmed).every((cell) => /^:?-+:?$/.test(cell));
-}
-
-function formatMarkdownTableForDiff(rows: string[]) {
-  const parsed = rows.map(splitTableCells);
-  const colCount = Math.max(...parsed.map((row) => row.length), 0);
-  const widths = Array.from({ length: colCount }, (_unused, index) =>
-    Math.max(...parsed.map((row) => row[index]?.length ?? 0), 3)
-  );
-  return parsed
-    .map((row, rowIndex) => {
-      if (rowIndex === 1) {
-        return `| ${widths.map((width) => "-".repeat(width)).join(" | ")} |`;
-      }
-      return `| ${widths.map((width, index) => (row[index] ?? "").padEnd(width)).join(" | ")} |`;
-    })
-    .join("\n");
-}
-
-function formatTablesForDiff(md: string) {
-  const lines = (md ?? "").replace(/\r\n/g, "\n").split("\n");
-  const out: string[] = [];
-  let index = 0;
-  let inCodeBlock = false;
-
-  while (index < lines.length) {
-    const line = lines[index] ?? "";
-    const trimmed = line.trim();
-    if (trimmed.startsWith("```")) {
-      inCodeBlock = !inCodeBlock;
-      out.push(line);
-      index += 1;
-      continue;
-    }
-
-    if (!inCodeBlock && trimmed.includes("|") && isTableDelimiterRow(lines[index + 1])) {
-      const tableRows = [line, lines[index + 1] ?? ""];
-      index += 2;
-      while (index < lines.length) {
-        const next = lines[index] ?? "";
-        const nextTrimmed = next.trim();
-        if (!nextTrimmed || !nextTrimmed.includes("|") || nextTrimmed.startsWith("```")) break;
-        tableRows.push(next);
-        index += 1;
-      }
-      out.push(formatMarkdownTableForDiff(tableRows));
-      continue;
-    }
-
-    out.push(line);
-    index += 1;
-  }
-
-  return out.join("\n");
 }
 
 function hasStructuredMarkdown(md: string) {
@@ -503,23 +451,7 @@ function TableAwareDiff({ before, after }: { before: string; after: string }) {
 // reads like the rendered editor, not like raw source. Tables are kept as
 // aligned plain text so the old inline diff remains scannable.
 function markdownToText(md: string) {
-  return formatTablesForDiff(md)
-    .replace(/\r\n/g, "\n")
-    .replace(/^\uFEFF/, "")
-    .replace(/^```mermaid\s*$/gm, "Diagram:")
-    .replace(/```[^\n]*\n?/g, "") // fenced code delimiters
-    .replace(/^\s{0,3}#{1,6}\s+/gm, "") // headings
-    .replace(/^\s{0,3}>\s?/gm, "") // blockquotes
-    .replace(/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/gm, "") // horizontal rules
-    .replace(/^\s*(?:[-*+]|\d+\.)\s+/gm, "") // list markers
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1") // images -> alt
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1") // links -> text
-    .replace(/`([^`]+)`/g, "$1") // inline code
-    .replace(/(\*\*|__)(.*?)\1/g, "$2") // bold
-    .replace(/(\*|_)([^*_]+?)\1/g, "$2") // italic
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  return markdownToReviewText(md);
 }
 
 function mdDiffParts(before: string, after: string) {

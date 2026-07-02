@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import {
   createDocumentComment,
+  deliverPendingMentionEmails,
   listDocumentActivity,
   updatePublicCommentAuthorLabel,
 } from "@/lib/document-collaboration";
@@ -13,6 +14,7 @@ type PublicCommentRequest = {
   body?: unknown;
   parentId?: unknown;
   referenceQuote?: unknown;
+  mentionedUserIds?: unknown;
   clientId?: unknown;
   previousName?: unknown;
 };
@@ -64,6 +66,9 @@ export async function POST(
   const parentId = typeof input.parentId === "string" ? input.parentId : null;
   const referenceQuote =
     typeof input.referenceQuote === "string" ? input.referenceQuote : null;
+  const mentionedUserIds = Array.isArray(input.mentionedUserIds)
+    ? input.mentionedUserIds.filter((value): value is string => typeof value === "string")
+    : undefined;
   const clientId = typeof input.clientId === "string" ? input.clientId : null;
   const admin = getSupabaseAdminClient();
   const document = await readPublicSharedDocument(admin, decodedShareId);
@@ -77,6 +82,7 @@ export async function POST(
     body,
     parentId,
     referenceQuote,
+    mentionedUserIds,
     source: "public",
     publicAuthorLabel: name,
     publicAuthorClientId: clientId,
@@ -90,6 +96,7 @@ export async function POST(
   }
 
   const activity = await listDocumentActivity(admin, document.id);
+  await deliverPendingMentionEmails(admin, result.value.pendingEmails);
   return NextResponse.json({ comment: result.value.comment, activity });
 }
 
