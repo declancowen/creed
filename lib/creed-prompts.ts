@@ -3,7 +3,7 @@ export const CREED_PROMPTS = [
   {
     name: "review-document",
     description: "Read a shared Creed document and suggest targeted improvements.",
-    text: "Use read_creed for the workspace contract, then use creed_list_documents to choose a shared document. Use creed_read_document for normal-sized documents. For large documents, use creed_read_document_digest first, then creed_outline_document, creed_read_document_block, and creed_search_document for exact areas. Review it for unclear, stale, duplicated, or poorly structured content. If a targeted edit is warranted, use creed_update_document for full-body edits or creed_update_document_patch for exact block replacements with the latest expectedRevision. If a question or review note is better, use creed_create_document_comment for document content or creed_create_proposal_comment for a proposal diff.",
+    text: "Use read_creed for the workspace contract, then use creed_list_documents to choose a shared document. Use creed_read_document for normal-sized documents. For large documents, use creed_read_document_digest first, then creed_outline_document, creed_read_document_block, and creed_search_document for exact areas. Review it for unclear, stale, duplicated, or poorly structured content. If a targeted edit is warranted, use creed_update_document for full-body edits or creed_update_document_patch for exact block replacements with the latest expectedRevision. If a question or review note is better, use creed_create_document_comment for document content. If the note is about a proposed edit, use creed_create_proposal_comment with proposalId or proposalFamilyId.",
   },
   {
     name: "format-document",

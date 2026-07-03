@@ -3,6 +3,7 @@ import { apiResultErrorResponse, requireApiAuth, requireApiJson } from "@/lib/ap
 import {
   createDocumentComment,
   deliverPendingMentionEmails,
+  listCommentsForProposalFamily,
   listCommentsForProposal,
   listDocumentComments,
 } from "@/lib/document-collaboration";
@@ -17,10 +18,13 @@ export async function GET(
 
   const { id } = await params;
   const proposalId = new URL(request.url).searchParams.get("proposalId");
+  const proposalFamilyId = new URL(request.url).searchParams.get("proposalFamilyId");
   const admin = getSupabaseAdminClient();
-  const comments = proposalId
-    ? await listCommentsForProposal(admin, id, proposalId)
-    : await listDocumentComments(admin, id);
+  const comments = proposalFamilyId
+    ? await listCommentsForProposalFamily(admin, id, proposalFamilyId)
+    : proposalId
+      ? await listCommentsForProposal(admin, id, proposalId)
+      : await listDocumentComments(admin, id);
   return NextResponse.json({ comments });
 }
 
@@ -45,6 +49,7 @@ export async function POST(
     referenceId: typeof input.referenceId === "string" ? input.referenceId : null,
     referenceQuote: typeof input.referenceQuote === "string" ? input.referenceQuote : null,
     proposalId: typeof input.proposalId === "string" ? input.proposalId : null,
+    proposalFamilyId: typeof input.proposalFamilyId === "string" ? input.proposalFamilyId : null,
     mentionedUserIds,
     actorUserId: auth.user.id,
     source: "creed",

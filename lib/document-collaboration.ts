@@ -24,6 +24,9 @@ export type DocumentComment = {
   // The proposal this comment is anchored to (a comment on a proposal), or null
   // for a range-anchored / general document comment.
   proposalId: string | null;
+  // The proposal family this comment is anchored to. Family comments sit above
+  // the grouped linked proposals in the diff rail.
+  proposalFamilyId: string | null;
   body: string;
   status: "open" | "resolved";
   resolvedAt: string | null;
@@ -78,6 +81,7 @@ type CommentRow = {
   reference_id: string | null;
   reference_quote: string | null;
   proposal_id: string | null;
+  proposal_family_id: string | null;
   body: string;
   status: string | null;
   resolved_at: string | null;
@@ -145,6 +149,7 @@ const COMMENT_COLUMNS = [
   "reference_id",
   "reference_quote",
   "proposal_id",
+  "proposal_family_id",
   "body",
   "status",
   "resolved_at",
@@ -248,6 +253,7 @@ function mapComment(
     referenceId: row.reference_id,
     referenceQuote: row.reference_quote ?? "",
     proposalId: row.proposal_id,
+    proposalFamilyId: row.proposal_family_id,
     body: row.body,
     status: row.status === "resolved" ? "resolved" : "open",
     resolvedAt: row.resolved_at,
@@ -415,6 +421,7 @@ export async function listDocumentComments(client: unknown, documentId: string) 
     .eq("document_id", documentId)
     .eq("proposal_status", "shared")
     .is("proposal_id", null)
+    .is("proposal_family_id", null)
     .order("created_at", { ascending: true })) as {
     data: CommentRow[] | null;
     error: { message: string } | null;
@@ -441,6 +448,7 @@ export async function listPublicDocumentComments(client: unknown, documentId: st
     .eq("proposal_status", "shared")
     .eq("status", "open")
     .is("proposal_id", null)
+    .is("proposal_family_id", null)
     .order("created_at", { ascending: true })) as {
     data: CommentRow[] | null;
     error: { message: string } | null;
@@ -517,6 +525,37 @@ export async function listCommentsForProposal(
 
   if (error) {
     throw new Error(error.message || "Could not load proposal comments.");
+  }
+
+  const rows = data ?? [];
+  const [users, mentions] = await Promise.all([
+    userMap(client),
+    mentionsByComment(client, rows.map((row) => row.id)),
+  ]);
+  return rows.map((row) => mapComment(row, users, mentions));
+}
+
+// Shared comment thread anchored to a proposal family (a multi-hunk change),
+// oldest first. Family comments live in the review rail above linked proposals.
+export async function listCommentsForProposalFamily(
+  client: unknown,
+  documentId: string,
+  proposalFamilyId: string
+) {
+  const db = client as SupabaseLikeClient;
+  const { data, error } = (await db
+    .from("creed_document_comments")
+    .select(COMMENT_COLUMNS)
+    .eq("document_id", documentId)
+    .eq("proposal_family_id", proposalFamilyId)
+    .eq("proposal_status", "shared")
+    .order("created_at", { ascending: true })) as {
+    data: CommentRow[] | null;
+    error: { message: string } | null;
+  };
+
+  if (error) {
+    throw new Error(error.message || "Could not load proposal family comments.");
   }
 
   const rows = data ?? [];
@@ -664,6 +703,9 @@ export async function createDocumentComment(
     // proposal). Open comments on a proposal are auto-resolved when it is
     // accepted or rejected.
     proposalId?: string | null;
+    // Anchor to a whole proposal family (multi-hunk edit). Mutually exclusive
+    // with proposalId for top-level comments.
+    proposalFamilyId?: string | null;
     mentionedUserIds?: string[];
     source?: "creed" | "mcp" | "public";
     publicAuthorLabel?: string | null;
@@ -694,11 +736,19 @@ export async function createDocumentComment(
 
   let effectiveParentId = input.parentId ?? null;
   let effectiveProposalId = trimToNull(input.proposalId);
+  let effectiveProposalFamilyId = trimToNull(input.proposalFamilyId);
+  if (!input.parentId && effectiveProposalId && effectiveProposalFamilyId) {
+    return {
+      ok: false,
+      code: "invalid",
+      error: "Comment can target either a proposal or a proposal family, not both.",
+    };
+  }
   if (input.parentId) {
     const db = client as SupabaseLikeClient;
     const { data, error } = (await db
       .from("creed_document_comments")
-      .select("id, document_id, parent_id, proposal_id")
+      .select("id, document_id, parent_id, proposal_id, proposal_family_id")
       .eq("id", input.parentId)
       .eq("document_id", input.documentId)
       .maybeSingle()) as {
@@ -707,6 +757,7 @@ export async function createDocumentComment(
         document_id: string;
         parent_id: string | null;
         proposal_id: string | null;
+        proposal_family_id: string | null;
       } | null;
       error: { message: string } | null;
     };
@@ -728,11 +779,34 @@ export async function createDocumentComment(
         };
       }
       effectiveProposalId = data.proposal_id;
+      effectiveProposalFamilyId = null;
+    } else if (data.proposal_family_id) {
+      if (effectiveProposalFamilyId && effectiveProposalFamilyId !== data.proposal_family_id) {
+        return {
+          ok: false,
+          code: "invalid",
+          error: "Reply proposalFamilyId must match the parent comment's proposal family.",
+        };
+      }
+      if (effectiveProposalId) {
+        return {
+          ok: false,
+          code: "invalid",
+          error: "Replies inherit the parent comment context and cannot move to a proposal.",
+        };
+      }
+      effectiveProposalFamilyId = data.proposal_family_id;
     } else if (effectiveProposalId) {
       return {
         ok: false,
         code: "invalid",
         error: "Replies inherit the parent comment context and cannot move to a proposal.",
+      };
+    } else if (effectiveProposalFamilyId) {
+      return {
+        ok: false,
+        code: "invalid",
+        error: "Replies inherit the parent comment context and cannot move to a proposal family.",
       };
     }
   }
@@ -753,6 +827,7 @@ export async function createDocumentComment(
       reference_id: trimToNull(input.referenceId),
       reference_quote: trimToNull(input.referenceQuote),
       proposal_id: effectiveProposalId,
+      proposal_family_id: effectiveProposalFamilyId,
       body,
       status: "open",
       proposal_status: input.proposalStatus === "pending" ? "pending" : "shared",

@@ -39,6 +39,7 @@ import { listDocumentProposals, routeDocumentEdit } from "@/lib/document-editing
 import {
   createDocumentComment,
   deleteDocumentComment,
+  listCommentsForProposalFamily,
   listCommentsForProposal,
   listDocumentActivity,
   listDocumentComments,
@@ -80,9 +81,9 @@ const MCP_INSTRUCTIONS = [
   "Make document edits surgically: preserve unchanged Markdown exactly, do not re-upload or reformat a whole document for a small change, and do not call a mutation tool when your intended content has no visible change from the latest read.",
   "Document content edits are governed by the workspace agent edit policy: your change may be applied directly, recorded as a pending proposal for a member to approve, or rejected. Check the tool result `outcome` and do not assume your edit landed. Use expectedRevision for content edits and re-read on conflicts. For large documents, use creed_read_document_digest for whole-document awareness, creed_outline_document / creed_read_document_block / creed_search_document to inspect exact blocks, then creed_update_document_patch for exact block replacements.",
   "When updating a document, pass `changeTitle` with a short PR-style title for the whole family of hunks, not a vague label and not a paragraph: aim for a sentence fragment under 72 characters, such as `Executive Summary: revises royalty timing`.",
-  "Use creed_list_document_proposals to read proposal diffs. You may read proposals created by the user and by others, and you may add pending user-approval comments/replies to either document content or a specific proposal diff. Use creed_create_document_comment for document content and creed_create_proposal_comment for proposal diffs. MCP agents cannot edit or delete other people's proposals.",
+  "Use creed_list_document_proposals to read proposal diffs. You may read proposals created by the user and by others, and you may add pending user-approval comments/replies to document content, a specific proposal diff, or a proposal family. Use creed_create_document_comment only for document-content comments. If the note is about a proposed edit, create or find the proposal first, then use creed_create_proposal_comment with proposalId for one diff or proposalFamilyId for the whole linked family. MCP agents cannot edit or delete other people's proposals.",
   "A proposal with conflictStatus `conflict` needs human review against the current document; it does not always mean two users made competing proposals. True overlap resolution happens in Creed's human review UI. Agents should re-read the document, comment, or submit a fresh targeted proposal rather than trying to resolve someone else's proposal.",
-  "Comments you add are pending user-approval comments: they are private to the user until approved, notify no one until approval, and then appear as the user's own comments. Use creed_create_document_comment for document-content comments and creed_create_proposal_comment for comments on a proposal diff. The tool result reports outcome 'proposed'.",
+  "Comments you add are pending user-approval comments: they are private to the user until approved, notify no one until approval, and then appear as the user's own comments. Use creed_create_document_comment for document-content comments and creed_create_proposal_comment for comments on a proposal diff or proposal family. The tool result reports outcome 'proposed'.",
   "You may use creed_update_document_comment, creed_delete_document_comment, and creed_set_document_comment_status only on comments/replies authored by the OAuth user whose token you are using. Do not try to edit, delete, resolve, or reopen other people's comments.",
   "Document content is block Markdown with a rich component set that renders in the editor: `#`/`##`/`###` headings, paragraphs, bullet and numbered lists, `>` callouts, `---` dividers, inline `#tags`, fenced code blocks, GFM pipe tables (`| Col A | Col B |` with a `| --- | --- |` delimiter row), and ```mermaid diagrams (flowcharts, sequence, ER, journey). The document title is metadata; do not repeat it as an H1 in the body unless the user explicitly asks. Headings drive outline/navigation visually; they do not create separate section records and do not use `<!-- creed:depth -->` markers. A document may start at H2; the sidebar treats the highest heading level present as the root and indents deeper headings from there. Add content by editing the document Markdown at the right location. Choose the clearest shape for the content: a table for comparing items across consistent attributes, and a ```mermaid flowchart (or sequence/ER/journey) diagram when a branching process, sequence, data model, or journey reads better as a picture than nested bullets.",
   "Documents can reference other documents or folders. Write `[[doc:SLUG]]` for an inline chip that links to a document, `[[folder:SLUG]]` to link a folder, and prefix with `!` (`![[doc:SLUG]]`) on its own line for a full-width card showing the target's title, description, and property pills. Use the slug from creed_list_documents / creed_read_document. Prefer references over pasting a document's contents so links stay live.",
@@ -400,7 +401,7 @@ const tools = [
   {
     name: "creed_list_document_comments",
     description:
-      "List comments and replies for a shared document, or for one proposal diff when proposalId is supplied. Use before editing or commenting when discussion may affect the change.",
+      "List comments and replies for shared document content, one proposal diff, or one proposal family. Pass at most one of proposalId or proposalFamilyId. Use before editing or commenting when discussion may affect the change.",
     inputSchema: {
       type: "object",
       properties: {
@@ -409,6 +410,10 @@ const tools = [
           type: "string",
           description: "Optional proposal id. When supplied, returns the comment thread for that proposal diff.",
         },
+        proposalFamilyId: {
+          type: "string",
+          description: "Optional proposal family id. When supplied, returns the comment thread for that proposal family.",
+        },
       },
       required: ["documentId"],
     },
@@ -416,7 +421,7 @@ const tools = [
   {
     name: "creed_create_document_comment",
     description:
-      "Propose a comment on shared document content on the user's behalf. The comment is a PRIVATE PENDING user-approval comment: only the user whose token you are using sees it until approval, it is not visible to other workspace members, and it notifies no one until the user approves it in Creed. Once approved it becomes the user's own comment (never labeled as an agent). Use creed_create_proposal_comment instead when commenting on a proposal diff.",
+      "Propose a comment on shared document content on the user's behalf. The comment is a PRIVATE PENDING user-approval comment: only the user whose token you are using sees it until approval, it is not visible to other workspace members, and it notifies no one until the user approves it in Creed. Once approved it becomes the user's own comment (never labeled as an agent). Use creed_create_proposal_comment instead when commenting on a proposed edit, proposal diff, or proposal family.",
     inputSchema: {
       type: "object",
       properties: {
@@ -432,22 +437,23 @@ const tools = [
   {
     name: "creed_create_proposal_comment",
     description:
-      "Propose a comment on a specific document proposal diff on the user's behalf. This is different from creating a content edit proposal: the comment itself is a PRIVATE PENDING user-approval comment and becomes visible only after the user approves it in Creed.",
+      "Propose a comment on a specific document proposal diff, or on a whole proposal family, on the user's behalf. This is different from creating a content edit proposal: the comment itself is a PRIVATE PENDING user-approval comment and becomes visible only after the user approves it in Creed. Pass exactly one of proposalId or proposalFamilyId.",
     inputSchema: {
       type: "object",
       properties: {
         documentId: { type: "string" },
         proposalId: { type: "string" },
+        proposalFamilyId: { type: "string" },
         body: { type: "string" },
         mentionedUserIds: { type: "array", items: { type: "string" } },
       },
-      required: ["documentId", "proposalId", "body"],
+      required: ["documentId", "body"],
     },
   },
   {
     name: "creed_reply_to_document_comment",
     description:
-      "Propose a reply to an existing shared document or proposal-diff comment on the user's behalf. The reply is a PRIVATE PENDING user-approval reply until the user approves it in Creed; the result reports outcome 'proposed'.",
+      "Propose a reply to an existing shared document, proposal-diff, or proposal-family comment on the user's behalf. The reply is a PRIVATE PENDING user-approval reply until the user approves it in Creed; the result reports outcome 'proposed'.",
     inputSchema: {
       type: "object",
       properties: {
@@ -457,6 +463,10 @@ const tools = [
         proposalId: {
           type: "string",
           description: "Optional proposal id. Replies inherit the parent comment's proposal anchor when present.",
+        },
+        proposalFamilyId: {
+          type: "string",
+          description: "Optional proposal family id. Replies inherit the parent comment's proposal-family anchor when present.",
         },
         mentionedUserIds: { type: "array", items: { type: "string" } },
       },
@@ -1401,10 +1411,16 @@ async function handleToolCall(
   if (name === "creed_list_document_comments") {
     const documentId = stringArg(args, "documentId");
     const proposalId = stringArg(args, "proposalId");
+    const proposalFamilyId = stringArg(args, "proposalFamilyId");
+    if (proposalId && proposalFamilyId) {
+      throw new Error("creed_list_document_comments accepts at most one of proposalId or proposalFamilyId.");
+    }
     const admin = getSupabaseAdminClient();
-    const comments = proposalId
-      ? await listCommentsForProposal(admin as never, documentId, proposalId)
-      : await listDocumentComments(admin as never, documentId);
+    const comments = proposalFamilyId
+      ? await listCommentsForProposalFamily(admin as never, documentId, proposalFamilyId)
+      : proposalId
+        ? await listCommentsForProposal(admin as never, documentId, proposalId)
+        : await listDocumentComments(admin as never, documentId);
     return jsonToolResult({ comments });
   }
 
@@ -1444,16 +1460,18 @@ async function handleToolCall(
   if (name === "creed_create_proposal_comment") {
     const documentId = stringArg(args, "documentId");
     const proposalId = stringArg(args, "proposalId");
+    const proposalFamilyId = stringArg(args, "proposalFamilyId");
     const body = stringArg(args, "body");
     const mentionedUserIds = stringArrayArg(args, "mentionedUserIds");
-    if (!proposalId) {
-      throw new Error("creed_create_proposal_comment requires proposalId.");
+    if ((!proposalId && !proposalFamilyId) || (proposalId && proposalFamilyId)) {
+      throw new Error("creed_create_proposal_comment requires exactly one of proposalId or proposalFamilyId.");
     }
     const admin = getSupabaseAdminClient();
     const result = await createDocumentComment(admin as never, {
       documentId,
       body,
-      proposalId,
+      proposalId: proposalId || null,
+      proposalFamilyId: proposalFamilyId || null,
       mentionedUserIds,
       actorUserId: userId,
       source: "mcp",
@@ -1468,7 +1486,7 @@ async function handleToolCall(
       outcome: "proposed",
       comment: result.value.comment,
       message:
-        "Recorded as a pending proposal-diff comment for the user to review. It becomes their comment once they approve it.",
+        "Recorded as a pending proposal-review comment for the user to review. It becomes their comment once they approve it.",
     });
   }
 
@@ -1477,13 +1495,18 @@ async function handleToolCall(
     const parentCommentId = stringArg(args, "parentCommentId");
     const body = stringArg(args, "body");
     const proposalId = stringArg(args, "proposalId");
+    const proposalFamilyId = stringArg(args, "proposalFamilyId");
     const mentionedUserIds = stringArrayArg(args, "mentionedUserIds");
+    if (proposalId && proposalFamilyId) {
+      throw new Error("creed_reply_to_document_comment accepts at most one of proposalId or proposalFamilyId.");
+    }
     const admin = getSupabaseAdminClient();
     const result = await createDocumentComment(admin as never, {
       documentId,
       body,
       parentId: parentCommentId,
       proposalId: proposalId || null,
+      proposalFamilyId: proposalFamilyId || null,
       mentionedUserIds,
       actorUserId: userId,
       source: "mcp",

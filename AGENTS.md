@@ -54,9 +54,11 @@ Agents working through MCP must:
   that should not be applied silently; comments you add through MCP are pending
   user-approval comments (private until the user approves them), and once
   approved they appear as the user's own comment (never labelled as an agent);
-- add comments/replies to either document content or a proposal diff; use
-  `creed_create_document_comment` for document-content comments and
-  `creed_create_proposal_comment` for comments on a specific diff/proposal.
+- add comments/replies to document content, a specific proposal diff, or a
+  proposal family. Use `creed_create_document_comment` only for document-content
+  comments. If the note is about a proposed edit, create or find the proposal
+  first, then use `creed_create_proposal_comment` with `proposalId` for one diff
+  or `proposalFamilyId` for the whole linked family.
   Agents may read proposals created by the current user or by others, but must
   not edit or delete other people's proposals;
 - edit, delete, resolve, or reopen only comments/replies authored by the OAuth
