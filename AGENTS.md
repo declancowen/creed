@@ -27,8 +27,14 @@ Agents working through MCP must:
 - inspect large shared documents with `creed_outline_document`,
   `creed_read_document_block`, and `creed_search_document` when reading the full
   body would be too large for the agent context;
+- use `creed_read_document_digest` first when you need whole-document awareness
+  for a large document without reading the full Markdown body;
 - use `creed_update_document_patch` for exact block replacements in large
   documents, and `creed_update_document` for normal full-body content changes;
+- never ask the user to paste a large document just because
+  `creed_read_document` is too large; use the digest, outline, block, search,
+  and patch tools. If those tools are missing, the active MCP client must
+  reconnect or reinitialize Creed to refresh its tool list;
 - read current comments before changing a document when review context matters;
 - read hunk-level proposal diffs with `creed_list_document_proposals` when a
   task involves proposals, conflicts, or review history;
