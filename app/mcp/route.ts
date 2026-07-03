@@ -77,8 +77,9 @@ const MCP_INSTRUCTIONS = [
   "Shared documents live only in Supabase (there is no GitHub sync). Read the current document, comments, and revision before editing; write content, metadata, comments, and replies through the MCP tools.",
   "Make document edits surgically: preserve unchanged Markdown exactly, do not re-upload or reformat a whole document for a small change, and do not call a mutation tool when your intended content has no visible change from the latest read.",
   "Document content edits are governed by the workspace agent edit policy: your change may be applied directly, recorded as a pending proposal for a member to approve, or rejected. Check the tool result `outcome` and do not assume your edit landed. Use expectedRevision for content edits and re-read on conflicts.",
-  "When describing a proposed document change, use a short descriptive title, not a vague label and not a paragraph: aim for a sentence fragment under 72 characters, such as `Executive Summary: revises royalty timing`.",
+  "When updating a document, pass `changeTitle` with a short PR-style title for the whole family of hunks, not a vague label and not a paragraph: aim for a sentence fragment under 72 characters, such as `Executive Summary: revises royalty timing`.",
   "Use creed_list_document_proposals to read proposal diffs. You may read proposals created by the user and by others, and you may add comments/replies to either document content or a specific proposal diff by passing proposalId to the comment tools. MCP agents cannot edit or delete other people's proposals.",
+  "A proposal with conflictStatus `conflict` needs human review against the current document; it does not always mean two users made competing proposals. True overlap resolution happens in Creed's human review UI. Agents should re-read the document, comment, or submit a fresh targeted proposal rather than trying to resolve someone else's proposal.",
   "Comments you add to a document or proposal diff (creed_create_document_comment / creed_reply_to_document_comment) are recorded as private pending proposals that only the user sees; they notify no one and are invisible to other members until the user approves them, at which point they become the user's own comment. The tool result reports outcome 'proposed'. Use comments to leave review feedback the user can approve and share, e.g. when asked to audit a document.",
   "You may use creed_update_document_comment, creed_delete_document_comment, and creed_set_document_comment_status only on comments/replies authored by the OAuth user whose token you are using. Do not try to edit, delete, resolve, or reopen other people's comments.",
   "Document content is block Markdown with a rich component set that renders in the editor: `#`/`##`/`###` headings, paragraphs, bullet and numbered lists, `>` callouts, `---` dividers, inline `#tags`, fenced code blocks, GFM pipe tables (`| Col A | Col B |` with a `| --- | --- |` delimiter row), and ```mermaid diagrams (flowcharts, sequence, ER, journey). The document title is metadata; do not repeat it as an H1 in the body unless the user explicitly asks. Headings drive outline/navigation visually; they do not create separate section records and do not use `<!-- creed:depth -->` markers. A document may start at H2; the sidebar treats the highest heading level present as the root and indents deeper headings from there. Add content by editing the document Markdown at the right location. Choose the clearest shape for the content: a table for comparing items across consistent attributes, and a ```mermaid flowchart (or sequence/ER/journey) diagram when a branching process, sequence, data model, or journey reads better as a picture than nested bullets.",
@@ -203,6 +204,11 @@ const tools = [
       properties: {
         documentId: { type: "string" },
         expectedRevision: { type: "number" },
+        changeTitle: {
+          type: "string",
+          description:
+            "Short PR-style title for this family of content changes, usually under 72 characters, such as `Executive Summary: revises royalty timing`. This title groups the hunk proposals/version history family.",
+        },
         contentMarkdown: {
           type: "string",
           description:
@@ -621,6 +627,7 @@ async function handleToolCall(
       typeof args.expectedRevision === "number" && Number.isInteger(args.expectedRevision)
         ? args.expectedRevision
         : 0;
+    const changeTitle = stringArg(args, "changeTitle").trim();
     const admin = getSupabaseAdminClient();
     // Agent content edits are governed by the workspace Agent_Edit_Policy: they
     // are rejected (cant-edit), recorded as a pending proposal (propose), or
@@ -631,7 +638,7 @@ async function handleToolCall(
       author: { userId, agentLabel: agentName },
       content: contentMarkdown,
       expectedRevision,
-      summary: "Updated document content through MCP",
+      summary: changeTitle || "Updated document content through MCP",
     });
     if (!result.ok) {
       throw new Error(result.error);

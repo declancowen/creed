@@ -18,6 +18,9 @@ export type DocumentVersion = {
   authorAgentLabel: string | null;
   summary: string;
   sourceProposalId: string | null;
+  sourceProposalFamilyId: string | null;
+  versionFamilyId: string | null;
+  versionFamilyTitle: string;
   createdAt: string;
 };
 
@@ -36,6 +39,9 @@ type DocumentVersionRow = {
   author_agent_label: string | null;
   summary: string | null;
   source_proposal_id: string | null;
+  source_proposal_family_id?: string | null;
+  version_family_id?: string | null;
+  version_family_title?: string | null;
   created_at: string;
 };
 
@@ -50,6 +56,8 @@ const VERSION_COLUMNS = [
   "author_agent_label",
   "summary",
   "source_proposal_id",
+  "version_family_id",
+  "version_family_title",
   "created_at",
 ].join(", ");
 
@@ -114,8 +122,65 @@ function mapVersion(row: DocumentVersionRow): DocumentVersion {
     authorAgentLabel: row.author_agent_label,
     summary: row.summary ?? "",
     sourceProposalId: row.source_proposal_id,
+    sourceProposalFamilyId: row.source_proposal_family_id ?? null,
+    versionFamilyId: row.version_family_id ?? row.source_proposal_family_id ?? null,
+    versionFamilyTitle: row.version_family_title ?? "",
     createdAt: row.created_at,
   };
+}
+
+type ProposalFamilyRow = {
+  id: string;
+  family_id: string;
+  summary: string | null;
+};
+
+async function sourceProposalFamilyMap(
+  client: unknown,
+  sourceProposalIds: string[]
+): Promise<Map<string, { familyId: string; title: string }>> {
+  const ids = Array.from(new Set(sourceProposalIds.filter(Boolean)));
+  if (ids.length === 0) return new Map();
+
+  const db = client as SupabaseLikeClient;
+  const { data, error } = (await db
+    .from("creed_document_proposals")
+    .select("id, family_id, summary")
+    .in("id", ids)) as {
+    data: ProposalFamilyRow[] | null;
+    error: { message: string } | null;
+  };
+
+  if (error) {
+    throw new Error(error.message || "Could not load source proposal families.");
+  }
+
+  return new Map((data ?? []).map((row) => [row.id, { familyId: row.family_id, title: row.summary ?? "" }]));
+}
+
+function applySourceProposalFamilies<
+  T extends {
+    sourceProposalId: string | null;
+    sourceProposalFamilyId: string | null;
+    versionFamilyId: string | null;
+    versionFamilyTitle: string;
+  },
+>(
+  versions: T[],
+  familyByProposalId: Map<string, { familyId: string; title: string }>
+): T[] {
+  return versions.map((version) => ({
+    ...version,
+    sourceProposalFamilyId: version.sourceProposalId
+      ? familyByProposalId.get(version.sourceProposalId)?.familyId ?? version.sourceProposalFamilyId
+      : version.sourceProposalFamilyId,
+    versionFamilyId: version.sourceProposalId
+      ? familyByProposalId.get(version.sourceProposalId)?.familyId ?? version.versionFamilyId
+      : version.versionFamilyId,
+    versionFamilyTitle: version.sourceProposalId
+      ? familyByProposalId.get(version.sourceProposalId)?.title || version.versionFamilyTitle
+      : version.versionFamilyTitle,
+  }));
 }
 
 export async function appendDocumentVersion(
@@ -129,6 +194,8 @@ export async function appendDocumentVersion(
     authorAgentLabel?: string | null;
     summary?: string;
     sourceProposalId?: string | null;
+    versionFamilyId?: string | null;
+    versionFamilyTitle?: string | null;
     changeHunks?: DocumentHunkChange[];
   }
 ): Promise<DocumentVersion> {
@@ -144,6 +211,8 @@ export async function appendDocumentVersion(
       author_agent_label: input.authorAgentLabel ?? null,
       summary: input.summary ?? "",
       source_proposal_id: input.sourceProposalId ?? null,
+      version_family_id: input.versionFamilyId ?? null,
+      version_family_title: input.versionFamilyTitle ?? input.summary ?? "",
       change_hunks: input.changeHunks ?? [],
     })
     .select(VERSION_COLUMNS)
@@ -190,12 +259,18 @@ export async function listDocumentVersions(
     throw new Error(error.message || "Could not load document versions.");
   }
 
-  return (data ?? []).map((row) => {
+  const versions = (data ?? []).map((row) => {
     const version = mapVersion({ ...row, content: row.content ?? "" });
     if (options.includeContent) return version;
     const { content: _content, ...summary } = version;
     return summary;
   });
+  const familyByProposalId = await sourceProposalFamilyMap(
+    client,
+    versions.map((version) => version.sourceProposalId).filter((id): id is string => Boolean(id))
+  );
+
+  return applySourceProposalFamilies(versions, familyByProposalId);
 }
 
 export async function readDocumentVersion(
@@ -217,5 +292,11 @@ export async function readDocumentVersion(
     throw new Error(error.message || "Could not load document version.");
   }
 
-  return data ? mapVersion(data) : null;
+  if (!data) return null;
+
+  const version = mapVersion(data);
+  if (!version.sourceProposalId) return version;
+
+  const familyByProposalId = await sourceProposalFamilyMap(client, [version.sourceProposalId]);
+  return applySourceProposalFamilies([version], familyByProposalId)[0] ?? version;
 }

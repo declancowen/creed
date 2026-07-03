@@ -38,7 +38,10 @@ export async function PUT(
     author: { userId: auth.user.id },
     content: typeof input.content === "string" ? input.content : "",
     expectedRevision,
-    summary: "Updated document content",
+    summary:
+      typeof input.changeTitle === "string" && input.changeTitle.trim()
+        ? input.changeTitle.trim()
+        : "Updated document content",
   });
 
   if (!result.ok) {

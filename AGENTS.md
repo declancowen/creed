@@ -27,6 +27,11 @@ Agents working through MCP must:
 - read current comments before changing a document when review context matters;
 - read hunk-level proposal diffs with `creed_list_document_proposals` when a
   task involves proposals, conflicts, or review history;
+- treat a proposal `conflictStatus` of `conflict` as "needs human review
+  against the current document", not automatically as a multi-user disagreement;
+  real conflict resolution is a human UI workflow over overlapping pending
+  proposal hunks, while agents should re-read, comment, or make a fresh targeted
+  proposal instead of trying to resolve someone else's proposal;
 - update document content with `expectedRevision` and re-read on conflicts;
 - use document metadata tools for status/type/stage/lifecycle/priority/size;
 - expect that document content edits are governed by the workspace Agent edit
@@ -102,9 +107,11 @@ clearest shape for the content:
 Each non-touching content change becomes its own proposal hunk. Consecutive word
 changes inside the same range stay one proposal. Accepted proposal families are
 shown grouped in version history; expanding a family reveals the individual
-hunks and selecting one shows only that diff. Proposal titles should be short
-descriptive sentence fragments, usually under 72 characters, rather than vague
-labels like "Header update" or paragraph-length summaries.
+hunks and selecting one shows only that diff. Proposal/change family titles
+should be short descriptive sentence fragments, usually under 72 characters,
+rather than vague labels like "Header update" or paragraph-length summaries.
+When calling `creed_update_document` through MCP, pass that family title as
+`changeTitle` when you can name the change clearly.
 
 Tables and mermaid blocks parse in `lib/rich-text.ts` (`markdownToRichHtml`) and
 serialize back through `lib/creed-data.ts` (`richHtmlToMarkdown`); the editor

@@ -235,6 +235,24 @@ function sortProposalsForReview(proposals: DocumentProposal[]) {
   return [...proposals].sort(compareProposalReviewOrder);
 }
 
+function titleFromHunks(fallback: string, hunks: DocumentHunkChange[]) {
+  const classifications = Array.from(
+    new Set(hunks.map((hunk) => hunk.classification.trim()).filter(Boolean))
+  );
+  if (classifications.length === 1) return classifications[0] ?? fallback;
+
+  const prefixes = Array.from(
+    new Set(
+      classifications
+        .map((classification) => classification.split(":")[0]?.trim())
+        .filter((prefix): prefix is string => Boolean(prefix))
+    )
+  );
+  if (prefixes.length === 1) return `${prefixes[0]}: updates ${hunks.length} areas`;
+
+  return fallback.trim() || "Updated document content";
+}
+
 // Apply a whole-content change to a document (guarded on `expectedRevision`),
 // then append a version. Shared by direct edits and accepted proposals so the
 // versioning + concurrency behaviour lives in one place.
@@ -248,6 +266,8 @@ async function applyDocumentContent(
     author: DocumentEditAuthor;
     summary: string;
     sourceProposalId?: string | null;
+    versionFamilyId?: string | null;
+    versionFamilyTitle?: string | null;
     changeHunks?: DocumentHunkChange[];
   }
 ): Promise<
@@ -275,6 +295,8 @@ async function applyDocumentContent(
     authorAgentLabel: input.author.agentLabel ?? null,
     summary: input.summary,
     sourceProposalId: input.sourceProposalId ?? null,
+    versionFamilyId: input.versionFamilyId ?? null,
+    versionFamilyTitle: input.versionFamilyTitle ?? input.summary,
     changeHunks: input.changeHunks ?? [],
   });
 
@@ -296,6 +318,7 @@ async function reconcilePendingProposalsAfterEdit(
     documentId: string;
     content: string;
     actorUserId: string | null;
+    changedHunks?: DocumentHunkChange[];
     // The proposal being accepted (if any) is settled by its own flow; skip it.
     excludeProposalId?: string | null;
   }
@@ -319,6 +342,24 @@ async function reconcilePendingProposalsAfterEdit(
 
   for (const proposal of pending) {
     if (input.excludeProposalId && proposal.id === input.excludeProposalId) {
+      continue;
+    }
+
+    const overlapsAcceptedChange =
+      input.changedHunks?.some(
+        (changed) =>
+          proposal.hunkBeforeStart < changed.beforeEnd &&
+          changed.beforeStart < proposal.hunkBeforeEnd
+      ) ?? false;
+    if (overlapsAcceptedChange) {
+      if (proposal.conflictStatus !== "conflict") {
+        await db
+          .from("creed_document_proposals")
+          .update({ conflict_status: "conflict" })
+          .eq("id", proposal.id)
+          .eq("status", "pending");
+        conflictedIds.push(proposal.id);
+      }
       continue;
     }
 
@@ -569,6 +610,7 @@ export async function routeDocumentEdit(
   }
 
   // direct
+  const directFamilyTitle = titleFromHunks(input.summary, changedHunks);
   const applied = await applyDocumentContent(client, {
     documentId: input.documentId,
     content: input.content,
@@ -576,6 +618,8 @@ export async function routeDocumentEdit(
     actorType: input.actorType,
     author: input.author,
     summary: input.summary,
+    versionFamilyId: randomUUID(),
+    versionFamilyTitle: directFamilyTitle,
     changeHunks: changedHunks,
   });
   if (!applied.ok) {
@@ -635,6 +679,20 @@ async function markProposalConflict(client: unknown, proposalId: string) {
     .eq("id", proposalId);
 }
 
+async function familyHasAcceptedSibling(
+  client: unknown,
+  documentId: string,
+  proposal: DocumentProposal
+) {
+  const proposals = await listDocumentProposals(client, documentId, { status: "all" });
+  return proposals.some(
+    (item) =>
+      item.id !== proposal.id &&
+      item.familyId === proposal.familyId &&
+      item.status === "accepted"
+  );
+}
+
 export async function acceptDocumentProposal(
   client: unknown,
   input: {
@@ -658,6 +716,22 @@ export async function acceptDocumentProposal(
     await releaseProposalClaim(client, input.proposalId);
     return { ok: false, code: "not-found", error: "Document not found." };
   }
+  const hasAcceptedSibling =
+    proposal.conflictStatus !== "conflict" && proposal.baseRevision < document.revision
+      ? await familyHasAcceptedSibling(client, input.documentId, proposal)
+      : false;
+  if (
+    proposal.conflictStatus !== "conflict" &&
+    proposal.baseRevision < document.revision &&
+    !hasAcceptedSibling
+  ) {
+    await markProposalConflict(client, input.proposalId);
+    return {
+      ok: false,
+      code: "conflict",
+      error: "This proposal needs review because the document has changed.",
+    };
+  }
 
   let acceptedProposalLabel: string | null = null;
 
@@ -668,7 +742,9 @@ export async function acceptDocumentProposal(
   }
   acceptedProposalLabel = proposal.classification || hunk.classification || "Change";
 
-  const merged = applyHunkChange(document.content, hunk);
+  const merged = applyHunkChange(document.content, hunk, {
+    allowConflictReplacement: proposal.conflictStatus === "conflict",
+  });
   if (!merged.ok) {
     await markProposalConflict(client, input.proposalId);
     return {
@@ -686,6 +762,8 @@ export async function acceptDocumentProposal(
     author: { userId: proposal.authorUserId, agentLabel: proposal.authorAgentLabel },
     summary: proposal.summary || acceptedProposalLabel,
     sourceProposalId: proposal.id,
+    versionFamilyId: proposal.familyId,
+    versionFamilyTitle: proposal.summary || acceptedProposalLabel,
     changeHunks: [hunk],
   });
 
@@ -710,6 +788,14 @@ export async function acceptDocumentProposal(
   await resolveOpenCommentsForProposal(client, {
     proposalId: input.proposalId,
     actorUserId: input.actorUserId,
+  });
+
+  await reconcilePendingProposalsAfterEdit(client, {
+    documentId: input.documentId,
+    content: applied.document.content,
+    actorUserId: input.actorUserId,
+    changedHunks: [hunk],
+    excludeProposalId: input.proposalId,
   });
 
   await recordDocumentActivity(client, {
@@ -880,6 +966,19 @@ export async function acceptDocumentProposals(
   }
 
   const proposals = sortProposalsForReview(claimedRows.map(mapProposal));
+  const conflicted = proposals.filter((proposal) => proposal.conflictStatus === "conflict");
+  if (conflicted.length > 0) {
+    await releaseProposalClaims(client, ids);
+    return {
+      ok: false,
+      code: "conflict",
+      error:
+        conflicted.length === 1
+          ? "Resolve the conflict before accepting all."
+          : `Resolve ${conflicted.length} conflicts before accepting all.`,
+      settledProposalIds: [],
+    };
+  }
   const document = await readSharedDocumentById(client, input.documentId);
   if (!document) {
     await releaseProposalClaims(client, ids);
@@ -926,6 +1025,15 @@ export async function acceptDocumentProposals(
     proposals.length === 1
       ? proposals[0].summary || proposals[0].classification || "Accepted proposal"
       : `Accepted ${proposals.length} proposals`;
+  const acceptedFamilyIds = Array.from(new Set(proposals.map((proposal) => proposal.familyId).filter(Boolean)));
+  const acceptedFamilySummaries = Array.from(
+    new Set(proposals.map((proposal) => proposal.summary.trim()).filter(Boolean))
+  );
+  const versionFamilyId = acceptedFamilyIds.length === 1 ? acceptedFamilyIds[0] ?? randomUUID() : randomUUID();
+  const versionFamilyTitle =
+    acceptedFamilySummaries.length === 1
+      ? acceptedFamilySummaries[0] ?? summary
+      : titleFromHunks(summary, acceptedHunks);
   const applied = await applyDocumentContent(client, {
     documentId: input.documentId,
     content: mergedContent,
@@ -937,6 +1045,8 @@ export async function acceptDocumentProposals(
     },
     summary,
     sourceProposalId: proposals.length === 1 ? proposals[0]?.id ?? null : null,
+    versionFamilyId,
+    versionFamilyTitle,
     changeHunks: acceptedHunks,
   });
 
@@ -967,6 +1077,7 @@ export async function acceptDocumentProposals(
     documentId: input.documentId,
     content: applied.document.content,
     actorUserId: input.actorUserId,
+    changedHunks: acceptedHunks,
   });
 
   await recordDocumentActivity(client, {

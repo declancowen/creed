@@ -827,6 +827,11 @@ export function richHtmlToMarkdown(
   text = text.replace(/<mark\b[^>]*>([\s\S]*?)<\/mark>/g, "==$1==");
   text = text.replace(/<u\b[^>]*>([\s\S]*?)<\/u>/g, "__$1__");
 
+  // Tiptap stores Shift+Enter as `<br>`. Serialize it as a Markdown hard
+  // break (`\` + newline) so saving and reloading preserves the visual line
+  // break inside the same paragraph instead of flattening it into wrapped text.
+  text = text.replace(/<br\s*\/?>/gi, "\\\n");
+
   // Tables - a `<table>` of `<tr>`/`<th>`/`<td>` becomes a GFM pipe table.
   // Runs before the generic list / paragraph strippers so a cell's inner
   // `<p>` wrapper doesn't get turned into stray newlines. Inline marks
@@ -965,7 +970,7 @@ export function buildAgentReadPayload(
     "- `creed_list_documents` to find documents and folders.",
     "- `creed_get_folder` to inspect one folder's direct children.",
     "- `creed_read_document` before editing; use its `revision` as `expectedRevision`.",
-    "- `creed_update_document` for content changes.",
+    "- `creed_update_document` for content changes; include `changeTitle` when you can name the whole change family clearly.",
     "- `creed_list_document_proposals` to read hunk-level proposal diffs for a document.",
     "- `creed_update_document_metadata` for title, description, status, type, stage, lifecycle, priority, and size.",
     "- `creed_create_document`, `creed_create_folder`, `creed_archive_document`, and `creed_archive_folder` for workspace organization.",
@@ -977,9 +982,10 @@ export function buildAgentReadPayload(
     "- Do not re-upload or reformat a whole document for a small change.",
     "- Do not submit if there is no visible change.",
     "- The server may apply the edit directly, turn each changed hunk into its own pending proposal, or reject it. Check the returned `outcome`.",
-    "- Proposal/change titles must be short but descriptive: aim for a sentence fragment under 72 characters, not a vague label and not a paragraph.",
+    "- Proposal/change family titles must be short but descriptive: aim for a PR-style sentence fragment under 72 characters, not a vague label and not a paragraph.",
     "- Re-read and retry on revision conflicts.",
     "- You may read proposals created by the user and by others, and may add comments/replies to either document content or a specific proposal diff by passing `proposalId` to the comment tools.",
+    "- A proposal with `conflictStatus: \"conflict\"` needs human review against the current document; it does not always mean two users made competing proposals. True overlap resolution happens in Creed's human review UI. Agents should re-read the document, comment, or submit a fresh targeted proposal rather than trying to resolve someone else's proposal.",
     "- Do not try to edit or delete other people's proposals. Do not edit, delete, resolve, or reopen comments/replies unless they were authored by the OAuth user whose token you are using.",
     "",
     "Editor Markdown contract:",

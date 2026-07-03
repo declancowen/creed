@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { diffWords } from "diff";
 import {
   useCallback,
   useEffect,
@@ -95,6 +96,7 @@ import {
 import { ReviewPill } from "@/components/creed/review-pill";
 import {
   DocumentReviewPanel,
+  type DocumentHistoryJumpTarget,
   type DocumentProposal,
 } from "@/components/creed/document-review-panel";
 import {
@@ -1050,6 +1052,87 @@ function proposalDiffLabel(proposal: DocumentProposal) {
   return proposal.classification || `Proposal ${proposal.hunkIndex + 1}`;
 }
 
+function markdownToDocumentHunkDiffText(markdown: string) {
+  const text = htmlToText(markdownToRichHtml(markdown));
+  const leading = /^\s/.test(markdown) ? " " : "";
+  const trailing = /\s$/.test(markdown) ? " " : "";
+  if (!text) return leading || trailing;
+  return `${leading}${text}${trailing}`;
+}
+
+function documentHunkDiffParts(proposal: Pick<DocumentProposal, "hunkBefore" | "hunkAfter">) {
+  return diffWords(
+    markdownToDocumentHunkDiffText(proposal.hunkBefore),
+    markdownToDocumentHunkDiffText(proposal.hunkAfter)
+  );
+}
+
+function summarizeDocumentHunkDiff(proposal: Pick<DocumentProposal, "hunkBefore" | "hunkAfter">) {
+  return summarizeDiff(documentHunkDiffParts(proposal));
+}
+
+function proposalOriginalRange(proposal: DocumentProposal): { start: number; end: number } {
+  const start = Math.max(0, Math.min(proposal.hunkBeforeStart, proposal.hunkBeforeEnd));
+  const end = Math.max(start, proposal.hunkBeforeStart, proposal.hunkBeforeEnd);
+  // Conflict grouping must be based on the original source span only. The
+  // proposal's "after" offsets describe the draft text and can be much wider
+  // after earlier hunks shift content, which incorrectly joins unrelated
+  // conflicts into one resolver group.
+  return { start, end: end > start ? end : start + 1 };
+}
+
+function proposalRangesOverlap(
+  left: { start: number; end: number },
+  right: { start: number; end: number }
+) {
+  return left.start < right.end && right.start < left.end;
+}
+
+function documentConflictGroups(proposals: DocumentProposal[]) {
+  const conflicts = proposals
+    .filter((proposal) => proposal.conflictStatus === "conflict")
+    .sort((left, right) => left.hunkBeforeStart - right.hunkBeforeStart || left.createdAt.localeCompare(right.createdAt));
+  const ranges = new Map(conflicts.map((proposal) => [proposal.id, proposalOriginalRange(proposal)]));
+  const seen = new Set<string>();
+  const groups: DocumentProposal[][] = [];
+
+  for (const proposal of conflicts) {
+    if (seen.has(proposal.id)) continue;
+    const queue = [proposal];
+    const group: DocumentProposal[] = [];
+    seen.add(proposal.id);
+
+    for (let index = 0; index < queue.length; index += 1) {
+      const current = queue[index];
+      group.push(current);
+      const currentRange = ranges.get(current.id);
+      if (!currentRange) continue;
+
+      for (const candidate of conflicts) {
+        if (seen.has(candidate.id)) continue;
+        const candidateRange = ranges.get(candidate.id);
+        if (!candidateRange || !proposalRangesOverlap(currentRange, candidateRange)) continue;
+        seen.add(candidate.id);
+        queue.push(candidate);
+      }
+    }
+
+    groups.push(
+      group.sort((left, right) => left.hunkBeforeStart - right.hunkBeforeStart || left.createdAt.localeCompare(right.createdAt))
+    );
+  }
+
+  return groups;
+}
+
+function documentConflictChoiceGroups(proposals: DocumentProposal[]) {
+  return documentConflictGroups(proposals).filter((group) => group.length > 1);
+}
+
+function documentConflictChoiceIds(proposals: DocumentProposal[]) {
+  return new Set(documentConflictChoiceGroups(proposals).flatMap((group) => group.map((proposal) => proposal.id)));
+}
+
 // Person attribution for a document proposal: prefer the workspace user behind
 // the change (avatar + display name), fall back to the agent/MCP label, and
 // finally to a neutral placeholder. Mirrors the review panel's resolvePerson so
@@ -1107,31 +1190,61 @@ function DiffPersonBadge({
   );
 }
 
+function DiffAvatarStack({ people }: { people: DiffPerson[] }) {
+  const visible = people.length > 0 ? people.slice(0, 4) : [{ label: "Someone", avatarUrl: null }];
+  const extra = Math.max(0, people.length - visible.length);
+  return (
+    <span
+      className="inline-flex items-center pl-1.5 pr-0.5"
+      title={people.map((person) => person.label).join(", ")}
+    >
+      {visible.map((person, index) => (
+        <Avatar
+          key={`${person.label}:${index}`}
+          size="sm"
+          className={cn(
+            "size-6! shrink-0 border-2 border-[var(--creed-surface)]",
+            index > 0 && "-ml-2"
+          )}
+        >
+          {person.avatarUrl ? <AvatarImage src={person.avatarUrl} alt={person.label} /> : null}
+          <AvatarFallback className="text-[10px]!">{diffPersonInitial(person.label)}</AvatarFallback>
+        </Avatar>
+      ))}
+      {extra > 0 ? (
+        <span className="-ml-2 inline-flex h-6 min-w-6 items-center justify-center rounded-full border-2 border-[var(--creed-surface)] bg-[var(--creed-surface-raised)] px-1 text-[10px] font-medium text-[var(--creed-text-secondary)]">
+          +{extra}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 // Floating per-diff toolbar shown on hover (or when the diff is the active one).
 // Built from phrasing content (spans + buttons) so it stays valid whether it's
 // dropped inside a block-level diff card or an inline hunk that lives in a
-// paragraph. Mirrors the review pill: person, proposal title, +/- count, then
-// comment / reject / accept.
+// paragraph.
 function DiffHoverToolbar({
   proposal,
-  person,
-  stats,
+  people,
   active,
   busy,
+  conflict,
   commentCount,
   onResolve,
   onStartComment,
+  onShowConflict,
 }: {
   proposal: DocumentProposal;
-  person: DiffPerson;
-  stats: { added: number; removed: number };
+  people: DiffPerson[];
   active: boolean;
   busy: boolean;
+  conflict: boolean;
   commentCount: number;
   onResolve: (proposalId: string, action: "accept" | "reject") => Promise<void>;
   onStartComment: (proposalId: string) => void;
+  onShowConflict: (proposalId: string) => void;
 }) {
-  const label = proposalDiffLabel(proposal);
   const toolbarRef = useRef<HTMLSpanElement | null>(null);
 
   // Keep the floating toolbar inside the visible editor column. The sidebar can
@@ -1178,7 +1291,7 @@ function DiffHoverToolbar({
       window.removeEventListener("resize", schedulePosition);
       if (frame !== null) window.cancelAnimationFrame(frame);
     };
-  }, [label, stats.added, stats.removed]);
+  }, [commentCount, conflict, people.length]);
 
   return (
     <span
@@ -1194,20 +1307,8 @@ function DiffHoverToolbar({
         active && "pointer-events-auto opacity-100"
       )}
     >
-      <span className="inline-flex flex-nowrap items-center gap-1 whitespace-nowrap rounded-[14px] border border-[var(--creed-border)] bg-[var(--creed-surface)] p-1 shadow-[0_10px_30px_rgba(28,28,26,0.16)]">
-        <DiffPersonBadge
-          person={person}
-          className="pl-1.5"
-          labelClassName="max-w-[112px] text-[var(--creed-text-primary)]"
-        />
-        <span className="hidden max-w-[140px] truncate text-[12px] text-[var(--creed-text-tertiary)] md:inline">
-          {label}
-        </span>
-        <span className="text-[var(--creed-text-tertiary)]">·</span>
-        <span className="inline-flex items-center gap-1 pr-1">
-          <DiffBadge tone="added" count={stats.added} size="md" />
-          <DiffBadge tone="removed" count={stats.removed} size="md" />
-        </span>
+      <span className="inline-flex flex-nowrap items-center gap-1 whitespace-nowrap rounded-[16px] border border-[var(--creed-border)] bg-[var(--creed-surface)] p-1 shadow-[0_10px_30px_rgba(28,28,26,0.16)]">
+        <DiffAvatarStack people={people} />
         <button
           type="button"
           onClick={() => onStartComment(proposal.id)}
@@ -1232,13 +1333,25 @@ function DiffHoverToolbar({
         </button>
         <button
           type="button"
-          onClick={() => void onResolve(proposal.id, "accept")}
+          onClick={() => {
+            if (conflict) {
+              onShowConflict(proposal.id);
+              return;
+            }
+            void onResolve(proposal.id, "accept");
+          }}
           disabled={busy}
-          aria-label="Accept this diff"
-          className="inline-flex h-7 items-center gap-1 rounded-md bg-[#2563eb] px-2.5 text-[12px] font-medium text-white transition-colors hover:bg-[#1d4ed8] disabled:opacity-50"
+          aria-label={conflict ? "Show conflict" : "Accept this diff"}
+          title={conflict ? "Show conflict" : "Accept this diff"}
+          className={cn(
+            "inline-flex h-7 items-center gap-1 rounded-md px-2.5 text-[12px] font-medium transition-colors disabled:opacity-50",
+            conflict
+              ? "bg-[color-mix(in_srgb,#f59e0b_14%,transparent)] text-[#b45309] hover:bg-[color-mix(in_srgb,#f59e0b_20%,transparent)]"
+              : "bg-[#2563eb] text-white hover:bg-[#1d4ed8]"
+          )}
         >
-          <Check className="h-3.5 w-3.5" />
-          <span className="hidden lg:inline">Accept</span>
+          {conflict ? <AlertTriangle className="h-3.5 w-3.5" /> : <Check className="h-3.5 w-3.5" />}
+          <span className="hidden lg:inline">{conflict ? "Show conflict" : "Accept"}</span>
         </button>
       </span>
     </span>
@@ -1260,30 +1373,29 @@ function RenderedMarkdownSegment({ markdown }: { markdown: string }) {
 function DocumentProposalInlineDiff({
   proposal,
   conflict,
+  showConflictAction,
   active,
-  person,
+  people,
   busy,
   commentCount,
   onResolve,
   onStartComment,
+  onShowConflict,
   onHover,
 }: {
   proposal: DocumentProposal;
   conflict: boolean;
+  showConflictAction: boolean;
   active: boolean;
-  person: DiffPerson;
+  people: DiffPerson[];
   busy: boolean;
   commentCount: number;
   onResolve: (proposalId: string, action: "accept" | "reject") => Promise<void>;
   onStartComment: (proposalId: string) => void;
+  onShowConflict: (proposalId: string) => void;
   onHover: () => void;
 }) {
-  const parts = useMemo(
-    () =>
-      computeDiffParts(markdownToRichHtml(proposal.hunkBefore), markdownToRichHtml(proposal.hunkAfter)),
-    [proposal.hunkAfter, proposal.hunkBefore]
-  );
-  const stats = useMemo(() => summarizeDiff(parts), [parts]);
+  const parts = useMemo(() => documentHunkDiffParts(proposal), [proposal]);
 
   return (
     <div
@@ -1292,22 +1404,22 @@ function DocumentProposalInlineDiff({
       data-conflict={conflict ? "true" : "false"}
       data-has-comments={commentCount > 0 ? "true" : "false"}
       onMouseEnter={onHover}
-      // No block background wash: the diff is signalled entirely by the
-      // add/remove (or amber conflict) word tokens, which brighten on hover
-      // and when the diff is the active/selected one (see globals.css).
+      // No block background wash: the diff is signalled by the add/remove word
+      // tokens, which brighten on hover and when the diff is active.
       className="group/document-diff relative -mx-3 scroll-mt-32 rounded-md px-3 py-1.5"
     >
       {/* Hover toolbar - appears above the diff on hover or when this diff is
           the active/selected one. */}
       <DiffHoverToolbar
         proposal={proposal}
-        person={person}
-        stats={stats}
+        people={people}
         active={active}
         busy={busy}
+        conflict={showConflictAction}
         commentCount={commentCount}
         onResolve={onResolve}
         onStartComment={onStartComment}
+        onShowConflict={onShowConflict}
       />
 
       <div className="creed-diff-block">
@@ -1412,33 +1524,29 @@ function splitContentFlow(markdown: string): ContentFlowPart[] {
 function InlineDocumentProposalHunk({
   proposal,
   conflict,
+  showConflictAction,
   active,
-  person,
+  people,
   busy,
   commentCount,
   onResolve,
   onStartComment,
+  onShowConflict,
   onHover,
 }: {
   proposal: DocumentProposal;
   conflict: boolean;
+  showConflictAction: boolean;
   active: boolean;
-  person: DiffPerson;
+  people: DiffPerson[];
   busy: boolean;
   commentCount: number;
   onResolve: (proposalId: string, action: "accept" | "reject") => Promise<void>;
   onStartComment: (proposalId: string) => void;
+  onShowConflict: (proposalId: string) => void;
   onHover: () => void;
 }) {
-  const parts = useMemo(
-    () =>
-      computeDiffParts(
-        markdownToRichHtml(proposal.hunkBefore),
-        markdownToRichHtml(proposal.hunkAfter)
-      ),
-    [proposal.hunkAfter, proposal.hunkBefore]
-  );
-  const stats = useMemo(() => summarizeDiff(parts), [parts]);
+  const parts = useMemo(() => documentHunkDiffParts(proposal), [proposal]);
 
   return (
     <span
@@ -1447,20 +1555,21 @@ function InlineDocumentProposalHunk({
       data-conflict={conflict ? "true" : "false"}
       data-has-comments={commentCount > 0 ? "true" : "false"}
       onMouseEnter={onHover}
-      // No block wash: the change reads through its add/remove (or amber
-      // conflict) word tokens, which brighten on hover / when active. `relative`
-      // anchors the hover toolbar without disturbing the surrounding text flow.
+      // No block wash: the change reads through its add/remove word tokens,
+      // which brighten on hover / when active. `relative` anchors the hover
+      // toolbar without disturbing the surrounding text flow.
       className="creed-diff-inline group/document-diff relative"
     >
       <DiffHoverToolbar
         proposal={proposal}
-        person={person}
-        stats={stats}
+        people={people}
         active={active}
         busy={busy}
+        conflict={showConflictAction}
         commentCount={commentCount}
         onResolve={onResolve}
         onStartComment={onStartComment}
+        onShowConflict={onShowConflict}
       />
       {parts.map((part, index) => {
         if (part.added) {
@@ -1491,10 +1600,13 @@ function DocumentProposalDiffBody({
   usersById,
   proposalCommentCounts,
   diffSidebarOpen,
+  conflictResolverOpen,
   onToggleDiffSidebar,
   onResolve,
   onResolveMany,
   onStartComment,
+  onShowConflict,
+  onShowAllConflicts,
   onClearActive,
 }: {
   content: string;
@@ -1504,10 +1616,13 @@ function DocumentProposalDiffBody({
   usersById: Map<string, WorkspaceUser>;
   proposalCommentCounts: Map<string, number>;
   diffSidebarOpen: boolean;
+  conflictResolverOpen: boolean;
   onToggleDiffSidebar: () => void;
   onResolve: (proposalId: string, action: "accept" | "reject") => Promise<void>;
   onResolveMany: (proposalIds: string[], action: "accept" | "reject") => Promise<void>;
   onStartComment: (proposalId: string) => void;
+  onShowConflict: (proposalId: string) => void;
+  onShowAllConflicts: () => void;
   onClearActive: () => void;
 }) {
   const segments = useMemo(
@@ -1549,14 +1664,24 @@ function DocumentProposalDiffBody({
   const statsByProposal = useMemo(() => {
     const map = new Map<string, { added: number; removed: number }>();
     for (const proposal of proposals) {
-      const parts = computeDiffParts(
-        markdownToRichHtml(proposal.hunkBefore),
-        markdownToRichHtml(proposal.hunkAfter)
-      );
+      const parts = documentHunkDiffParts(proposal);
       map.set(proposal.id, summarizeDiff(parts));
     }
     return map;
   }, [proposals]);
+  const conflictChoiceProposalIds = useMemo(() => documentConflictChoiceIds(proposals), [proposals]);
+  const conflictPeopleByProposal = useMemo(() => {
+    const map = new Map<string, DiffPerson[]>();
+    const conflicts = proposals.filter((proposal) => proposal.conflictStatus === "conflict");
+    for (const proposal of conflicts) {
+      const range = proposalOriginalRange(proposal);
+      const people = conflicts
+        .filter((candidate) => proposalRangesOverlap(range, proposalOriginalRange(candidate)))
+        .map((candidate) => resolveProposalPerson(candidate, usersById));
+      map.set(proposal.id, people.length > 0 ? people : [resolveProposalPerson(proposal, usersById)]);
+    }
+    return map;
+  }, [proposals, usersById]);
 
   useEffect(() => {
     const container = bodyRef.current;
@@ -1770,13 +1895,20 @@ function DocumentProposalDiffBody({
   }, [childIndexAtY, applyBlockSelection, startBlockDrag, clearBlockWash]);
 
   async function resolveSelected(action: "accept" | "reject") {
-    const targets = selectedProposalIds.filter((id) => statsByProposal.has(id));
-    if (targets.length === 0) return;
+    const selectedIds = selectedProposalIds.filter((id) => statsByProposal.has(id));
+    const hasConflicts = action === "accept" && selectedIds.some((id) => conflictChoiceProposalIds.has(id));
+    if (hasConflicts) {
+      const firstConflict = selectedIds.find((id) => conflictChoiceProposalIds.has(id));
+      if (firstConflict) onShowConflict(firstConflict);
+      toast.error("Resolve the selected conflict before accepting.");
+      return;
+    }
+    if (selectedIds.length === 0) return;
     clearBlockWash();
     setSelectedProposalIds([]);
     setBlockHandle(null);
     window.getSelection()?.removeAllRanges();
-    await onResolveMany(targets, action);
+    await onResolveMany(selectedIds, action);
   }
 
 
@@ -1844,6 +1976,11 @@ function DocumentProposalDiffBody({
       }
 
       const proposal = segment.proposal;
+      const person = resolveProposalPerson(proposal, usersById);
+      const people = segment.conflict
+        ? conflictPeopleByProposal.get(proposal.id) ?? [person]
+        : [person];
+      const showConflictAction = conflictChoiceProposalIds.has(proposal.id);
       const blockHunk =
         isBlockMarkdownSlice(proposal.hunkBefore) || isBlockMarkdownSlice(proposal.hunkAfter);
       // Inside an open callout run, keep the hunk inline so it stays within the
@@ -1855,13 +1992,15 @@ function DocumentProposalDiffBody({
           <DocumentProposalInlineDiff
             key={segment.key}
             proposal={proposal}
-            conflict={segment.conflict}
+            conflict={showConflictAction}
+            showConflictAction={showConflictAction}
             active={activeProposalId === proposal.id}
-            person={resolveProposalPerson(proposal, usersById)}
+            people={people}
             busy={busyProposal === proposal.id}
             commentCount={proposalCommentCounts.get(proposal.id) ?? 0}
             onResolve={onResolve}
             onStartComment={onStartComment}
+            onShowConflict={onShowConflict}
             onHover={onClearActive}
           />
         );
@@ -1870,13 +2009,15 @@ function DocumentProposalDiffBody({
           <InlineDocumentProposalHunk
             key={segment.key}
             proposal={proposal}
-            conflict={segment.conflict}
+            conflict={showConflictAction}
+            showConflictAction={showConflictAction}
             active={activeProposalId === proposal.id}
-            person={resolveProposalPerson(proposal, usersById)}
+            people={people}
             busy={busyProposal === proposal.id}
             commentCount={proposalCommentCounts.get(proposal.id) ?? 0}
             onResolve={onResolve}
             onStartComment={onStartComment}
+            onShowConflict={onShowConflict}
             onHover={onClearActive}
           />
         );
@@ -1891,13 +2032,32 @@ function DocumentProposalDiffBody({
     busyProposal,
     usersById,
     proposalCommentCounts,
+    conflictPeopleByProposal,
+    conflictChoiceProposalIds,
     onResolve,
     onStartComment,
+    onShowConflict,
     onClearActive,
   ]);
 
   async function resolveAll(action: "accept" | "reject") {
-    await onResolveMany(proposals.map((proposal) => proposal.id), action);
+    if (action === "reject") {
+      await onResolveMany(proposals.map((proposal) => proposal.id), action);
+      return;
+    }
+    const clean = proposals.filter((proposal) => !conflictChoiceProposalIds.has(proposal.id));
+    const conflicts = conflictChoiceProposalIds.size;
+    if (conflicts > 0) {
+      setBlockHandle(null);
+      onShowAllConflicts();
+      toast.error(
+        conflicts === 1
+          ? "Resolve the conflict before accepting all."
+          : `Resolve ${conflicts} conflicts before accepting all.`
+      );
+      return;
+    }
+    await onResolveMany(clean.map((proposal) => proposal.id), "accept");
   }
 
   // Live-derived selection contents: filter out any selected proposals that
@@ -1915,6 +2075,7 @@ function DocumentProposalDiffBody({
     },
     { added: 0, removed: 0 }
   );
+  const conflictCount = conflictChoiceProposalIds.size;
 
   return (
     <>
@@ -1975,7 +2136,7 @@ function DocumentProposalDiffBody({
           </svg>
         </button>
       ) : null}
-      {proposals.length > 0 ? (
+      {proposals.length > 0 && !conflictResolverOpen ? (
         <div data-file-export-hidden className="sticky bottom-4 z-[60] mt-10 flex justify-center">
           {popupActiveIds.length > 0 ? (
             // A selection is active: replace the Accept-all / Reject-all bar
@@ -2051,6 +2212,15 @@ function DocumentProposalDiffBody({
                 <FileStack className="h-3.5 w-3.5" />
               </Button>
               <span className="h-5 w-px bg-[var(--creed-border)]" />
+              {conflictCount > 0 ? (
+                <>
+                  <span className="inline-flex items-center gap-1 rounded-md bg-[color-mix(in_srgb,#f59e0b_12%,transparent)] px-2 py-1 text-[12px] font-medium text-[#b45309]">
+                    <AlertTriangle className="h-3.5 w-3.5" />
+                    {conflictCount}
+                  </span>
+                  <span className="h-5 w-px bg-[var(--creed-border)]" />
+                </>
+              ) : null}
               <Button
                 variant="ghost"
                 size="sm"
@@ -2075,6 +2245,135 @@ function DocumentProposalDiffBody({
         </div>
       ) : null}
     </>
+  );
+}
+
+function DocumentConflictResolverDialog({
+  groups,
+  usersById,
+  busyProposal,
+  onResolve,
+  onClose,
+}: {
+  groups: Array<{
+    activeProposalId: string;
+    proposals: DocumentProposal[];
+  }> | null;
+  usersById: Map<string, WorkspaceUser>;
+  busyProposal: string | null;
+  onResolve: (proposalId: string, action: "accept" | "reject") => Promise<void>;
+  onClose: () => void;
+}) {
+  const conflictGroups = groups ?? [];
+  const proposalCount = conflictGroups.reduce((total, group) => total + group.proposals.length, 0);
+
+  async function resolveProposal(proposalId: string, action: "accept" | "reject") {
+    await onResolve(proposalId, action);
+  }
+
+  return (
+    <Dialog open={conflictGroups.length > 0} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-h-[84vh] w-[min(1680px,calc(100vw-40px))] max-w-none overflow-hidden rounded-[18px] border-[var(--creed-border)] bg-[var(--creed-surface)] p-0">
+        <DialogHeader className="flex-row items-center justify-between gap-3 space-y-0 border-b border-[var(--creed-border)] px-7 py-4 pr-14">
+          <div className="flex min-w-0 items-baseline gap-2.5">
+            <DialogTitle className="text-[16px]">Resolve conflict</DialogTitle>
+            <span className="shrink-0 text-[12px] font-medium text-[var(--creed-text-tertiary)]">
+              {proposalCount} {proposalCount === 1 ? "proposal" : "proposals"}
+            </span>
+          </div>
+        </DialogHeader>
+        <ScrollArea className="max-h-[calc(84vh-72px)]">
+          <div className="space-y-5 px-7 py-5">
+            {conflictGroups.map((group, groupIndex) => (
+              <div key={`${group.activeProposalId}:${groupIndex}`} className="space-y-2">
+                {conflictGroups.length > 1 ? (
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-[var(--creed-text-tertiary)]">
+                    Conflict {groupIndex + 1}
+                  </div>
+                ) : null}
+                {group.proposals.map((proposal) => {
+              const person = resolveProposalPerson(proposal, usersById);
+              const stats = summarizeDocumentHunkDiff(proposal);
+              const parts = documentHunkDiffParts(proposal);
+              const busy = busyProposal === proposal.id;
+              const isActive = proposal.id === group.activeProposalId;
+
+              return (
+                <div
+                  key={proposal.id}
+                  className={cn(
+                    "rounded-[12px] border bg-[var(--creed-surface)] p-3",
+                    isActive
+                      ? "border-[color-mix(in_srgb,#f59e0b_62%,var(--creed-border))] ring-1 ring-[color-mix(in_srgb,#f59e0b_24%,transparent)]"
+                      : "border-[var(--creed-border)]"
+                  )}
+                >
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <DiffPersonBadge
+                      person={person}
+                      labelClassName="text-[13px] text-[var(--creed-text-primary)]"
+                    />
+                    <span className="inline-flex shrink-0 items-center gap-1.5">
+                      <span className="inline-flex items-center gap-1">
+                        <DiffBadge tone="added" count={stats.added} size="md" />
+                        <DiffBadge tone="removed" count={stats.removed} size="md" />
+                      </span>
+                      <span className="mx-0.5 h-5 w-px bg-[var(--creed-border)]" />
+                      <button
+                        type="button"
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--creed-text-secondary)] transition-colors hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)] disabled:opacity-40"
+                        disabled={Boolean(busyProposal)}
+                        aria-label="Reject proposal"
+                        title="Reject"
+                        onClick={() => void resolveProposal(proposal.id, "reject")}
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                      <button
+                        type="button"
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--creed-accent)] transition-colors hover:bg-[color-mix(in_srgb,var(--creed-accent)_10%,transparent)] disabled:opacity-40"
+                        disabled={Boolean(busyProposal)}
+                        aria-label="Accept proposal"
+                        title="Accept"
+                        onClick={() => void resolveProposal(proposal.id, "accept")}
+                      >
+                        {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                      </button>
+                    </span>
+                  </div>
+
+                  <div className="creed-diff-block rounded-[10px] border border-[var(--creed-border)] bg-[var(--creed-background)] px-4 py-3 text-[14px] leading-7">
+                    {parts.length > 0 ? (
+                      parts.map((part, index) => {
+                        if (part.added) {
+                          return (
+                            <span key={index} className="creed-diff-add">
+                              {part.value}
+                            </span>
+                          );
+                        }
+                        if (part.removed) {
+                          return (
+                            <span key={index} className="creed-diff-remove">
+                              {part.value}
+                            </span>
+                          );
+                        }
+                        return <span key={index}>{part.value}</span>;
+                      })
+                    ) : (
+                      <span className="text-[var(--creed-text-tertiary)]">No textual change</span>
+                    )}
+                  </div>
+                </div>
+              );
+                })}
+              </div>
+            ))}
+          </div>
+        </ScrollArea>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -2143,6 +2442,8 @@ export function FileScreen({
   const [documentPendingProposalsLoading, setDocumentPendingProposalsLoading] = useState(true);
   const [busyDocumentDiffProposal, setBusyDocumentDiffProposal] = useState<string | null>(null);
   const [activeDocumentDiffProposalId, setActiveDocumentDiffProposalId] = useState<string | null>(null);
+  const [activeConflictProposalId, setActiveConflictProposalId] = useState<string | null>(null);
+  const [showAllConflictGroups, setShowAllConflictGroups] = useState(false);
   // Which diff's comment composer is open in the review rail. Lifted here so the
   // inline hover toolbar's Comment button can open it while the composer itself
   // stays in the rail (where there's room for the textarea).
@@ -2198,6 +2499,8 @@ export function FileScreen({
       setDocumentPendingProposalsLoading(true);
       setBusyDocumentDiffProposal(null);
       setActiveDocumentDiffProposalId(null);
+      setActiveConflictProposalId(null);
+      setShowAllConflictGroups(false);
       setDiffCommentProposalId(null);
       return;
     }
@@ -2221,6 +2524,8 @@ export function FileScreen({
     setDocumentPendingProposalsLoading(true);
     setBusyDocumentDiffProposal(null);
     setActiveDocumentDiffProposalId(null);
+    setActiveConflictProposalId(null);
+    setShowAllConflictGroups(false);
     setDiffCommentProposalId(null);
     setShareUrl(
       sharedDocument.document.publicShareEnabled && sharedDocument.document.publicShareId
@@ -2250,6 +2555,85 @@ export function FileScreen({
       ?.querySelector<HTMLElement>(selector)
       ?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, []);
+  const scrollToDocumentHistoryChange = useCallback((target: DocumentHistoryJumpTarget) => {
+    setDocumentDiffOpen(false);
+    setDocumentDiffSidebarOpen(false);
+    setActiveDocumentPanel(null);
+
+    window.requestAnimationFrame(() => {
+      const container = editorScrollRef.current;
+      const editor = container?.querySelector<HTMLElement>("[data-document-block-editor]");
+      if (!container || !editor) return;
+
+      const sectionLabel = target.label.split(":")[0]?.trim().toLocaleLowerCase() ?? "";
+      const headings = Array.from(
+        editor.querySelectorAll<HTMLElement>("[data-section-id], .ProseMirror h1, .ProseMirror h2, .ProseMirror h3")
+      );
+      const heading = sectionLabel
+        ? headings.find((item) => {
+            const text = item.textContent?.trim().toLocaleLowerCase() ?? "";
+            return text.length > 0 && (text.includes(sectionLabel) || sectionLabel.includes(text));
+          })
+        : null;
+
+      (heading ?? editor).scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, []);
+
+  const showDocumentConflict = useCallback(
+    (proposalId: string) => {
+      setShowAllConflictGroups(false);
+      setActiveConflictProposalId(proposalId);
+      scrollToDocumentDiffProposal(proposalId);
+    },
+    [scrollToDocumentDiffProposal]
+  );
+
+  const showAllDocumentConflicts = useCallback(() => {
+    setActiveConflictProposalId(null);
+    setShowAllConflictGroups(true);
+  }, []);
+
+  const allConflictGroups = useMemo(
+    () => documentConflictChoiceGroups(documentPendingProposals),
+    [documentPendingProposals]
+  );
+
+  const activeConflictGroups = useMemo(() => {
+    if (!currentDocument) return null;
+    if (showAllConflictGroups) return allConflictGroups.map((group) => ({
+      activeProposalId: group[0]?.id ?? "",
+      proposals: group,
+    })).filter((group) => group.proposals.length > 0);
+    if (!activeConflictProposalId) return null;
+    const active = documentPendingProposals.find(
+      (proposal) => proposal.id === activeConflictProposalId && proposal.conflictStatus === "conflict"
+    );
+    if (!active) return null;
+
+    const activeRange = proposalOriginalRange(active);
+    const proposals = documentPendingProposals
+      .filter((proposal) => proposal.conflictStatus === "conflict")
+      .filter((proposal) => proposalRangesOverlap(activeRange, proposalOriginalRange(proposal)))
+      .sort((left, right) => left.hunkBeforeStart - right.hunkBeforeStart || left.createdAt.localeCompare(right.createdAt));
+    if (proposals.length < 2) return null;
+
+    return [{
+      activeProposalId: active.id,
+      proposals: proposals.some((proposal) => proposal.id === active.id) ? proposals : [active, ...proposals],
+    }];
+  }, [activeConflictProposalId, allConflictGroups, currentDocument, documentPendingProposals, showAllConflictGroups]);
+
+  useEffect(() => {
+    if (showAllConflictGroups && allConflictGroups.length === 0) {
+      setShowAllConflictGroups(false);
+    }
+    if (!activeConflictProposalId) return;
+    const stillPending = documentPendingProposals.some(
+      (proposal) => proposal.id === activeConflictProposalId && proposal.conflictStatus === "conflict"
+    );
+    if (!stillPending) setActiveConflictProposalId(null);
+  }, [activeConflictProposalId, allConflictGroups.length, documentPendingProposals, showAllConflictGroups]);
 
   const documentOutline = useMemo(
     () => (documentMode ? documentOutlineFromHtml(documentContentHtml) : []),
@@ -4186,6 +4570,8 @@ export function FileScreen({
                         setActiveDocumentPanel(null);
                       }
                     }}
+                    onJumpToHistoryChange={scrollToDocumentHistoryChange}
+                    onShowAllConflicts={showAllDocumentConflicts}
                     onPendingProposalsChange={(proposals) => {
                       setDocumentPendingProposals(proposals);
                       if (proposals.length > 0) setDocumentPendingProposalsLoading(false);
@@ -4261,6 +4647,7 @@ export function FileScreen({
                   usersById={documentUsersById}
                   proposalCommentCounts={proposalCommentCountsByProposalId}
                   diffSidebarOpen={documentDiffSidebarOpen}
+                  conflictResolverOpen={Boolean(activeConflictGroups?.length)}
                   onToggleDiffSidebar={() => {
                     setDocumentDiffSidebarOpen((open) => {
                       if (!open) setActiveDocumentPanel(null);
@@ -4275,6 +4662,8 @@ export function FileScreen({
                     scrollToDocumentDiffProposal(proposalId);
                     setDiffCommentProposalId(proposalId);
                   }}
+                  onShowConflict={showDocumentConflict}
+                  onShowAllConflicts={showAllDocumentConflicts}
                   onClearActive={() => setActiveDocumentDiffProposalId(null)}
                 />
               ) : documentMode && currentDocument ? (
@@ -4475,6 +4864,7 @@ export function FileScreen({
                   onCommentingProposalIdChange={setDiffCommentProposalId}
                   onNavigate={scrollToDocumentDiffProposal}
                   onResolve={resolveDocumentDiffProposal}
+                  onShowConflict={showDocumentConflict}
                   onComment={createDocumentCommentForProposal}
                   onClose={() => setDocumentDiffSidebarOpen(false)}
                 />
@@ -4522,6 +4912,17 @@ export function FileScreen({
         )}
 
       </div>
+
+      <DocumentConflictResolverDialog
+        groups={activeConflictGroups}
+        usersById={documentUsersById}
+        busyProposal={busyDocumentDiffProposal}
+        onResolve={resolveDocumentDiffProposal}
+        onClose={() => {
+          setActiveConflictProposalId(null);
+          setShowAllConflictGroups(false);
+        }}
+      />
 
       <Dialog open={shareDialogOpen} onOpenChange={setShareDialogOpen}>
         <DialogContent className="rounded-[var(--radius-xl)] border-[var(--creed-border)] bg-[var(--creed-surface)]">
@@ -5383,6 +5784,7 @@ function DocumentDiffRail({
   onCommentingProposalIdChange,
   onNavigate,
   onResolve,
+  onShowConflict,
   onComment,
   onClose,
 }: {
@@ -5399,6 +5801,7 @@ function DocumentDiffRail({
   onCommentingProposalIdChange: (proposalId: string | null) => void;
   onNavigate: (proposalId: string) => void;
   onResolve: (proposalId: string, action: "accept" | "reject") => Promise<void>;
+  onShowConflict: (proposalId: string) => void;
   onComment: (proposal: DocumentProposal, body: string) => Promise<void>;
   onClose: () => void;
 }) {
@@ -5476,18 +5879,15 @@ function DocumentDiffRail({
     let added = 0;
     let removed = 0;
     for (const proposal of proposals) {
-      const stats = summarizeDiff(
-        computeDiffParts(
-          markdownToRichHtml(proposal.hunkBefore),
-          markdownToRichHtml(proposal.hunkAfter)
-        )
-      );
+      const stats = summarizeDocumentHunkDiff(proposal);
       added += stats.added;
       removed += stats.removed;
     }
     return { added, removed };
   }, [proposals]);
   const showLoading = loading && proposals.length === 0;
+  const conflictChoiceProposalIds = useMemo(() => documentConflictChoiceIds(proposals), [proposals]);
+  const conflictCount = conflictChoiceProposalIds.size;
 
   return (
     <DocumentSidebarShell
@@ -5496,6 +5896,8 @@ function DocumentDiffRail({
       subtitle={
         showLoading
           ? "Loading proposals..."
+          : conflictCount > 0
+          ? `${conflictCount} ${conflictCount === 1 ? "conflict needs" : "conflicts need"} review before accepting all`
           : proposals.length === 1
           ? "1 proposal awaiting review"
           : `${proposals.length} proposals awaiting review`
@@ -5534,16 +5936,21 @@ function DocumentDiffRail({
                 </div>
               ))
             ) : proposals.length ? (
-              proposals.map((proposal) => {
+              <>
+                {conflictCount > 0 ? (
+                  <div className="mb-2 rounded-[10px] border border-[color-mix(in_srgb,#f59e0b_42%,var(--creed-border))] bg-[color-mix(in_srgb,#f59e0b_10%,var(--creed-surface))] px-3 py-2 text-[12px] leading-5 text-[var(--creed-text-secondary)]">
+                    <span className="font-medium text-[var(--creed-text-primary)]">
+                      Resolve conflicts first.
+                    </span>{" "}
+                    Accept all is blocked until the overlapping changes are accepted or rejected individually.
+                  </div>
+                ) : null}
+                {proposals.map((proposal) => {
                 const label = proposalDiffLabel(proposal);
-                const stats = summarizeDiff(
-                  computeDiffParts(
-                    markdownToRichHtml(proposal.hunkBefore),
-                    markdownToRichHtml(proposal.hunkAfter)
-                  )
-                );
+                const stats = summarizeDocumentHunkDiff(proposal);
                 const busy = busyProposal === proposal.id;
-                const conflict = proposal.conflictStatus === "conflict";
+                const conflictChoice = conflictChoiceProposalIds.has(proposal.id);
+                const conflict = conflictChoice;
                 const active = activeProposalId === proposal.id;
                 const commenting = commentingProposalId === proposal.id;
                 const person = resolveProposalPerson(proposal, usersById);
@@ -5580,7 +5987,7 @@ function DocumentDiffRail({
                         {conflict ? (
                           <div className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-medium text-[var(--creed-danger)]">
                             <AlertTriangle className="h-3 w-3" />
-                            Conflict — review before accepting
+                            Conflict - review before accepting
                           </div>
                         ) : null}
                       </div>
@@ -5612,29 +6019,47 @@ function DocumentDiffRail({
                         {commentCount > 0 ? <span>{commentCount}</span> : null}
                       </Button>
                       <div className="ml-auto flex items-center gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 gap-1 rounded-md px-2 text-[11.5px] text-[var(--creed-text-secondary)] hover:bg-[color-mix(in_srgb,var(--creed-danger)_12%,transparent)] hover:text-[var(--creed-danger)]"
-                          disabled={busy}
-                          onClick={() => void onResolve(proposal.id, "reject")}
-                        >
-                          <X className="h-3.5 w-3.5" />
-                          Reject
-                        </Button>
-                        <Button
-                          size="sm"
-                          className="h-6 gap-1 rounded-md bg-[var(--creed-accent)] px-2 text-[11.5px] font-medium text-white shadow-none hover:bg-[var(--creed-accent-hover)]"
-                          disabled={busy}
-                          onClick={() => void onResolve(proposal.id, "accept")}
-                        >
-                          {busy ? (
-                            <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-                          ) : (
-                            <Check className="h-3.5 w-3.5" />
-                          )}
-                          Accept
-                        </Button>
+                        {conflictChoice ? (
+                          <Button
+                            size="sm"
+                            className="h-6 gap-1 rounded-md bg-[color-mix(in_srgb,#f59e0b_14%,transparent)] px-2 text-[11.5px] font-medium text-[#b45309] shadow-none hover:bg-[color-mix(in_srgb,#f59e0b_20%,transparent)]"
+                            disabled={busy}
+                            onClick={() => {
+                              onNavigate(proposal.id);
+                              onShowConflict(proposal.id);
+                            }}
+                          >
+                            <AlertTriangle className="h-3.5 w-3.5" />
+                            Show conflict
+                          </Button>
+                        ) : (
+                          <>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 gap-1 rounded-md px-2 text-[11.5px] text-[var(--creed-text-secondary)] hover:bg-[color-mix(in_srgb,var(--creed-danger)_12%,transparent)] hover:text-[var(--creed-danger)]"
+                              disabled={busy}
+                              onClick={() => void onResolve(proposal.id, "reject")}
+                            >
+                              <X className="h-3.5 w-3.5" />
+                              Reject
+                            </Button>
+                            <Button
+                              size="sm"
+                              className="h-6 gap-1 rounded-md bg-[var(--creed-accent)] px-2 text-[11.5px] font-medium text-white shadow-none hover:bg-[var(--creed-accent-hover)]"
+                              disabled={busy}
+                              title="Accept this proposal"
+                              onClick={() => void onResolve(proposal.id, "accept")}
+                            >
+                              {busy ? (
+                                <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <Check className="h-3.5 w-3.5" />
+                              )}
+                              Accept
+                            </Button>
+                          </>
+                        )}
                       </div>
                     </div>
                     {proposalComments.length ? (
@@ -5693,7 +6118,8 @@ function DocumentDiffRail({
                     ) : null}
                   </div>
                 );
-              })
+              })}
+              </>
             ) : (
               <div className="flex flex-col items-center px-6 py-16 text-center">
                 <div className="flex h-11 w-11 items-center justify-center rounded-full bg-[var(--creed-surface-raised)]">

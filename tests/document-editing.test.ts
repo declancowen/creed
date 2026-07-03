@@ -218,7 +218,7 @@ describe("Property 6: concurrency guard", () => {
     expect(client.count(VERSIONS)).toBe(0);
   });
 
-  it("accepting a proposal whose base_revision is stale is rejected", async () => {
+  it("accepting a stale proposal after conflict review applies the chosen replacement once", async () => {
     const { client, documentId } = createFakeClientWithDocument();
     setPolicy(client, { human: "propose", agent: "direct" });
 
@@ -243,12 +243,15 @@ describe("Property 6: concurrency guard", () => {
       summary: "direct",
     });
     expect(client.rows(DOCS)[0].revision).toBe(2);
+    expect(client.rows(PROPOSALS).find((row) => row.id === proposalId)?.conflict_status).toBe(
+      "conflict"
+    );
 
     const accepted = await acceptDocumentProposal(client, { documentId, proposalId, actorUserId: "user-B" });
-    expect(accepted.ok).toBe(false);
-    if (!accepted.ok) expect(accepted.code).toBe("conflict");
-    // Only the agent's direct edit produced a version.
-    expect(client.count(VERSIONS)).toBe(1);
+    expect(accepted.ok).toBe(true);
+    expect(client.rows(DOCS)[0].content).toBe("# Test Doc\nProposed against v1.");
+    expect(client.rows(DOCS)[0].revision).toBe(3);
+    expect(client.count(VERSIONS)).toBe(2);
   });
 });
 
@@ -475,6 +478,33 @@ describe("Hunk proposals (families + independent accept)", () => {
     expect(client.rows(PROPOSALS).map((row) => row.status)).toEqual(["accepted", "accepted"]);
   });
 
+  it("bulk accept is blocked while any selected hunk is conflicted", async () => {
+    const { client, documentId, proposals } = await proposeBoth();
+    const rows = client.rows(PROPOSALS);
+    client.seed(
+      PROPOSALS,
+      rows.map((row, index) =>
+        index === 0 ? { ...row, conflict_status: "conflict" } : row
+      )
+    );
+
+    const accepted = await acceptDocumentProposals(client, {
+      documentId,
+      proposalIds: proposals.map((proposal) => proposal.id),
+      actorUserId: "u-B",
+    });
+
+    expect(accepted.ok).toBe(false);
+    if (!accepted.ok) {
+      expect(accepted.code).toBe("conflict");
+      expect(accepted.error).toBe("Resolve the conflict before accepting all.");
+    }
+    expect(client.rows(DOCS)[0].content).toBe(MULTI);
+    expect(client.rows(DOCS)[0].revision).toBe(1);
+    expect(client.count(VERSIONS)).toBe(0);
+    expect(client.rows(PROPOSALS).map((row) => row.status)).toEqual(["pending", "pending"]);
+  });
+
   it("bulk rejects selected hunks without changing the document or version history", async () => {
     const { client, documentId, proposals } = await proposeBoth();
 
@@ -514,7 +544,7 @@ describe("Hunk proposals (families + independent accept)", () => {
     expect(client.count(VERSIONS)).toBe(1);
   });
 
-  it("marks overlapping sibling proposals as conflicts", async () => {
+  it("lets a chosen conflict proposal replace the current conflicting text", async () => {
     const before = "# Doc\nOld goal.";
     const firstDraft = "# Doc\nFirst accepted goal.";
     const secondDraft = "# Doc\nSecond accepted goal.";
@@ -552,17 +582,21 @@ describe("Hunk proposals (families + independent accept)", () => {
     expect(acceptedFirst.ok).toBe(true);
     expect(client.rows(DOCS)[0].content).toContain("First accepted goal.");
 
-    const conflictedSecond = await acceptDocumentProposal(client, {
+    expect(client.rows(PROPOSALS).find((row) => row.id === second.id)?.conflict_status).toBe(
+      "conflict"
+    );
+
+    const acceptedSecond = await acceptDocumentProposal(client, {
       documentId,
       proposalId: second.id,
       actorUserId: "u-B",
     });
-    expect(conflictedSecond.ok).toBe(false);
-    if (!conflictedSecond.ok) expect(conflictedSecond.code).toBe("conflict");
-    expect(client.rows(DOCS)[0].content).not.toContain("Second accepted goal.");
-    expect(client.rows(DOCS)[0].revision).toBe(2);
+    expect(acceptedSecond.ok).toBe(true);
+    expect(client.rows(DOCS)[0].content).not.toContain("First accepted goal.");
+    expect(client.rows(DOCS)[0].content).toContain("Second accepted goal.");
+    expect(client.rows(DOCS)[0].revision).toBe(3);
     expect(client.rows(PROPOSALS).find((row) => row.id === second.id)?.conflict_status).toBe(
-      "conflict"
+      "resolved"
     );
   });
 });

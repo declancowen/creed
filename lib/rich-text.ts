@@ -116,9 +116,31 @@ function inline(text: string) {
   });
 }
 
+function inlineLines(lines: string[]) {
+  let html = "";
+  let textRun = "";
+
+  for (const line of lines) {
+    const hardBreak = line.endsWith("\\");
+    const body = hardBreak ? line.slice(0, -1).trimEnd() : line;
+    textRun = textRun ? `${textRun} ${body}` : body;
+
+    if (hardBreak) {
+      html += `${inline(textRun.trim())}<br>`;
+      textRun = "";
+    }
+  }
+
+  if (textRun.trim()) {
+    html += inline(textRun.trim());
+  }
+
+  return html;
+}
+
 function paragraphize(lines: string[]) {
-  const text = lines.join(" ").trim();
-  return text ? `<p>${inline(text)}</p>` : "";
+  const html = inlineLines(lines);
+  return html ? `<p>${html}</p>` : "";
 }
 
 // GFM table helpers. A table is a header row, a delimiter row where each cell
@@ -214,7 +236,7 @@ export function markdownToRichHtml(markdown: string) {
       // Render markdown blockquotes as Creed callouts, which is how the
       // editor styles `<blockquote>` via the `creed-callout` class.
       blocks.push(
-        `<blockquote class="creed-callout"><p>${inline(quoteLines.join(" "))}</p></blockquote>`
+        `<blockquote class="creed-callout"><p>${inlineLines(quoteLines)}</p></blockquote>`
       );
       quoteLines = [];
     }

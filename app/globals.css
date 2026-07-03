@@ -1618,6 +1618,7 @@
   background: rgba(22, 163, 74, 0.12);
   color: #15803d;
   border-radius: 3px;
+  white-space: break-spaces;
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
 }
@@ -1628,6 +1629,7 @@
   text-decoration: line-through;
   text-decoration-color: rgba(185, 28, 28, 0.5);
   border-radius: 3px;
+  white-space: break-spaces;
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
 }
@@ -1699,48 +1701,8 @@
   text-decoration-color: rgba(255, 255, 255, 0.8);
 }
 
-/* Conflict diff tokens read amber/yellow instead of green/red so a hunk that
-   collided with a concurrent edit stays visually distinct. The block itself is
-   never washed - the amber tokens carry the whole signal. Base is a soft amber
-   tint; hover / active go solid amber (like the clean tokens do) so the
-   selected conflict reads unmistakably. */
-[data-document-diff-proposal-id][data-conflict="true"] .creed-diff-add,
-[data-document-diff-proposal-id][data-conflict="true"] .creed-diff-remove {
-  background: rgba(245, 158, 11, 0.18);
-  color: #b45309;
-}
-
-[data-document-diff-proposal-id][data-conflict="true"] .creed-diff-remove {
-  text-decoration-color: rgba(180, 83, 9, 0.55);
-}
-
-[data-document-diff-proposal-id][data-conflict="true"]:hover .creed-diff-add,
-[data-document-diff-proposal-id][data-conflict="true"][data-active="true"] .creed-diff-add,
-[data-document-diff-proposal-id][data-conflict="true"]:hover .creed-diff-remove,
-[data-document-diff-proposal-id][data-conflict="true"][data-active="true"] .creed-diff-remove {
-  background: #f59e0b;
-  color: #ffffff;
-  text-decoration-color: rgba(255, 255, 255, 0.85);
-}
-
-.dark [data-document-diff-proposal-id][data-conflict="true"] .creed-diff-add,
-.dark [data-document-diff-proposal-id][data-conflict="true"] .creed-diff-remove {
-  background: rgba(251, 191, 36, 0.18);
-  color: #fbbf24;
-}
-
-.dark [data-document-diff-proposal-id][data-conflict="true"] .creed-diff-remove {
-  text-decoration-color: rgba(251, 191, 36, 0.55);
-}
-
-.dark [data-document-diff-proposal-id][data-conflict="true"]:hover .creed-diff-add,
-.dark [data-document-diff-proposal-id][data-conflict="true"][data-active="true"] .creed-diff-add,
-.dark [data-document-diff-proposal-id][data-conflict="true"]:hover .creed-diff-remove,
-.dark [data-document-diff-proposal-id][data-conflict="true"][data-active="true"] .creed-diff-remove {
-  background: #f59e0b;
-  color: #1c1c1a;
-  text-decoration-color: rgba(28, 28, 26, 0.75);
-}
+/* Conflicts keep normal red/green word meaning. The conflict state is carried
+   by the warning action and resolver, not by recolouring changed words amber. */
 
 /* Commented diffs keep their normal add/remove colour, with a persistent
    yellow underline on both sides of the hunk so the thread is visible even

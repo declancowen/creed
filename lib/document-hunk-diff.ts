@@ -346,6 +346,44 @@ function uniqueInsertionRange(
   return { start: unique[0], end: unique[0] };
 }
 
+export function contextualConflictRange(
+  content: string,
+  hunk: Pick<DocumentHunkChange, "prefix" | "suffix" | "beforeStart" | "beforeEnd">
+): { start: number; end: number } | null {
+  const candidates: Array<{ start: number; end: number }> = [];
+
+  if (hunk.prefix && hunk.suffix) {
+    for (const prefixStart of positionsOf(content, hunk.prefix)) {
+      const start = prefixStart + hunk.prefix.length;
+      const end = content.indexOf(hunk.suffix, start);
+      if (end !== -1) {
+        candidates.push({ start, end });
+      }
+    }
+  } else if (hunk.prefix) {
+    for (const prefixStart of positionsOf(content, hunk.prefix)) {
+      const start = prefixStart + hunk.prefix.length;
+      candidates.push({
+        start,
+        end: Math.min(content.length, start + Math.max(0, hunk.beforeEnd - hunk.beforeStart)),
+      });
+    }
+  } else if (hunk.suffix) {
+    for (const suffixStart of positionsOf(content, hunk.suffix)) {
+      candidates.push({
+        start: Math.max(0, suffixStart - Math.max(0, hunk.beforeEnd - hunk.beforeStart)),
+        end: suffixStart,
+      });
+    }
+  }
+
+  const unique = Array.from(
+    new Map(candidates.map((range) => [`${range.start}:${range.end}`, range])).values()
+  );
+  if (unique.length !== 1) return null;
+  return unique[0];
+}
+
 function directRange(content: string, hunk: DocumentHunkChange) {
   if (hunk.before.length > 0) {
     const direct = content.slice(hunk.beforeStart, hunk.beforeEnd);
@@ -372,7 +410,11 @@ function alreadyApplied(content: string, hunk: DocumentHunkChange) {
   return uniqueTextRange(content, hunk.after, hunk.prefix, hunk.suffix) !== null;
 }
 
-export function applyHunkChange(content: string, hunk: DocumentHunkChange): HunkApplyResult {
+export function applyHunkChange(
+  content: string,
+  hunk: DocumentHunkChange,
+  options: { allowConflictReplacement?: boolean } = {}
+): HunkApplyResult {
   const direct = directRange(content, hunk);
   if (direct) {
     return { ok: true, content: replaceRange(content, direct.start, direct.end, hunk.after) };
@@ -392,6 +434,16 @@ export function applyHunkChange(content: string, hunk: DocumentHunkChange): Hunk
 
   if (alreadyApplied(content, hunk)) {
     return { ok: true, content };
+  }
+
+  if (options.allowConflictReplacement) {
+    const conflictRange = contextualConflictRange(content, hunk);
+    if (conflictRange) {
+      return {
+        ok: true,
+        content: replaceRange(content, conflictRange.start, conflictRange.end, hunk.after),
+      };
+    }
   }
 
   return {

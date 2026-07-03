@@ -4,7 +4,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { toast } from "sonner";
 import { diffWords } from "diff";
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, ChevronDown, GitDiff, History, RotateCcw, X } from "@/components/ui/phosphor-icons";
+import { AlertTriangle, ArrowUpRight, Check, ChevronDown, GitDiff, History, RotateCcw, X } from "@/components/ui/phosphor-icons";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { SimpleTooltip } from "@/components/ui/tooltip";
@@ -68,6 +68,7 @@ type VersionChangeHunk = {
 
 type DocumentVersion = {
   id: string;
+  documentId?: string;
   revision: number;
   content?: string;
   changeHunks?: VersionChangeHunk[];
@@ -76,6 +77,9 @@ type DocumentVersion = {
   authorAgentLabel: string | null;
   summary: string;
   sourceProposalId: string | null;
+  sourceProposalFamilyId?: string | null;
+  versionFamilyId?: string | null;
+  versionFamilyTitle?: string;
   createdAt: string;
 };
 
@@ -85,10 +89,66 @@ type EditOutcomeResponse = {
   error?: string;
 };
 
+export type DocumentHistoryJumpTarget = {
+  label: string;
+  before: string;
+  after: string;
+};
+
 type Person = {
   label: string;
   avatarUrl: string | null;
 };
+
+function proposalOriginalRange(proposal: DocumentProposal): { start: number; end: number } {
+  const start = Math.max(0, Math.min(proposal.hunkBeforeStart, proposal.hunkBeforeEnd));
+  const end = Math.max(start, proposal.hunkBeforeStart, proposal.hunkBeforeEnd);
+  return { start, end: end > start ? end : start + 1 };
+}
+
+function proposalRangesOverlap(
+  left: { start: number; end: number },
+  right: { start: number; end: number }
+) {
+  return left.start < right.end && right.start < left.end;
+}
+
+function documentConflictChoiceCount(proposals: DocumentProposal[]) {
+  const conflicts = proposals
+    .filter((proposal) => proposal.conflictStatus === "conflict")
+    .sort((left, right) => left.hunkBeforeStart - right.hunkBeforeStart || left.createdAt.localeCompare(right.createdAt));
+  const ranges = new Map(conflicts.map((proposal) => [proposal.id, proposalOriginalRange(proposal)]));
+  const seen = new Set<string>();
+  let count = 0;
+
+  for (const proposal of conflicts) {
+    if (seen.has(proposal.id)) continue;
+    const queue = [proposal];
+    const group: DocumentProposal[] = [];
+    seen.add(proposal.id);
+
+    for (let index = 0; index < queue.length; index += 1) {
+      const current = queue[index];
+      group.push(current);
+      const currentRange = ranges.get(current.id);
+      if (!currentRange) continue;
+
+      for (const candidate of conflicts) {
+        if (seen.has(candidate.id)) continue;
+        const candidateRange = ranges.get(candidate.id);
+        if (!candidateRange || !proposalRangesOverlap(currentRange, candidateRange)) continue;
+        seen.add(candidate.id);
+        queue.push(candidate);
+      }
+    }
+
+    if (group.length > 1) {
+      count += group.length;
+    }
+  }
+
+  return count;
+}
 
 function relativeTime(iso: string) {
   const deltaMs = Math.max(Date.now() - new Date(iso).getTime(), 0);
@@ -743,6 +803,8 @@ export function DocumentReviewPanel({
   onHeightChange,
   diffOpen = false,
   onDiffOpenChange,
+  onJumpToHistoryChange,
+  onShowAllConflicts,
   onPendingProposalsChange,
   onPendingProposalsLoadingChange,
 }: {
@@ -756,6 +818,8 @@ export function DocumentReviewPanel({
   onHeightChange?: (height: number) => void;
   diffOpen?: boolean;
   onDiffOpenChange?: (open: boolean) => void;
+  onJumpToHistoryChange?: (target: DocumentHistoryJumpTarget) => void;
+  onShowAllConflicts?: () => void;
   onPendingProposalsChange?: (proposals: DocumentProposal[]) => void;
   onPendingProposalsLoadingChange?: (loading: boolean) => void;
 }) {
@@ -1031,13 +1095,20 @@ export function DocumentReviewPanel({
   }
 
   return (
-    <div ref={rootRef} className="mt-5 space-y-3">
+    <div
+      ref={rootRef}
+      className={cn(
+        hasProposals ? "mt-5 space-y-3" : "mt-3 space-y-1",
+        !hasProposals && versions.length > 0 && !historyOpen ? "-mb-8 md:-mb-10" : ""
+      )}
+    >
       {hasProposals ? (
         <DocumentReviewPill
           proposals={proposals}
           diffOpen={diffOpen}
           busyProposal={busyProposal}
           onDiffOpenChange={onDiffOpenChange}
+          onShowAllConflicts={onShowAllConflicts}
           onResolveMany={resolveProposals}
         />
       ) : null}
@@ -1052,6 +1123,7 @@ export function DocumentReviewPanel({
           resolvePerson={resolvePerson}
           onToggleHistory={() => setHistoryOpen((open) => !open)}
           onToggleVersion={toggleVersion}
+          onJumpToChange={onJumpToHistoryChange}
           onRevert={(versionId) => void revertTo(versionId)}
         />
       ) : null}
@@ -1062,8 +1134,19 @@ export function DocumentReviewPanel({
 type ProposalHistoryFamily = {
   id: string;
   proposals: DocumentProposal[];
+  entries: ProposalHistoryEntry[];
   versions: DocumentVersion[];
   latestVersion: DocumentVersion;
+};
+
+type ProposalHistoryEntry = {
+  id: string;
+  label: string;
+  before: string;
+  after: string;
+  status: HunkStatus;
+  createdAt: string;
+  revision: number;
 };
 
 type VersionHistoryItem =
@@ -1077,6 +1160,52 @@ function buildVersionHistoryItems(
   const acceptedById = new Map(acceptedProposals.map((proposal) => [proposal.id, proposal]));
   const familyMap = new Map<string, ProposalHistoryFamily>();
 
+  function legacyFamilyId(version: DocumentVersion) {
+    const firstHunk = version.changeHunks?.[0];
+    const prefix = firstHunk?.classification?.split(":")[0]?.trim() || version.summary || "Document";
+    const hour = new Date(version.createdAt);
+    hour.setMinutes(0, 0, 0);
+    return [
+      "legacy",
+      version.documentId ?? "document",
+      version.actorType,
+      version.authorUserId ?? version.authorAgentLabel ?? "unknown",
+      version.summary,
+      prefix,
+      hour.toISOString(),
+    ].join(":");
+  }
+
+  function familyIdForVersion(version: DocumentVersion) {
+    return version.versionFamilyId || version.sourceProposalFamilyId || legacyFamilyId(version);
+  }
+
+  function ensureFamily(familyId: string, version: DocumentVersion) {
+    const family =
+      familyMap.get(familyId) ??
+      ({
+        id: familyId,
+        proposals: [],
+        entries: [],
+        versions: [],
+        latestVersion: version,
+      } satisfies ProposalHistoryFamily);
+    if (!family.versions.some((item) => item.id === version.id)) {
+      family.versions.push(version);
+    }
+    if (version.revision > family.latestVersion.revision) {
+      family.latestVersion = version;
+    }
+    familyMap.set(familyId, family);
+    return family;
+  }
+
+  function addEntry(family: ProposalHistoryFamily, entry: ProposalHistoryEntry) {
+    if (!family.entries.some((item) => item.id === entry.id)) {
+      family.entries.push(entry);
+    }
+  }
+
   const proposalsForVersion = (version: DocumentVersion) => {
     const byId = version.sourceProposalId ? acceptedById.get(version.sourceProposalId) : null;
     const hunkKeys = new Set((version.changeHunks ?? []).map((hunk) => hunk.key).filter(Boolean));
@@ -1087,32 +1216,56 @@ function buildVersionHistoryItems(
 
   for (const version of versions) {
     const versionProposals = proposalsForVersion(version);
-    if (versionProposals.length === 0) continue;
+    if (versionProposals.length === 0) {
+      const familyId = familyIdForVersion(version);
+      const family = ensureFamily(familyId, version);
+      const hunks = version.changeHunks ?? [];
+      if (hunks.length === 0) {
+        addEntry(family, {
+          id: version.id,
+          label: version.summary || `Revision ${version.revision}`,
+          before: "",
+          after: "",
+          status: "modified",
+          createdAt: version.createdAt,
+          revision: version.revision,
+        });
+      } else {
+        for (const hunk of hunks) {
+          addEntry(family, {
+            id: `${version.id}:${hunk.key || hunk.index}`,
+            label: hunk.classification || version.summary || `Revision ${version.revision}`,
+            before: hunk.before,
+            after: hunk.after,
+            status: hunk.status,
+            createdAt: version.createdAt,
+            revision: version.revision,
+          });
+        }
+      }
+      continue;
+    }
 
     for (const proposal of versionProposals) {
-      const family =
-        familyMap.get(proposal.familyId) ??
-        ({
-          id: proposal.familyId,
-          proposals: [],
-          versions: [],
-          latestVersion: version,
-        } satisfies ProposalHistoryFamily);
+      const family = ensureFamily(proposal.familyId, version);
       if (!family.proposals.some((item) => item.id === proposal.id)) {
         family.proposals.push(proposal);
       }
-      if (!family.versions.some((item) => item.id === version.id)) {
-        family.versions.push(version);
-      }
-      if (version.revision > family.latestVersion.revision) {
-        family.latestVersion = version;
-      }
-      familyMap.set(proposal.familyId, family);
+      addEntry(family, {
+        id: proposal.id,
+        label: proposalHistoryLabel(proposal),
+        before: proposal.hunkBefore,
+        after: proposal.hunkAfter,
+        status: proposal.hunkStatus,
+        createdAt: version.createdAt,
+        revision: version.revision,
+      });
     }
   }
 
   for (const family of familyMap.values()) {
     family.proposals.sort((a, b) => a.hunkIndex - b.hunkIndex || a.id.localeCompare(b.id));
+    family.entries.sort((a, b) => a.revision - b.revision || a.id.localeCompare(b.id));
     family.versions.sort((a, b) => b.revision - a.revision);
   }
 
@@ -1121,6 +1274,15 @@ function buildVersionHistoryItems(
   versions.forEach((version, versionIndex) => {
     const versionProposals = proposalsForVersion(version);
     if (versionProposals.length === 0) {
+      const familyId = familyIdForVersion(version);
+      if (familyId) {
+        if (emittedFamilies.has(familyId)) return;
+        const family = familyMap.get(familyId);
+        if (!family) return;
+        emittedFamilies.add(familyId);
+        items.push({ type: "family", family });
+        return;
+      }
       items.push({ type: "version", version, versionIndex });
       return;
     }
@@ -1145,6 +1307,7 @@ function DocumentVersionHistoryPill({
   resolvePerson,
   onToggleHistory,
   onToggleVersion,
+  onJumpToChange,
   onRevert,
 }: {
   versions: DocumentVersion[];
@@ -1155,6 +1318,7 @@ function DocumentVersionHistoryPill({
   resolvePerson: (authorUserId: string | null, agentLabel: string | null) => Person;
   onToggleHistory: () => void;
   onToggleVersion: (versionId: string) => void;
+  onJumpToChange?: (target: DocumentHistoryJumpTarget) => void;
   onRevert: (versionId: string) => void;
 }) {
   const [openFamilyId, setOpenFamilyId] = useState<string | null>(null);
@@ -1163,13 +1327,26 @@ function DocumentVersionHistoryPill({
     () => buildVersionHistoryItems(versions, acceptedProposals),
     [acceptedProposals, versions]
   );
+  const visibleHistoryItems = useMemo(
+    () =>
+      openFamilyId
+        ? historyItems.filter((item) => item.type === "family" && item.family.id === openFamilyId)
+        : historyItems,
+    [historyItems, openFamilyId]
+  );
+
+  useEffect(() => {
+    if (!openFamilyId) return;
+    const familyStillExists = historyItems.some((item) => item.type === "family" && item.family.id === openFamilyId);
+    if (!familyStillExists) {
+      setOpenFamilyId(null);
+      setActiveProposalId(null);
+    }
+  }, [historyItems, openFamilyId]);
 
   function toggleFamily(familyId: string) {
-    setOpenFamilyId((current) => {
-      const next = current === familyId ? null : familyId;
-      if (next !== familyId) setActiveProposalId(null);
-      return next;
-    });
+    setActiveProposalId(null);
+    setOpenFamilyId((current) => (current === familyId ? null : familyId));
   }
 
   function toggleHistoryProposal(proposalId: string) {
@@ -1219,7 +1396,7 @@ function DocumentVersionHistoryPill({
             className="overflow-hidden"
           >
             <div className="creed-scrollbar max-h-[60vh] divide-y divide-[var(--creed-border)] overflow-y-auto rounded-[var(--radius-lg)] border border-[var(--creed-border)] bg-[var(--creed-surface)] shadow-[0_8px_24px_rgba(28,28,26,0.04)]">
-              {historyItems.map((item) => {
+              {visibleHistoryItems.map((item) => {
                 if (item.type === "family") {
                   return (
                     <ProposalFamilyRow
@@ -1235,6 +1412,7 @@ function DocumentVersionHistoryPill({
                       reverting={revertingVersion === item.family.latestVersion.id}
                       onToggle={() => toggleFamily(item.family.id)}
                       onToggleProposal={toggleHistoryProposal}
+                      onJumpToChange={onJumpToChange}
                       onRevert={() => onRevert(item.family.latestVersion.id)}
                     />
                   );
@@ -1249,6 +1427,7 @@ function DocumentVersionHistoryPill({
                     expanded={expandedVersion === item.version.id}
                     reverting={revertingVersion === item.version.id}
                     onToggle={() => onToggleVersion(item.version.id)}
+                    onJumpToChange={onJumpToChange}
                     onRevert={() => onRevert(item.version.id)}
                   />
                 );
@@ -1268,12 +1447,14 @@ function DocumentReviewPill({
   diffOpen,
   busyProposal,
   onDiffOpenChange,
+  onShowAllConflicts,
   onResolveMany,
 }: {
   proposals: DocumentProposal[];
   diffOpen: boolean;
   busyProposal: string | null;
   onDiffOpenChange?: (open: boolean) => void;
+  onShowAllConflicts?: () => void;
   onResolveMany: (ids: string[], action: "accept" | "reject") => Promise<void>;
 }) {
   const totals = useMemo(() => {
@@ -1288,8 +1469,18 @@ function DocumentReviewPill({
   }, [proposals]);
 
   const anyBusy = Boolean(busyProposal);
+  const conflictCount = documentConflictChoiceCount(proposals);
 
   async function resolveAll(action: "accept" | "reject") {
+    if (action === "accept" && conflictCount > 0) {
+      onShowAllConflicts?.();
+      toast.error(
+        conflictCount === 1
+          ? "Resolve the conflict before accepting all."
+          : `Resolve ${conflictCount} conflicts before accepting all.`
+      );
+      return;
+    }
     await onResolveMany(proposals.map((proposal) => proposal.id), action);
   }
 
@@ -1303,6 +1494,15 @@ function DocumentReviewPill({
           </span>
           <span className="text-[var(--creed-text-tertiary)]">·</span>
           <span>{proposals.length === 1 ? "1 proposal" : `${proposals.length} proposals`}</span>
+          {conflictCount > 0 ? (
+            <>
+              <span className="text-[var(--creed-text-tertiary)]">·</span>
+              <span className="inline-flex items-center gap-1 text-[#b45309]">
+                <AlertTriangle className="h-3.5 w-3.5" />
+                {conflictCount}
+              </span>
+            </>
+          ) : null}
         </div>
         <SimpleTooltip label={diffOpen ? "Hide diff" : "Show diff"}>
           <button
@@ -1352,6 +1552,52 @@ function proposalHistoryLabel(proposal: DocumentProposal) {
   return proposal.classification || `Proposal ${proposal.hunkIndex + 1}`;
 }
 
+function proposalFamilyTitle(family: ProposalHistoryFamily) {
+  const proposalSummaries = Array.from(
+    new Set(family.proposals.map((proposal) => proposal.summary.trim()).filter(Boolean))
+  );
+  if (proposalSummaries.length === 1) return proposalSummaries[0] ?? "Proposal family";
+
+  const persistedTitles = Array.from(
+    new Set(family.versions.map((version) => version.versionFamilyTitle?.trim()).filter(Boolean))
+  );
+  if (persistedTitles.length === 1 && persistedTitles[0] !== "Updated document content") {
+    return persistedTitles[0] ?? "Proposal family";
+  }
+
+  const entryPrefixes = Array.from(
+    new Set(
+      family.entries
+        .map((entry) => entry.label.split(":")[0]?.trim())
+        .filter((prefix): prefix is string => Boolean(prefix))
+    )
+  );
+  if (entryPrefixes.length === 1) return `${entryPrefixes[0]}: updates content`;
+
+  const versionSummaries = Array.from(
+    new Set(family.versions.map((version) => version.summary.trim()).filter(Boolean))
+  );
+  if (versionSummaries.length === 1) return versionSummaries[0] ?? "Proposal family";
+
+  return "Proposal family";
+}
+
+function proposalFamilyDefinition(family: ProposalHistoryFamily) {
+  const proposalCount = Math.max(family.entries.length, family.proposals.length);
+  const proposalLabel = proposalCount === 1 ? "1 proposal" : `${proposalCount} proposals`;
+  const versionLabel = family.versions.length === 1 ? "1 version" : `${family.versions.length} versions`;
+  return `One edit split into ${proposalLabel} across ${versionLabel}`;
+}
+
+function entryJumpTarget(entry: ProposalHistoryEntry): DocumentHistoryJumpTarget {
+  return { label: entry.label, before: entry.before, after: entry.after };
+}
+
+function versionJumpTarget(version: DocumentVersion, label: string): DocumentHistoryJumpTarget {
+  const hunk = version.changeHunks?.[0];
+  return { label, before: hunk?.before ?? "", after: hunk?.after ?? "" };
+}
+
 function ProposalFamilyRow({
   family,
   person,
@@ -1361,6 +1607,7 @@ function ProposalFamilyRow({
   reverting,
   onToggle,
   onToggleProposal,
+  onJumpToChange,
   onRevert,
 }: {
   family: ProposalHistoryFamily;
@@ -1371,46 +1618,55 @@ function ProposalFamilyRow({
   reverting: boolean;
   onToggle: () => void;
   onToggleProposal: (proposalId: string) => void;
+  onJumpToChange?: (target: DocumentHistoryJumpTarget) => void;
   onRevert: () => void;
 }) {
-  const activeProposal =
-    open && activeProposalId ? family.proposals.find((proposal) => proposal.id === activeProposalId) : null;
-  const proposalsToShow = activeProposal ? [activeProposal] : family.proposals;
+  const familyTitle = proposalFamilyTitle(family);
+  const familyDefinition = proposalFamilyDefinition(family);
+  const firstEntry = family.entries[0] ?? null;
   const totals = useMemo(() => {
     let added = 0;
     let removed = 0;
-    for (const proposal of family.proposals) {
-      const stats = summarizeDiff(mdDiffParts(proposal.hunkBefore, proposal.hunkAfter));
+    for (const entry of family.entries) {
+      const stats = summarizeDiff(mdDiffParts(entry.before, entry.after));
       added += stats.added;
       removed += stats.removed;
     }
     return { added, removed };
-  }, [family.proposals]);
+  }, [family.entries]);
 
   return (
     <div>
-      <div className="flex items-center gap-2 px-3 py-2">
+      <div className="flex items-start gap-2 px-3 py-2">
         <button
           type="button"
           onClick={onToggle}
-          className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm"
+          className="flex min-w-0 flex-1 items-start gap-2 text-left text-sm"
           aria-expanded={open}
         >
           <ChevronDown
             className={cn(
-              "h-3.5 w-3.5 shrink-0 text-[var(--creed-text-tertiary)] transition-transform duration-200",
+              "mt-1 h-3.5 w-3.5 shrink-0 text-[var(--creed-text-tertiary)] transition-transform duration-200",
               open ? "rotate-0" : "-rotate-90"
             )}
           />
-          <PersonBadge person={person} />
-          <span className="shrink-0 text-[13px] text-[var(--creed-text-primary)]">made changes</span>
-          <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--creed-text-secondary)]">
-            {family.proposals.length === 1 ? "1 proposal" : `${family.proposals.length} proposals`}
+          <span className="min-w-0 flex-1">
+            <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+              <PersonBadge person={person} />
+              <span className="min-w-0 max-w-full truncate text-[13px] font-medium text-[var(--creed-text-primary)]">
+                {familyTitle}
+              </span>
+              <span className="hidden shrink-0 text-[var(--creed-text-tertiary)] sm:inline">
+                · {relativeTime(family.latestVersion.createdAt)}
+              </span>
+            </span>
+            <span className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-[var(--creed-text-secondary)]">
+              <span className="truncate">{familyDefinition}</span>
+              <span className="text-[var(--creed-text-tertiary)]">·</span>
+              <span>{family.entries.length === 1 ? "1 item" : `${family.entries.length} items`}</span>
+            </span>
           </span>
-          <span className="hidden shrink-0 text-[var(--creed-text-tertiary)] sm:inline">
-            · {relativeTime(family.latestVersion.createdAt)}
-          </span>
-          <span className="ml-auto inline-flex shrink-0 items-center gap-1.5">
+          <span className="ml-auto mt-1 inline-flex shrink-0 items-center gap-1.5">
             <DiffBadge tone="added" count={totals.added} size="md" />
             <DiffBadge tone="removed" count={totals.removed} size="md" />
           </span>
@@ -1431,6 +1687,19 @@ function ProposalFamilyRow({
             Revert
           </Button>
         )}
+        {firstEntry && onJumpToChange ? (
+          <SimpleTooltip label="Jump to change">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="h-7 w-7 shrink-0 rounded-md text-[var(--creed-text-secondary)] hover:text-[var(--creed-text-primary)]"
+              onClick={() => onJumpToChange(entryJumpTarget(firstEntry))}
+            >
+              <ArrowUpRight className="h-3.5 w-3.5" />
+            </Button>
+          </SimpleTooltip>
+        ) : null}
       </div>
 
       <AnimatePresence initial={false}>
@@ -1444,14 +1713,14 @@ function ProposalFamilyRow({
           >
             <div className="border-t border-[var(--creed-border)]" />
             <div className="divide-y divide-[var(--creed-border)]">
-              {proposalsToShow.map((proposal) => {
-                const selected = activeProposalId === proposal.id;
-                const stats = summarizeDiff(mdDiffParts(proposal.hunkBefore, proposal.hunkAfter));
+              {family.entries.map((entry) => {
+                const selected = activeProposalId === entry.id;
+                const stats = summarizeDiff(mdDiffParts(entry.before, entry.after));
                 return (
-                  <div key={proposal.id}>
+                  <div key={entry.id}>
                     <button
                       type="button"
-                      onClick={() => onToggleProposal(proposal.id)}
+                      onClick={() => onToggleProposal(entry.id)}
                       aria-expanded={selected}
                       className="flex w-full items-center gap-2 px-6 py-2 text-left text-sm transition-colors hover:bg-[var(--creed-surface-raised)]"
                     >
@@ -1462,12 +1731,36 @@ function ProposalFamilyRow({
                         )}
                       />
                       <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--creed-text-secondary)]">
-                        {proposalHistoryLabel(proposal)}
+                        {entry.label}
+                      </span>
+                      <span className="shrink-0 text-[12px] text-[var(--creed-text-tertiary)]">
+                        Revision {entry.revision}
                       </span>
                       <span className="inline-flex shrink-0 items-center gap-1.5">
                         <DiffBadge tone="added" count={stats.added} size="md" />
                         <DiffBadge tone="removed" count={stats.removed} size="md" />
                       </span>
+                      {onJumpToChange ? (
+                        <SimpleTooltip label="Jump to change">
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--creed-text-tertiary)] transition-colors hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)]"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onJumpToChange(entryJumpTarget(entry));
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key !== "Enter" && event.key !== " ") return;
+                              event.preventDefault();
+                              event.stopPropagation();
+                              onJumpToChange(entryJumpTarget(entry));
+                            }}
+                          >
+                            <ArrowUpRight className="h-3.5 w-3.5" />
+                          </span>
+                        </SimpleTooltip>
+                      ) : null}
                     </button>
                     <AnimatePresence initial={false}>
                       {selected ? (
@@ -1480,9 +1773,9 @@ function ProposalFamilyRow({
                         >
                           <div className="px-6 pb-3">
                             <RenderedProposalBody
-                              before={proposal.hunkBefore}
-                              after={proposal.hunkAfter}
-                              status={proposal.hunkStatus}
+                              before={entry.before}
+                              after={entry.after}
+                              status={entry.status}
                             />
                           </div>
                         </motion.div>
@@ -1506,6 +1799,7 @@ function VersionRow({
   expanded,
   reverting,
   onToggle,
+  onJumpToChange,
   onRevert,
 }: {
   version: DocumentVersion;
@@ -1514,6 +1808,7 @@ function VersionRow({
   expanded: boolean;
   reverting: boolean;
   onToggle: () => void;
+  onJumpToChange?: (target: DocumentHistoryJumpTarget) => void;
   onRevert: () => void;
 }) {
   const storedHunks = useMemo(() => version.changeHunks ?? [], [version.changeHunks]);
@@ -1543,10 +1838,10 @@ function VersionRow({
             )}
           />
           <PersonBadge person={person} />
-          <span className="max-w-[12rem] shrink-0 truncate text-[13px] text-[var(--creed-text-primary)]">
+          <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--creed-text-primary)]">
             {impactLabel}
           </span>
-          <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--creed-text-secondary)]">
+          <span className="hidden max-w-[13rem] shrink-0 truncate text-[13px] text-[var(--creed-text-secondary)] lg:inline">
             {version.summary || `Revision ${version.revision}`}
           </span>
           <span className="hidden shrink-0 text-[var(--creed-text-tertiary)] sm:inline">
@@ -1577,6 +1872,19 @@ function VersionRow({
             Revert
           </Button>
         )}
+        {onJumpToChange ? (
+          <SimpleTooltip label="Jump to change">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="h-7 w-7 shrink-0 rounded-md text-[var(--creed-text-secondary)] hover:text-[var(--creed-text-primary)]"
+              onClick={() => onJumpToChange(versionJumpTarget(version, impactLabel))}
+            >
+              <ArrowUpRight className="h-3.5 w-3.5" />
+            </Button>
+          </SimpleTooltip>
+        ) : null}
       </div>
       <AnimatePresence initial={false}>
         {expanded ? (

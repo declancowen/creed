@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  ArrowUpRight,
   ArrowDown,
   ArrowBendUpLeft,
   Archive,
@@ -24,6 +25,7 @@ import {
   CloudArrowUp,
   Code,
   CircleDashed,
+  Columns,
   Copy,
   DownloadSimple,
   DotsThree,
@@ -56,6 +58,7 @@ import {
   PlusSquare,
   Plugs,
   Plug,
+  Rows,
   Sidebar,
   Share,
   Shield,
@@ -101,6 +104,7 @@ function icon(Component: PhosphorIcon) {
 const ArrowLeftIcon = icon(ArrowLeft);
 const ArrowRightIcon = icon(ArrowRight);
 const ArrowUpIcon = icon(ArrowUp);
+const ArrowUpRightIcon = icon(ArrowUpRight);
 const ArrowDownIcon = icon(ArrowDown);
 const ArrowBendUpLeftIcon = icon(ArrowBendUpLeft);
 const ArchiveIcon = icon(Archive);
@@ -120,6 +124,7 @@ const Clock3Icon = icon(Clock);
 const CloudDownloadIcon = icon(CloudArrowDown);
 const CloudUploadIcon = icon(CloudArrowUp);
 const Code2Icon = icon(Code);
+const ColumnsIcon = icon(Columns);
 const CopyIcon = icon(Copy);
 const DeleteIcon = icon(Trash);
 const DownloadIcon = icon(DownloadSimple);
@@ -195,6 +200,7 @@ const PlusSquareIcon = icon(PlusSquare);
 const PlusIcon = icon(Plus);
 const RotateCcwIcon = icon(ArrowCounterClockwise);
 const RotateCwIcon = icon(ArrowClockwise);
+const RowsIcon = icon(Rows);
 const SearchIcon = icon(MagnifyingGlass);
 const SendIcon = icon(PaperPlaneTilt);
 const SaveIcon = icon(FloppyDisk);
@@ -256,6 +262,7 @@ export {
   ArrowLeftIcon as ArrowLeft,
   ArrowRightIcon as ArrowRight,
   ArrowUpIcon as ArrowUp,
+  ArrowUpRightIcon as ArrowUpRight,
   ArrowDownIcon as ArrowDown,
   ArrowBendUpLeftIcon as Reply,
   ArchiveIcon as Archive,
@@ -276,6 +283,7 @@ export {
   CloudDownloadIcon as CloudDownload,
   CloudUploadIcon as CloudUpload,
   Code2Icon as Code2,
+  ColumnsIcon as Columns,
   CopyIcon as Copy,
   DeleteIcon as Delete,
   DownloadIcon as Download,
@@ -316,6 +324,7 @@ export {
   PlusSquareIcon as PlusSquare,
   RotateCcwIcon as RotateCcw,
   RotateCwIcon as RotateCw,
+  RowsIcon as Rows,
   SearchIcon as Search,
   SaveIcon as Save,
   SendIcon as Send,
