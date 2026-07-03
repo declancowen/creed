@@ -1046,12 +1046,18 @@ export function DocumentReviewPanel({
         const payload = await readEditOutcome(response);
         if (!response.ok) {
           if ((payload.settledProposalIds?.length ?? 0) > 0) {
+            const settled = new Set(payload.settledProposalIds);
+            setProposals((rows) => rows.filter((proposal) => !settled.has(proposal.id)));
             toast.warning(payload.error || "Proposal no longer applies and was removed.");
             await Promise.all([refreshProposals(), refreshAcceptedProposals(), refreshVersions()]);
             return;
           }
           throw new Error(payload.error || `Could not ${action} the proposals.`);
         }
+        setProposals((rows) => {
+          const resolved = new Set(proposalIds);
+          return rows.filter((proposal) => !resolved.has(proposal.id));
+        });
         if (action === "accept" && payload.document) {
           onDocumentUpdated(payload.document);
         }
@@ -1648,21 +1654,21 @@ function ProposalFamilyRow({
 
   return (
     <div>
-      <div className="flex items-start gap-2 px-3 py-2">
+      <div className="flex min-h-10 items-center gap-2 px-3 py-2">
         <button
           type="button"
           onClick={onToggle}
-          className="flex min-w-0 flex-1 items-start gap-2 text-left text-sm"
+          className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm"
           aria-expanded={open}
         >
           <ChevronDown
             className={cn(
-              "mt-1 h-3.5 w-3.5 shrink-0 text-[var(--creed-text-tertiary)] transition-transform duration-200",
+              "h-3.5 w-3.5 shrink-0 text-[var(--creed-text-tertiary)] transition-transform duration-200",
               open ? "rotate-0" : "-rotate-90"
             )}
           />
           <span className="min-w-0 flex-1">
-            <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="flex min-w-0 items-center gap-2">
               <PersonBadge person={person} />
               <span className="min-w-0 max-w-full truncate text-[13px] font-medium text-[var(--creed-text-primary)]">
                 {familyTitle}
@@ -1672,7 +1678,7 @@ function ProposalFamilyRow({
               </span>
             </span>
           </span>
-          <span className="ml-auto mt-1 inline-flex shrink-0 items-center gap-1.5">
+          <span className="ml-auto inline-flex shrink-0 items-center gap-1.5">
             <DiffBadge tone="added" count={totals.added} size="md" />
             <DiffBadge tone="removed" count={totals.removed} size="md" />
           </span>

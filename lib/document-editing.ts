@@ -105,7 +105,7 @@ type ProposalResult<T> =
     };
 
 type BulkProposalResult<T> =
-  | { ok: true; value: T }
+  | { ok: true; value: T; settledProposalIds?: string[] }
   | {
       ok: false;
       code: "invalid" | "not-found" | "conflict" | "forbidden";
@@ -1013,39 +1013,48 @@ export async function acceptDocumentProposals(
 
   let mergedContent = document.content;
   const acceptedHunks: DocumentHunkChange[] = [];
+  const acceptedProposals: DocumentProposal[] = [];
   const acceptedFamilyIdsInBatch = new Set<string>();
-  const conflictedIds: string[] = [];
+  const staleIds: string[] = [];
+  const acceptedFamilyIdsInHistory = new Set(
+    (await listDocumentProposals(client, input.documentId, { status: "accepted" })).map(
+      (proposal) => proposal.familyId
+    )
+  );
 
   for (const proposal of proposals) {
     const hunk = proposalToHunk(proposal);
     const sameAcceptedFamily =
       acceptedFamilyIdsInBatch.has(proposal.familyId) ||
-      (await familyHasAcceptedSibling(client, input.documentId, proposal));
+      acceptedFamilyIdsInHistory.has(proposal.familyId);
     const merged = applyHunkChange(mergedContent, hunk, {
       allowConflictReplacement: sameAcceptedFamily,
     });
     if (!merged.ok || merged.content === mergedContent) {
-      conflictedIds.push(proposal.id);
+      staleIds.push(proposal.id);
       continue;
     }
     mergedContent = merged.content;
     acceptedHunks.push(hunk);
+    acceptedProposals.push(proposal);
     acceptedFamilyIdsInBatch.add(proposal.familyId);
   }
 
-  if (conflictedIds.length > 0) {
-    await deleteStaleProposals(client, conflictedIds);
-    await releaseProposalClaims(client, ids.filter((id) => !conflictedIds.includes(id)));
+  if (staleIds.length > 0) {
+    await deleteStaleProposals(client, staleIds);
     await recordStaleProposalRemoval(client, {
       documentId: input.documentId,
       actorUserId: input.actorUserId,
-      proposalIds: conflictedIds,
+      proposalIds: staleIds,
     });
+  }
+
+  if (acceptedProposals.length === 0) {
     return {
       ok: false,
       code: "conflict",
       error: "One or more proposals no longer apply and were removed.",
-      settledProposalIds: conflictedIds,
+      settledProposalIds: staleIds,
     };
   }
 
@@ -1060,12 +1069,12 @@ export async function acceptDocumentProposals(
   }
 
   const summary =
-    proposals.length === 1
-      ? proposals[0].summary || proposals[0].classification || "Accepted proposal"
-      : `Accepted ${proposals.length} proposals`;
-  const acceptedFamilyIds = Array.from(new Set(proposals.map((proposal) => proposal.familyId).filter(Boolean)));
+    acceptedProposals.length === 1
+      ? acceptedProposals[0].summary || acceptedProposals[0].classification || "Accepted proposal"
+      : `Accepted ${acceptedProposals.length} proposals`;
+  const acceptedFamilyIds = Array.from(new Set(acceptedProposals.map((proposal) => proposal.familyId).filter(Boolean)));
   const acceptedFamilySummaries = Array.from(
-    new Set(proposals.map((proposal) => proposal.summary.trim()).filter(Boolean))
+    new Set(acceptedProposals.map((proposal) => proposal.summary.trim()).filter(Boolean))
   );
   const versionFamilyId = acceptedFamilyIds.length === 1 ? acceptedFamilyIds[0] ?? randomUUID() : randomUUID();
   const versionFamilyTitle =
@@ -1076,13 +1085,13 @@ export async function acceptDocumentProposals(
     documentId: input.documentId,
     content: mergedContent,
     expectedRevision: document.revision,
-    actorType: proposals[0]?.actorType ?? "human",
+    actorType: acceptedProposals[0]?.actorType ?? "human",
     author: {
-      userId: proposals[0]?.authorUserId ?? null,
-      agentLabel: proposals[0]?.authorAgentLabel ?? null,
+      userId: acceptedProposals[0]?.authorUserId ?? null,
+      agentLabel: acceptedProposals[0]?.authorAgentLabel ?? null,
     },
     summary,
-    sourceProposalId: proposals.length === 1 ? proposals[0]?.id ?? null : null,
+    sourceProposalId: acceptedProposals.length === 1 ? acceptedProposals[0]?.id ?? null : null,
     versionFamilyId,
     versionFamilyTitle,
     changeHunks: acceptedHunks,
@@ -1095,6 +1104,7 @@ export async function acceptDocumentProposals(
 
   const now = new Date().toISOString();
   const db = client as SupabaseLikeClient;
+  const acceptedIds = acceptedProposals.map((proposal) => proposal.id);
   await db
     .from("creed_document_proposals")
     .update({
@@ -1104,10 +1114,10 @@ export async function acceptDocumentProposals(
       resolved_at: now,
       resolved_by: input.actorUserId,
     })
-    .in("id", ids);
+    .in("id", acceptedIds);
 
   await resolveOpenCommentsForProposals(client, {
-    proposalIds: ids,
+    proposalIds: acceptedIds,
     actorUserId: input.actorUserId,
   });
 
@@ -1123,9 +1133,9 @@ export async function acceptDocumentProposals(
     documentId: input.documentId,
     actorUserId: input.actorUserId,
     action: "document.proposals.accepted",
-    summary: proposals.length === 1 ? "Accepted a proposal" : `Accepted ${proposals.length} proposals`,
+    summary: acceptedProposals.length === 1 ? "Accepted a proposal" : `Accepted ${acceptedProposals.length} proposals`,
     metadata: {
-      proposalIds: ids,
+      proposalIds: acceptedIds,
       revision: applied.version.revision,
       versionId: applied.version.id,
       hunkCount: acceptedHunks.length,
@@ -1134,7 +1144,8 @@ export async function acceptDocumentProposals(
 
   return {
     ok: true,
-    value: { document: applied.document, version: applied.version, proposals },
+    value: { document: applied.document, version: applied.version, proposals: acceptedProposals },
+    settledProposalIds: staleIds,
   };
 }
 

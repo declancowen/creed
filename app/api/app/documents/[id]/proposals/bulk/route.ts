@@ -46,6 +46,7 @@ export async function POST(
       document: result.value.document,
       version: result.value.version,
       proposals: result.value.proposals,
+      settledProposalIds: result.settledProposalIds ?? [],
     });
   }
 
