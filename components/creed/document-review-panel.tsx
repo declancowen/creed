@@ -4,77 +4,82 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { toast } from "sonner";
 import { diffWords } from "diff";
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, ChevronDown, History, LoaderCircle, MessageSquare, RotateCcw, Send, X } from "@/components/ui/phosphor-icons";
+import { AlertTriangle, ArrowUpRight, Check, ChevronDown, GitDiff, History, RotateCcw, X } from "@/components/ui/phosphor-icons";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { SimpleTooltip } from "@/components/ui/tooltip";
 import { DiffBadge, summarizeDiff } from "@/components/creed/inline-proposal-diff";
-import {
-  diffMarkdownSections,
-  markdownToReviewText,
-  sectionChangeLabel,
-  type SectionChange,
-  type SectionChangeStatus,
-} from "@/lib/document-section-diff";
+import { markdownToReviewText } from "@/lib/document-section-diff";
 import type { WorkspaceUser } from "@/lib/document-collaboration";
-import type { DocumentComment } from "@/lib/document-collaboration";
 import type { SharedDocument } from "@/lib/shared-documents";
 import { markdownToRichHtml } from "@/lib/rich-text";
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
-import { MentionTextarea } from "@/components/creed/mention-textarea";
 import { cn } from "@/lib/utils";
 
 // Supabase-only review surface for a shared document. Mirrors the personal-file
-// ReviewPill: a compact summary pill (total +/- and "N proposals") that reveals
-// the per-section proposals, each showing its own diff and accept/reject.
+// ReviewPill: a compact summary pill (total +/- and "N proposals") with a
+// Show/Hide diff toggle that controls the document body's diff mode.
 // Proposal bodies render through the same Markdown-to-rich-HTML path as the
 // editor so tables and diagrams stay legible. Every proposal/version is
 // attributed to the person behind it (avatar + name), not the model/MCP label.
-// The append-only version history sits below with the same section grouping.
+// The append-only version history sits below and groups accepted proposal hunks
+// by their family id.
 
 type ActorType = "human" | "agent";
 
-type SectionStatus = "added" | "removed" | "modified" | "unchanged";
+type HunkStatus = "added" | "removed" | "modified";
+type HunkConflictStatus = "clean" | "conflict" | "resolved";
 
 export type DocumentProposal = {
   id: string;
   actorType: ActorType;
   authorUserId: string | null;
   authorAgentLabel: string | null;
-  kind: "document-content" | "document-section";
+  kind: "document-hunk";
   content: string;
   summary: string;
   baseRevision: number;
   status: string;
   createdAt: string;
-  batchId: string | null;
-  sectionKey: string | null;
-  sectionHeading: string | null;
-  sectionLevel: number | null;
-  sectionStatus: SectionStatus | null;
-  sectionBefore: string | null;
-  sectionAfter: string | null;
-  sectionProposedIndex: number | null;
-  sectionPreviousKey: string | null;
-  sectionNextKey: string | null;
+  familyId: string;
+  hunkKey: string;
+  hunkIndex: number;
+  hunkStatus: HunkStatus;
+  hunkBefore: string;
+  hunkAfter: string;
+  hunkBeforeStart: number;
+  hunkBeforeEnd: number;
+  hunkAfterStart: number;
+  hunkAfterEnd: number;
+  hunkPrefix: string;
+  hunkSuffix: string;
+  classification: string;
+  conflictStatus: HunkConflictStatus;
 };
 
-type ProposalComment = {
-  id: string;
-  body: string;
-  status: "open" | "resolved";
-  createdBy: string | null;
-  authorLabel: string;
-  createdAt: string;
+type VersionChangeHunk = {
+  key: string;
+  index: number;
+  status: HunkStatus;
+  before: string;
+  after: string;
+  classification: string;
 };
 
 type DocumentVersion = {
   id: string;
+  documentId?: string;
   revision: number;
   content?: string;
+  changeHunks?: VersionChangeHunk[];
   actorType: ActorType;
   authorUserId: string | null;
   authorAgentLabel: string | null;
   summary: string;
+  sourceProposalId: string | null;
+  sourceProposalFamilyId?: string | null;
+  versionFamilyId?: string | null;
+  versionFamilyTitle?: string;
   createdAt: string;
 };
 
@@ -82,6 +87,18 @@ type EditOutcomeResponse = {
   outcome?: "applied" | "proposed";
   document?: SharedDocument;
   error?: string;
+  settledProposalIds?: string[];
+};
+
+async function readEditOutcome(response: Response): Promise<EditOutcomeResponse> {
+  const payload = (await response.json().catch(() => null)) as EditOutcomeResponse | null;
+  return payload ?? {};
+}
+
+export type DocumentHistoryJumpTarget = {
+  label: string;
+  before: string;
+  after: string;
 };
 
 type Person = {
@@ -89,9 +106,55 @@ type Person = {
   avatarUrl: string | null;
 };
 
-type ResolveProposalOptions = {
-  allowStaleSectionUpdate?: boolean;
-};
+function proposalOriginalRange(proposal: DocumentProposal): { start: number; end: number } {
+  const start = Math.max(0, Math.min(proposal.hunkBeforeStart, proposal.hunkBeforeEnd));
+  const end = Math.max(start, proposal.hunkBeforeStart, proposal.hunkBeforeEnd);
+  return { start, end: end > start ? end : start + 1 };
+}
+
+function proposalRangesOverlap(
+  left: { start: number; end: number },
+  right: { start: number; end: number }
+) {
+  return left.start < right.end && right.start < left.end;
+}
+
+function documentConflictChoiceCount(proposals: DocumentProposal[]) {
+  const conflicts = proposals
+    .filter((proposal) => proposal.conflictStatus === "conflict")
+    .sort((left, right) => left.hunkBeforeStart - right.hunkBeforeStart || left.createdAt.localeCompare(right.createdAt));
+  const ranges = new Map(conflicts.map((proposal) => [proposal.id, proposalOriginalRange(proposal)]));
+  const seen = new Set<string>();
+  let count = 0;
+
+  for (const proposal of conflicts) {
+    if (seen.has(proposal.id)) continue;
+    const queue = [proposal];
+    const group: DocumentProposal[] = [];
+    seen.add(proposal.id);
+
+    for (let index = 0; index < queue.length; index += 1) {
+      const current = queue[index];
+      group.push(current);
+      const currentRange = ranges.get(current.id);
+      if (!currentRange) continue;
+
+      for (const candidate of conflicts) {
+        if (seen.has(candidate.id)) continue;
+        const candidateRange = ranges.get(candidate.id);
+        if (!candidateRange || !proposalRangesOverlap(currentRange, candidateRange)) continue;
+        seen.add(candidate.id);
+        queue.push(candidate);
+      }
+    }
+
+    if (group.length > 1) {
+      count += group.length;
+    }
+  }
+
+  return count;
+}
 
 function relativeTime(iso: string) {
   const deltaMs = Math.max(Date.now() - new Date(iso).getTime(), 0);
@@ -614,7 +677,7 @@ function RenderedProposalBody({
 }: {
   before: string;
   after: string;
-  status: SectionStatus;
+  status: HunkStatus;
 }) {
   if (status === "added") {
     return (
@@ -639,260 +702,98 @@ function RenderedProposalBody({
   );
 }
 
-const STATUS_DOT: Record<SectionChangeStatus, string> = {
-  added: "bg-[var(--creed-success)]",
-  removed: "bg-[var(--creed-danger)]",
-  modified: "bg-[var(--creed-accent)]",
-  unchanged: "bg-[var(--creed-text-tertiary)]",
-};
-
-// One section row within a whole-document (version-history) grouped diff.
-function SectionChangeRow({
-  change,
-  open,
-  onToggle,
-}: {
-  change: SectionChange;
-  open: boolean;
-  onToggle: () => void;
-}) {
-  const parts = useMemo(() => mdDiffParts(change.before, change.after), [change.before, change.after]);
-  const stats = useMemo(() => summarizeDiff(parts), [parts]);
-  const label = sectionChangeLabel(change);
-
-  return (
-    <div className="rounded-[10px] border border-[var(--creed-border)] bg-[var(--creed-surface)]">
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={open}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left"
-      >
-        <ChevronDown
-          className={cn(
-            "h-3 w-3 shrink-0 text-[var(--creed-text-tertiary)] transition-transform duration-200",
-            open ? "rotate-0" : "-rotate-90"
-          )}
-        />
-        <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", STATUS_DOT[change.status])} />
-        <span className="truncate text-[13px] text-[var(--creed-text-primary)]">{label}</span>
-        <span className="ml-auto inline-flex shrink-0 items-center gap-1.5">
-          <DiffBadge tone="added" count={stats.added} />
-          <DiffBadge tone="removed" count={stats.removed} />
-        </span>
-      </button>
-      <AnimatePresence initial={false}>
-        {open ? (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
-            className="overflow-hidden"
-          >
-            <div className="border-t border-[var(--creed-border)]" />
-            <div className="creed-diff-block creed-scrollbar max-h-[240px] overflow-y-auto px-3.5 py-2.5 text-[13px] leading-6">
-              <DiffChunks parts={parts} />
-            </div>
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
-    </div>
-  );
+function versionHunkImpactLabel(hunks: VersionChangeHunk[]) {
+  if (hunks.length === 0) return "No visible change";
+  if (hunks.length === 1) return hunks[0]?.classification || "1 change";
+  return `${hunks.length} changes`;
 }
 
-// Groups a whole-content diff by the document's Markdown sections (used by
-// version history, where a version can span many sections).
-function SectionGroupedDiff({ before, after }: { before: string; after: string }) {
-  const changes = useMemo(() => diffMarkdownSections(before, after), [before, after]);
-  const changed = useMemo(() => changes.filter((change) => change.status !== "unchanged"), [changes]);
+function summarizeVersionHunks(hunks: VersionChangeHunk[]) {
+  let added = 0;
+  let removed = 0;
+  for (const hunk of hunks) {
+    const stats = summarizeDiff(mdDiffParts(hunk.before, hunk.after));
+    added += stats.added;
+    removed += stats.removed;
+  }
+  return { added, removed };
+}
+
+function VersionHunkDiffList({ hunks }: { hunks: VersionChangeHunk[] }) {
   const [openKey, setOpenKey] = useState<string | null>(null);
 
   useEffect(() => {
-    setOpenKey(changed.length === 1 ? changed[0].key : null);
-  }, [changed]);
+    setOpenKey(hunks.length === 1 ? hunks[0]?.key ?? null : null);
+  }, [hunks]);
 
-  if (changed.length === 0) {
-    return <DiffText before={before} after={after} />;
+  if (hunks.length === 0) {
+    return (
+      <div className="rounded-md border border-[var(--creed-border)] bg-[var(--creed-surface-raised)] px-3 py-2 text-[13px] text-[var(--creed-text-secondary)]">
+        No visible change
+      </div>
+    );
   }
 
-  if (changed.length === 1) {
-    return <DiffText before={changed[0].before} after={changed[0].after} />;
+  if (hunks.length === 1) {
+    const hunk = hunks[0];
+    return hunk ? (
+      <RenderedProposalBody before={hunk.before} after={hunk.after} status={hunk.status} />
+    ) : null;
   }
 
   return (
     <div className="space-y-1.5">
-      {changed.map((change) => (
-        <SectionChangeRow
-          key={change.key}
-          change={change}
-          open={openKey === change.key}
-          onToggle={() => setOpenKey((current) => (current === change.key ? null : change.key))}
-        />
-      ))}
-    </div>
-  );
-}
-
-function versionImpactLabel(before: string, after: string) {
-  const changed = diffMarkdownSections(before, after).filter((change) => change.status !== "unchanged");
-  if (changed.length === 0) return "No section change";
-  if (changed.length === 1) return sectionChangeLabel(changed[0]);
-  return `${changed.length} sections`;
-}
-
-// The before/after a proposal represents: a section proposal carries its own
-// before/after; a legacy whole-content proposal diffs against the live document.
-function proposalDiffPair(proposal: DocumentProposal, currentContent: string) {
-  if (proposal.kind === "document-section") {
-    return { before: proposal.sectionBefore ?? "", after: proposal.sectionAfter ?? "" };
-  }
-  return { before: currentContent, after: proposal.content };
-}
-
-function sectionRowLabel(proposal: DocumentProposal) {
-  if (proposal.kind !== "document-section") return "Whole document";
-  if ((proposal.sectionLevel ?? 0) === 0 || !proposal.sectionHeading) return "Intro";
-  return proposal.sectionHeading;
-}
-
-// Person attribution helper for callers outside this module (the document
-// editor renders inline proposal cards and needs the same person-first
-// resolution the panel uses).
-export function resolveProposalPerson(
-  users: WorkspaceUser[],
-  authorUserId: string | null,
-  agentLabel: string | null
-): Person {
-  if (authorUserId) {
-    const user = users.find((candidate) => candidate.id === authorUserId);
-    if (user) return { label: user.label, avatarUrl: user.avatarUrl };
-  }
-  if (agentLabel) return { label: agentLabel, avatarUrl: null };
-  return { label: "Someone", avatarUrl: null };
-}
-
-// The inline proposal card rendered in the document body at the bottom of the
-// section it targets (mirrors the personal file's InlineProposalDiff, but for a
-// dynamic document section: person attribution + Markdown-aware rendered diff).
-export function InlineDocumentProposal({
-  proposal,
-  person,
-  busy,
-  documentId,
-  users,
-  onCommentPosted,
-  onAccept,
-  onReject,
-}: {
-  proposal: DocumentProposal;
-  person: Person;
-  busy?: boolean;
-  documentId: string;
-  users: WorkspaceUser[];
-  onCommentPosted?: (comment: DocumentComment) => void;
-  onAccept: () => void;
-  onReject: () => void;
-}) {
-  const [expanded, setExpanded] = useState(true);
-  const [showComments, setShowComments] = useState(false);
-  const before = proposal.sectionBefore ?? "";
-  const after = proposal.sectionAfter ?? proposal.content;
-  const parts = useMemo(() => mdDiffParts(before, after), [before, after]);
-  const stats = useMemo(() => summarizeDiff(parts), [parts]);
-  const status = proposal.sectionStatus ?? "modified";
-  const headline =
-    status === "added"
-      ? "proposed a new section"
-      : status === "removed"
-        ? "proposed to remove this section"
-        : proposal.actorType === "agent"
-          ? "proposed an edit"
-          : "proposed an update";
-
-  return (
-    <div className="rounded-[14px] border border-[var(--creed-border)] bg-[var(--creed-surface)] shadow-[0_8px_24px_rgba(28,28,26,0.04)]">
-      <div className="flex items-center justify-between gap-3 px-3 py-2">
-        <button
-          type="button"
-          onClick={() => setExpanded((value) => !value)}
-          aria-expanded={expanded}
-          className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm text-[var(--creed-text-secondary)]"
-        >
-          <ChevronDown
-            className={cn(
-              "h-3.5 w-3.5 shrink-0 text-[var(--creed-text-tertiary)] transition-transform duration-200",
-              expanded ? "rotate-0" : "-rotate-90"
-            )}
-          />
-          <PersonBadge person={person} />
-          <span className="text-[var(--creed-text-tertiary)]">{headline}</span>
-          <span className="text-[var(--creed-text-tertiary)]">·</span>
-          <span className="inline-flex items-center gap-1">
-            <DiffBadge tone="added" count={stats.added} size="md" />
-            <DiffBadge tone="removed" count={stats.removed} size="md" />
-          </span>
-        </button>
-        <div className="flex shrink-0 items-center gap-1">
-          <button
-            type="button"
-            onClick={() => setShowComments((value) => !value)}
-            aria-expanded={showComments}
-            title="Comment on this proposal"
-            className={cn(
-              "flex h-7 w-7 items-center justify-center rounded-md text-[var(--creed-text-tertiary)] transition-colors hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)]",
-              showComments ? "text-[var(--creed-text-primary)]" : ""
-            )}
+      {hunks.map((hunk, index) => {
+        const key = hunk.key || `version-hunk-${index}`;
+        const open = openKey === key;
+        const stats = summarizeDiff(mdDiffParts(hunk.before, hunk.after));
+        return (
+          <div
+            key={key}
+            className="overflow-hidden rounded-[12px] border border-[var(--creed-border)] bg-[var(--creed-surface)]"
           >
-            <MessageSquare className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            onClick={onReject}
-            disabled={busy}
-            className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-sm font-medium text-[var(--creed-text-secondary)] transition-colors hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)] disabled:opacity-50"
-          >
-            <X className="h-3.5 w-3.5" />
-            Reject
-          </button>
-          <button
-            type="button"
-            onClick={onAccept}
-            disabled={busy}
-            className="inline-flex h-7 items-center gap-1 rounded-md bg-[#2563eb] px-2.5 text-sm font-medium text-white transition-colors hover:bg-[#1d4ed8] disabled:opacity-50"
-          >
-            <Check className="h-3.5 w-3.5" />
-            Accept
-          </button>
-        </div>
-      </div>
-      <AnimatePresence initial={false}>
-        {expanded ? (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
-            className="overflow-hidden"
-          >
-            <div className="border-t border-[var(--creed-border)]" />
-            <RenderedProposalBody before={before} after={after} status={status} />
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
-      <AnimatePresence initial={false}>
-        {showComments ? (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
-            className="overflow-hidden"
-          >
-            <ProposalCommentThread documentId={documentId} proposalId={proposal.id} users={users} onPosted={onCommentPosted} />
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
+            <button
+              type="button"
+              onClick={() => setOpenKey((current) => (current === key ? null : key))}
+              aria-expanded={open}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors hover:bg-[var(--creed-surface-raised)]"
+            >
+              <ChevronDown
+                className={cn(
+                  "h-3.5 w-3.5 shrink-0 text-[var(--creed-text-tertiary)] transition-transform duration-200",
+                  open ? "rotate-0" : "-rotate-90"
+                )}
+              />
+              <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--creed-text-secondary)]">
+                {hunk.classification || `Change ${index + 1}`}
+              </span>
+              <span className="inline-flex shrink-0 items-center gap-1.5">
+                <DiffBadge tone="added" count={stats.added} size="md" />
+                <DiffBadge tone="removed" count={stats.removed} size="md" />
+              </span>
+            </button>
+            <AnimatePresence initial={false}>
+              {open ? (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: "auto", opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+                  className="overflow-hidden"
+                >
+                  <div className="border-t border-[var(--creed-border)] px-3 py-3">
+                    <RenderedProposalBody
+                      before={hunk.before}
+                      after={hunk.after}
+                      status={hunk.status}
+                    />
+                  </div>
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -900,35 +801,40 @@ export function InlineDocumentProposal({
 export function DocumentReviewPanel({
   documentId,
   revision,
-  currentContent,
   users,
   refreshSignal,
   onDocumentUpdated,
-  onProposalsChange,
-  onCommentPosted,
   focusVersionId,
   onFocusVersionHandled,
   onHeightChange,
+  diffOpen = false,
+  onDiffOpenChange,
+  onJumpToHistoryChange,
+  onShowAllConflicts,
+  onPendingProposalsChange,
+  onPendingProposalsLoadingChange,
 }: {
   documentId: string;
   revision: number;
-  currentContent: string;
   users: WorkspaceUser[];
   refreshSignal?: number;
   onDocumentUpdated: (document: SharedDocument) => void;
-  onProposalsChange?: (proposals: DocumentProposal[]) => void;
-  onCommentPosted?: (comment: DocumentComment) => void;
   focusVersionId?: string | null;
   onFocusVersionHandled?: () => void;
   onHeightChange?: (height: number) => void;
+  diffOpen?: boolean;
+  onDiffOpenChange?: (open: boolean) => void;
+  onJumpToHistoryChange?: (target: DocumentHistoryJumpTarget) => void;
+  onShowAllConflicts?: () => void;
+  onPendingProposalsChange?: (proposals: DocumentProposal[]) => void;
+  onPendingProposalsLoadingChange?: (loading: boolean) => void;
 }) {
   const [proposals, setProposals] = useState<DocumentProposal[]>([]);
+  const [proposalsLoaded, setProposalsLoaded] = useState(false);
+  const [acceptedProposals, setAcceptedProposals] = useState<DocumentProposal[]>([]);
   const [versions, setVersions] = useState<DocumentVersion[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [expandedVersion, setExpandedVersion] = useState<string | null>(null);
-  const [versionContents, setVersionContents] = useState<Record<string, string>>({});
-  const [loadingVersion, setLoadingVersion] = useState<string | null>(null);
-  const [versionContentErrors, setVersionContentErrors] = useState<Record<string, string>>({});
   const [busyProposal, setBusyProposal] = useState<string | null>(null);
   const [revertingVersion, setRevertingVersion] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -957,6 +863,21 @@ export function DocumentReviewPanel({
 
   const usersById = useMemo(() => new Map(users.map((user) => [user.id, user])), [users]);
 
+  useEffect(() => {
+    onPendingProposalsChange?.(proposals);
+    if (proposalsLoaded && proposals.length === 0 && diffOpen) {
+      onDiffOpenChange?.(false);
+    }
+  }, [diffOpen, onDiffOpenChange, onPendingProposalsChange, proposals, proposalsLoaded]);
+
+  useEffect(() => {
+    onPendingProposalsLoadingChange?.(!proposalsLoaded);
+  }, [onPendingProposalsLoadingChange, proposalsLoaded]);
+
+  useEffect(() => {
+    setProposalsLoaded(false);
+  }, [documentId]);
+
   const resolvePerson = useCallback(
     (authorUserId: string | null, agentLabel: string | null): Person => {
       if (authorUserId) {
@@ -977,12 +898,28 @@ export function DocumentReviewPanel({
       if (proposalsRes.ok) {
         const payload = (await proposalsRes.json()) as { proposals?: DocumentProposal[] };
         setProposals(payload.proposals ?? []);
-        onProposalsChange?.(payload.proposals ?? []);
+      }
+    } catch {
+      // Non-fatal: leave the last known list in place.
+    } finally {
+      setProposalsLoaded(true);
+    }
+  }, [documentId]);
+
+  const refreshAcceptedProposals = useCallback(async () => {
+    try {
+      const proposalsRes = await fetch(
+        `/api/app/documents/${encodeURIComponent(documentId)}/proposals?status=accepted`,
+        { cache: "no-store" }
+      );
+      if (proposalsRes.ok) {
+        const payload = (await proposalsRes.json()) as { proposals?: DocumentProposal[] };
+        setAcceptedProposals(payload.proposals ?? []);
       }
     } catch {
       // Non-fatal: leave the last known list in place.
     }
-  }, [documentId, onProposalsChange]);
+  }, [documentId]);
 
   const refreshVersions = useCallback(async () => {
     try {
@@ -1000,8 +937,9 @@ export function DocumentReviewPanel({
 
   useEffect(() => {
     void refreshProposals();
+    void refreshAcceptedProposals();
     void refreshVersions();
-  }, [refreshProposals, refreshVersions, revision, refreshSignal]);
+  }, [refreshAcceptedProposals, refreshProposals, refreshVersions, revision, refreshSignal]);
 
   useEffect(() => {
     let interval: number | null = null;
@@ -1017,12 +955,14 @@ export function DocumentReviewPanel({
     }
     function onFocus() {
       void refreshProposals();
+      void refreshAcceptedProposals();
       void refreshVersions();
       start();
     }
     function onVisibility() {
       if (document.visibilityState === "visible") {
         void refreshProposals();
+        void refreshAcceptedProposals();
         void refreshVersions();
         start();
       } else {
@@ -1037,7 +977,7 @@ export function DocumentReviewPanel({
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [refreshProposals, refreshVersions]);
+  }, [refreshAcceptedProposals, refreshProposals, refreshVersions]);
 
   useEffect(() => {
     const supabase = getSupabaseBrowserClient();
@@ -1053,6 +993,7 @@ export function DocumentReviewPanel({
         },
         () => {
           void refreshProposals();
+          void refreshAcceptedProposals();
           void refreshVersions();
         }
       )
@@ -1061,111 +1002,78 @@ export function DocumentReviewPanel({
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [documentId, refreshProposals, refreshVersions]);
-
-  const loadVersionContent = useCallback(
-    async (versionId: string) => {
-      if (Object.prototype.hasOwnProperty.call(versionContents, versionId)) return;
-      setLoadingVersion(versionId);
-      setVersionContentErrors((current) => {
-        const next = { ...current };
-        delete next[versionId];
-        return next;
-      });
-      try {
-        const response = await fetch(
-          `/api/app/documents/${encodeURIComponent(documentId)}/versions/${encodeURIComponent(versionId)}`,
-          { cache: "no-store" }
-        );
-        const payload = (await response.json()) as { version?: DocumentVersion; error?: string };
-        if (!response.ok || !payload.version) {
-          throw new Error(payload.error || "Could not load this version.");
-        }
-        setVersionContents((current) => ({
-          ...current,
-          [versionId]: payload.version?.content ?? "",
-        }));
-      } catch (error) {
-        setVersionContentErrors((current) => ({
-          ...current,
-          [versionId]: error instanceof Error ? error.message : "Could not load this version.",
-        }));
-      } finally {
-        setLoadingVersion((current) => (current === versionId ? null : current));
-      }
-    },
-    [documentId, versionContents]
-  );
-
-  const loadVersionPair = useCallback(
-    async (versionId: string) => {
-      const index = versions.findIndex((version) => version.id === versionId);
-      if (index === -1) return;
-      const previousId = versions[index + 1]?.id;
-      await Promise.all([
-        loadVersionContent(versionId),
-        previousId ? loadVersionContent(previousId) : Promise.resolve(),
-      ]);
-    },
-    [loadVersionContent, versions]
-  );
+  }, [documentId, refreshAcceptedProposals, refreshProposals, refreshVersions]);
 
   const toggleVersion = useCallback(
     (versionId: string) => {
       setExpandedVersion((current) => {
-        const next = current === versionId ? null : versionId;
-        if (next) void loadVersionPair(next);
-        return next;
+        return current === versionId ? null : versionId;
       });
     },
-    [loadVersionPair]
+    []
   );
 
   // When an activity item asks to focus a version, open history, expand that
   // version's diff, load the body pair, and scroll it into view.
   useEffect(() => {
     if (!focusVersionId) return;
-    if (!versions.some((version) => version.id === focusVersionId)) return;
+    const target = versions.find((version) => version.id === focusVersionId);
+    if (!target) return;
     setHistoryOpen(true);
     setExpandedVersion(focusVersionId);
-    void loadVersionPair(focusVersionId);
     const timer = window.setTimeout(() => {
       const selector = `[data-version-row="${(window.CSS?.escape ?? ((v: string) => v))(focusVersionId)}"]`;
       rootRef.current?.querySelector(selector)?.scrollIntoView({ behavior: "smooth", block: "center" });
       onFocusVersionHandled?.();
     }, 340);
     return () => window.clearTimeout(timer);
-  }, [focusVersionId, loadVersionPair, versions, onFocusVersionHandled]);
+  }, [focusVersionId, versions, onFocusVersionHandled]);
 
-  const resolveProposal = useCallback(
-    async (id: string, action: "accept" | "reject", options: ResolveProposalOptions = {}) => {
-      setBusyProposal(id);
+  const resolveProposals = useCallback(
+    async (ids: string[], action: "accept" | "reject") => {
+      const proposalIds = Array.from(new Set(ids.filter(Boolean)));
+      if (proposalIds.length === 0) return;
+      setBusyProposal("__bulk__");
       try {
-        const init: RequestInit = { method: "POST" };
-        if (action === "accept" && options.allowStaleSectionUpdate) {
-          init.headers = { "Content-Type": "application/json" };
-          init.body = JSON.stringify({ allowStaleSectionUpdate: true });
-        }
         const response = await fetch(
-          `/api/app/documents/${encodeURIComponent(documentId)}/proposals/${encodeURIComponent(id)}/${action}`,
-          init
+          `/api/app/documents/${encodeURIComponent(documentId)}/proposals/bulk`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action, proposalIds }),
+          }
         );
-        const payload = (await response.json()) as EditOutcomeResponse;
+        const payload = await readEditOutcome(response);
         if (!response.ok) {
-          throw new Error(payload.error || `Could not ${action} the proposal.`);
+          if ((payload.settledProposalIds?.length ?? 0) > 0) {
+            const settled = new Set(payload.settledProposalIds);
+            setProposals((rows) => rows.filter((proposal) => !settled.has(proposal.id)));
+            toast.warning(payload.error || "Proposal no longer applies and was removed.");
+            await Promise.all([refreshProposals(), refreshAcceptedProposals(), refreshVersions()]);
+            return;
+          }
+          throw new Error(payload.error || `Could not ${action} the proposals.`);
         }
+        setProposals((rows) => {
+          const resolved = new Set(proposalIds);
+          return rows.filter((proposal) => !resolved.has(proposal.id));
+        });
         if (action === "accept" && payload.document) {
           onDocumentUpdated(payload.document);
         }
-        toast.success(action === "accept" ? "Proposal accepted" : "Proposal rejected");
-        await Promise.all([refreshProposals(), refreshVersions()]);
+        toast.success(
+          action === "accept"
+            ? proposalIds.length === 1 ? "Proposal accepted" : "Proposals accepted"
+            : proposalIds.length === 1 ? "Proposal rejected" : "Proposals rejected"
+        );
+        await Promise.all([refreshProposals(), refreshAcceptedProposals(), refreshVersions()]);
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : `Could not ${action} the proposal.`);
+        toast.error(error instanceof Error ? error.message : `Could not ${action} the proposals.`);
       } finally {
         setBusyProposal(null);
       }
     },
-    [documentId, onDocumentUpdated, refreshProposals, refreshVersions]
+    [documentId, onDocumentUpdated, refreshAcceptedProposals, refreshProposals, refreshVersions]
   );
 
   async function revertTo(versionId: string) {
@@ -1179,7 +1087,7 @@ export function DocumentReviewPanel({
           body: JSON.stringify({ expectedRevision: revision }),
         }
       );
-      const payload = (await response.json()) as EditOutcomeResponse;
+      const payload = await readEditOutcome(response);
       if (!response.ok) {
         throw new Error(payload.error || "Could not revert.");
       }
@@ -1189,7 +1097,7 @@ export function DocumentReviewPanel({
       } else {
         toast.success("Revert proposed for review");
       }
-      await Promise.all([refreshProposals(), refreshVersions()]);
+      await Promise.all([refreshProposals(), refreshAcceptedProposals(), refreshVersions()]);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not revert.");
     } finally {
@@ -1204,32 +1112,35 @@ export function DocumentReviewPanel({
   }
 
   return (
-    <div ref={rootRef} className="mt-5 space-y-3">
+    <div
+      ref={rootRef}
+      className={cn(
+        hasProposals ? "mt-5 space-y-3" : "mt-3 space-y-1",
+        !hasProposals && versions.length > 0 && !historyOpen ? "-mb-8 md:-mb-10" : ""
+      )}
+    >
       {hasProposals ? (
         <DocumentReviewPill
           proposals={proposals}
-          currentContent={currentContent}
-          documentId={documentId}
-          users={users}
-          resolvePerson={resolvePerson}
+          diffOpen={diffOpen}
           busyProposal={busyProposal}
-          onResolve={resolveProposal}
-          onCommentPosted={onCommentPosted}
+          onDiffOpenChange={onDiffOpenChange}
+          onShowAllConflicts={onShowAllConflicts}
+          onResolveMany={resolveProposals}
         />
       ) : null}
 
       {versions.length > 0 ? (
         <DocumentVersionHistoryPill
           versions={versions}
+          acceptedProposals={acceptedProposals}
           historyOpen={historyOpen}
           expandedVersion={expandedVersion}
-          versionContents={versionContents}
-          loadingVersion={loadingVersion}
-          versionContentErrors={versionContentErrors}
           revertingVersion={revertingVersion}
           resolvePerson={resolvePerson}
           onToggleHistory={() => setHistoryOpen((open) => !open)}
           onToggleVersion={toggleVersion}
+          onJumpToChange={onJumpToHistoryChange}
           onRevert={(versionId) => void revertTo(versionId)}
         />
       ) : null}
@@ -1237,31 +1148,228 @@ export function DocumentReviewPanel({
   );
 }
 
+type ProposalHistoryFamily = {
+  id: string;
+  proposals: DocumentProposal[];
+  entries: ProposalHistoryEntry[];
+  versions: DocumentVersion[];
+  latestVersion: DocumentVersion;
+};
+
+type ProposalHistoryEntry = {
+  id: string;
+  label: string;
+  before: string;
+  after: string;
+  status: HunkStatus;
+  createdAt: string;
+  revision: number;
+};
+
+type VersionHistoryItem =
+  | { type: "family"; family: ProposalHistoryFamily }
+  | { type: "version"; version: DocumentVersion; versionIndex: number };
+
+function buildVersionHistoryItems(
+  versions: DocumentVersion[],
+  acceptedProposals: DocumentProposal[]
+): VersionHistoryItem[] {
+  const acceptedById = new Map(acceptedProposals.map((proposal) => [proposal.id, proposal]));
+  const familyMap = new Map<string, ProposalHistoryFamily>();
+
+  function legacyFamilyId(version: DocumentVersion) {
+    const firstHunk = version.changeHunks?.[0];
+    const prefix = firstHunk?.classification?.split(":")[0]?.trim() || version.summary || "Document";
+    const hour = new Date(version.createdAt);
+    hour.setMinutes(0, 0, 0);
+    return [
+      "legacy",
+      version.documentId ?? "document",
+      version.actorType,
+      version.authorUserId ?? version.authorAgentLabel ?? "unknown",
+      version.summary,
+      prefix,
+      hour.toISOString(),
+    ].join(":");
+  }
+
+  function familyIdForVersion(version: DocumentVersion) {
+    return version.versionFamilyId || version.sourceProposalFamilyId || legacyFamilyId(version);
+  }
+
+  function ensureFamily(familyId: string, version: DocumentVersion) {
+    const family =
+      familyMap.get(familyId) ??
+      ({
+        id: familyId,
+        proposals: [],
+        entries: [],
+        versions: [],
+        latestVersion: version,
+      } satisfies ProposalHistoryFamily);
+    if (!family.versions.some((item) => item.id === version.id)) {
+      family.versions.push(version);
+    }
+    if (version.revision > family.latestVersion.revision) {
+      family.latestVersion = version;
+    }
+    familyMap.set(familyId, family);
+    return family;
+  }
+
+  function addEntry(family: ProposalHistoryFamily, entry: ProposalHistoryEntry) {
+    if (!family.entries.some((item) => item.id === entry.id)) {
+      family.entries.push(entry);
+    }
+  }
+
+  const proposalsForVersion = (version: DocumentVersion) => {
+    const byId = version.sourceProposalId ? acceptedById.get(version.sourceProposalId) : null;
+    const hunkKeys = new Set((version.changeHunks ?? []).map((hunk) => hunk.key).filter(Boolean));
+    const matches = acceptedProposals.filter((proposal) => hunkKeys.has(proposal.hunkKey));
+    const all = byId ? [byId, ...matches] : matches;
+    return Array.from(new Map(all.map((proposal) => [proposal.id, proposal])).values());
+  };
+
+  for (const version of versions) {
+    const versionProposals = proposalsForVersion(version);
+    if (versionProposals.length === 0) {
+      const familyId = familyIdForVersion(version);
+      const family = ensureFamily(familyId, version);
+      const hunks = version.changeHunks ?? [];
+      if (hunks.length === 0) {
+        addEntry(family, {
+          id: version.id,
+          label: version.summary || `Revision ${version.revision}`,
+          before: "",
+          after: "",
+          status: "modified",
+          createdAt: version.createdAt,
+          revision: version.revision,
+        });
+      } else {
+        for (const hunk of hunks) {
+          addEntry(family, {
+            id: `${version.id}:${hunk.key || hunk.index}`,
+            label: hunk.classification || version.summary || `Revision ${version.revision}`,
+            before: hunk.before,
+            after: hunk.after,
+            status: hunk.status,
+            createdAt: version.createdAt,
+            revision: version.revision,
+          });
+        }
+      }
+      continue;
+    }
+
+    for (const proposal of versionProposals) {
+      const family = ensureFamily(proposal.familyId, version);
+      if (!family.proposals.some((item) => item.id === proposal.id)) {
+        family.proposals.push(proposal);
+      }
+      addEntry(family, {
+        id: proposal.id,
+        label: proposalHistoryLabel(proposal),
+        before: proposal.hunkBefore,
+        after: proposal.hunkAfter,
+        status: proposal.hunkStatus,
+        createdAt: version.createdAt,
+        revision: version.revision,
+      });
+    }
+  }
+
+  for (const family of familyMap.values()) {
+    family.proposals.sort((a, b) => a.hunkIndex - b.hunkIndex || a.id.localeCompare(b.id));
+    family.entries.sort((a, b) => a.revision - b.revision || a.id.localeCompare(b.id));
+    family.versions.sort((a, b) => b.revision - a.revision);
+  }
+
+  const emittedFamilies = new Set<string>();
+  const items: VersionHistoryItem[] = [];
+  versions.forEach((version, versionIndex) => {
+    const versionProposals = proposalsForVersion(version);
+    if (versionProposals.length === 0) {
+      const familyId = familyIdForVersion(version);
+      if (familyId) {
+        if (emittedFamilies.has(familyId)) return;
+        const family = familyMap.get(familyId);
+        if (!family) return;
+        emittedFamilies.add(familyId);
+        items.push({ type: "family", family });
+        return;
+      }
+      items.push({ type: "version", version, versionIndex });
+      return;
+    }
+    for (const proposal of versionProposals) {
+      if (emittedFamilies.has(proposal.familyId)) continue;
+      const family = familyMap.get(proposal.familyId);
+      if (!family) continue;
+      emittedFamilies.add(proposal.familyId);
+      items.push({ type: "family", family });
+    }
+  });
+
+  return items;
+}
+
 function DocumentVersionHistoryPill({
   versions,
+  acceptedProposals,
   historyOpen,
   expandedVersion,
-  versionContents,
-  loadingVersion,
-  versionContentErrors,
   revertingVersion,
   resolvePerson,
   onToggleHistory,
   onToggleVersion,
+  onJumpToChange,
   onRevert,
 }: {
   versions: DocumentVersion[];
+  acceptedProposals: DocumentProposal[];
   historyOpen: boolean;
   expandedVersion: string | null;
-  versionContents: Record<string, string>;
-  loadingVersion: string | null;
-  versionContentErrors: Record<string, string>;
   revertingVersion: string | null;
   resolvePerson: (authorUserId: string | null, agentLabel: string | null) => Person;
   onToggleHistory: () => void;
   onToggleVersion: (versionId: string) => void;
+  onJumpToChange?: (target: DocumentHistoryJumpTarget) => void;
   onRevert: (versionId: string) => void;
 }) {
+  const [openFamilyId, setOpenFamilyId] = useState<string | null>(null);
+  const [activeProposalId, setActiveProposalId] = useState<string | null>(null);
+  const historyItems = useMemo(
+    () => buildVersionHistoryItems(versions, acceptedProposals),
+    [acceptedProposals, versions]
+  );
+  const visibleHistoryItems = useMemo(
+    () =>
+      openFamilyId
+        ? historyItems.filter((item) => item.type === "family" && item.family.id === openFamilyId)
+        : historyItems,
+    [historyItems, openFamilyId]
+  );
+
+  useEffect(() => {
+    if (!openFamilyId) return;
+    const familyStillExists = historyItems.some((item) => item.type === "family" && item.family.id === openFamilyId);
+    if (!familyStillExists) {
+      setOpenFamilyId(null);
+      setActiveProposalId(null);
+    }
+  }, [historyItems, openFamilyId]);
+
+  function toggleFamily(familyId: string) {
+    setActiveProposalId(null);
+    setOpenFamilyId((current) => (current === familyId ? null : familyId));
+  }
+
+  function toggleHistoryProposal(proposalId: string) {
+    setActiveProposalId((current) => (current === proposalId ? null : proposalId));
+  }
+
   return (
     <div className="space-y-2">
       <div className="inline-flex items-center gap-1 rounded-[16px] border border-[var(--creed-border)] bg-[var(--creed-surface)] p-1.5 shadow-[0_8px_24px_rgba(28,28,26,0.04)]">
@@ -1305,29 +1413,46 @@ function DocumentVersionHistoryPill({
             className="overflow-hidden"
           >
             <div className="creed-scrollbar max-h-[60vh] divide-y divide-[var(--creed-border)] overflow-y-auto rounded-[var(--radius-lg)] border border-[var(--creed-border)] bg-[var(--creed-surface)] shadow-[0_8px_24px_rgba(28,28,26,0.04)]">
-              {versions.map((version, index) => {
-                const previousVersion = versions[index + 1];
+              {visibleHistoryItems.map((item) => {
+                if (item.type === "family") {
+                  const familyRevisionStart = Math.min(
+                    ...item.family.versions.map((version) => version.revision)
+                  );
+                  const isCurrent = versions[0]?.id === item.family.latestVersion.id;
+                  const revertTargetId = isCurrent
+                    ? versions.find((version) => version.revision < familyRevisionStart)?.id ?? null
+                    : item.family.latestVersion.id;
+                  return (
+                    <ProposalFamilyRow
+                      key={item.family.id}
+                      family={item.family}
+                      person={resolvePerson(
+                        item.family.latestVersion.authorUserId,
+                        item.family.latestVersion.authorAgentLabel
+                      )}
+                      open={openFamilyId === item.family.id}
+                      activeProposalId={activeProposalId}
+                      isCurrent={isCurrent}
+                      reverting={revertTargetId ? revertingVersion === revertTargetId : false}
+                      onToggle={() => toggleFamily(item.family.id)}
+                      onToggleProposal={toggleHistoryProposal}
+                      onJumpToChange={onJumpToChange}
+                      onRevert={revertTargetId ? () => onRevert(revertTargetId) : undefined}
+                    />
+                  );
+                }
+
                 return (
                   <VersionRow
-                    key={version.id}
-                    version={version}
-                    content={versionContents[version.id]}
-                    previousContent={previousVersion ? versionContents[previousVersion.id] : ""}
-                    hasPreviousVersion={Boolean(previousVersion)}
-                    loadError={
-                      versionContentErrors[version.id] ||
-                      (previousVersion ? versionContentErrors[previousVersion.id] : undefined)
-                    }
-                    person={resolvePerson(version.authorUserId, version.authorAgentLabel)}
-                    isCurrent={index === 0}
-                    expanded={expandedVersion === version.id}
-                    loading={
-                      loadingVersion === version.id ||
-                      (previousVersion ? loadingVersion === previousVersion.id : false)
-                    }
-                    reverting={revertingVersion === version.id}
-                    onToggle={() => onToggleVersion(version.id)}
-                    onRevert={() => onRevert(version.id)}
+                    key={item.version.id}
+                    version={item.version}
+                    person={resolvePerson(item.version.authorUserId, item.version.authorAgentLabel)}
+                    isCurrent={item.versionIndex === 0}
+                    expanded={expandedVersion === item.version.id}
+                    reverting={revertingVersion === item.version.id}
+                    onToggle={() => onToggleVersion(item.version.id)}
+                    onJumpToChange={onJumpToChange}
+                    onRevert={() => onRevert(item.version.id)}
                   />
                 );
               })}
@@ -1339,102 +1464,90 @@ function DocumentVersionHistoryPill({
   );
 }
 
-// The compact review summary, modelled on the personal-file ReviewPill: a
-// rounded pill showing total +/- and "N proposals" that toggles a list of the
-// per-section proposals beneath it, plus Reject all / Accept all. Collapsed by
-// default so the summary stays small instead of a large always-open box.
+// The compact review summary: one rounded pill showing total +/- and proposal
+// count. Show/Hide diff toggles the document body's in-place diff mode.
 function DocumentReviewPill({
   proposals,
-  currentContent,
-  documentId,
-  users,
-  resolvePerson,
+  diffOpen,
   busyProposal,
-  onResolve,
-  onCommentPosted,
+  onDiffOpenChange,
+  onShowAllConflicts,
+  onResolveMany,
 }: {
   proposals: DocumentProposal[];
-  currentContent: string;
-  documentId: string;
-  users: WorkspaceUser[];
-  resolvePerson: (authorUserId: string | null, agentLabel: string | null) => Person;
+  diffOpen: boolean;
   busyProposal: string | null;
-  onResolve: (id: string, action: "accept" | "reject", options?: ResolveProposalOptions) => Promise<void>;
-  onCommentPosted?: (comment: DocumentComment) => void;
+  onDiffOpenChange?: (open: boolean) => void;
+  onShowAllConflicts?: () => void;
+  onResolveMany: (ids: string[], action: "accept" | "reject") => Promise<void>;
 }) {
-  const [listOpen, setListOpen] = useState(false);
-
   const totals = useMemo(() => {
     let added = 0;
     let removed = 0;
     for (const proposal of proposals) {
-      const { before, after } = proposalDiffPair(proposal, currentContent);
-      const stats = summarizeDiff(mdDiffParts(before, after));
+      const stats = summarizeDiff(mdDiffParts(proposal.hunkBefore, proposal.hunkAfter));
       added += stats.added;
       removed += stats.removed;
     }
     return { added, removed };
-  }, [proposals, currentContent]);
+  }, [proposals]);
 
-  const anyBusy = proposals.some((proposal) => busyProposal === proposal.id);
+  const anyBusy = Boolean(busyProposal);
+  const conflictCount = documentConflictChoiceCount(proposals);
 
   async function resolveAll(action: "accept" | "reject") {
-    // Sequentially, so each section applies against the revision the previous
-    // acceptance produced (the per-section merge guard handles ordering).
-    for (const proposal of proposals) {
-      await onResolve(
-        proposal.id,
-        action,
-        action === "accept" ? { allowStaleSectionUpdate: true } : undefined
+    if (action === "accept" && conflictCount > 0) {
+      onShowAllConflicts?.();
+      toast.error(
+        conflictCount === 1
+          ? "Resolve the conflict before accepting all."
+          : `Resolve ${conflictCount} conflicts before accepting all.`
       );
+      return;
     }
-  }
-
-  // A single proposal needs no roll-up summary: skip the "N proposals" pill
-  // (and its Reject all / Accept all) and surface the one proposal row on its
-  // own, matching the personal file where one proposal goes straight to its
-  // section card.
-  if (proposals.length === 1) {
-    const proposal = proposals[0];
-    return (
-      <div className="creed-scrollbar max-h-[60vh] overflow-y-auto rounded-[var(--radius-lg)] border border-[var(--creed-border)] bg-[var(--creed-surface)]">
-        <DocumentReviewPillItem
-          proposal={proposal}
-          currentContent={currentContent}
-          documentId={documentId}
-          users={users}
-          person={resolvePerson(proposal.authorUserId, proposal.authorAgentLabel)}
-          busy={busyProposal === proposal.id}
-          onCommentPosted={onCommentPosted}
-          onAccept={() => void onResolve(proposal.id, "accept")}
-          onReject={() => void onResolve(proposal.id, "reject")}
-        />
-      </div>
-    );
+    await onResolveMany(proposals.map((proposal) => proposal.id), action);
   }
 
   return (
     <div className="space-y-2">
       <div className="inline-flex items-center gap-1 rounded-[16px] border border-[var(--creed-border)] bg-[var(--creed-surface)] p-1.5 shadow-[0_8px_24px_rgba(28,28,26,0.04)]">
-        <button
-          type="button"
-          onClick={() => setListOpen((value) => !value)}
-          aria-expanded={listOpen}
-          className="group/trigger inline-flex h-7 items-center gap-2 rounded-md px-2.5 text-sm font-medium text-[var(--creed-text-secondary)] outline-none transition-colors hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)]"
-        >
+        <div className="inline-flex h-7 items-center gap-2 px-2.5 text-sm font-medium text-[var(--creed-text-secondary)]">
           <span className="inline-flex items-center gap-1">
             <DiffBadge tone="added" count={totals.added} size="md" />
             <DiffBadge tone="removed" count={totals.removed} size="md" />
           </span>
           <span className="text-[var(--creed-text-tertiary)]">·</span>
           <span>{proposals.length === 1 ? "1 proposal" : `${proposals.length} proposals`}</span>
-          <ChevronDown
+          {conflictCount > 0 ? (
+            <>
+              <span className="text-[var(--creed-text-tertiary)]">·</span>
+              <span className="inline-flex items-center gap-1 text-[#b45309]">
+                <AlertTriangle className="h-3.5 w-3.5" />
+                {conflictCount}
+              </span>
+            </>
+          ) : null}
+        </div>
+        <SimpleTooltip label={diffOpen ? "Hide diff" : "Show diff"}>
+          <button
+            type="button"
+            onClick={() => onDiffOpenChange?.(!diffOpen)}
+            aria-label={diffOpen ? "Hide diff" : "Show diff"}
+            aria-expanded={diffOpen}
+            aria-pressed={diffOpen}
+            disabled={!onDiffOpenChange}
             className={cn(
-              "h-3.5 w-3.5 text-[var(--creed-text-tertiary)] transition-all duration-200 group-hover/trigger:text-[var(--creed-text-primary)]",
-              listOpen ? "rotate-0" : "-rotate-90"
+              "inline-flex h-7 w-7 items-center justify-center rounded-md text-sm font-medium transition-colors disabled:opacity-50",
+              // Active state tints only the glyph blue - no filled background -
+              // so the toggle reads as a coloured icon rather than a button chip.
+              diffOpen
+                ? "text-[#2563eb] hover:bg-[var(--creed-surface-raised)] dark:text-[#93c5fd]"
+                : "text-[var(--creed-text-secondary)] hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)]"
             )}
-          />
-        </button>
+          >
+            <GitDiff className="h-3.5 w-3.5" />
+          </button>
+        </SimpleTooltip>
         <button
           type="button"
           onClick={() => void resolveAll("reject")}
@@ -1455,77 +1568,98 @@ function DocumentReviewPill({
         </button>
       </div>
 
-      <AnimatePresence initial={false}>
-        {listOpen ? (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.26, ease: [0.16, 1, 0.3, 1] }}
-            className="overflow-hidden"
-          >
-            <div className="creed-scrollbar max-h-[56vh] divide-y divide-[var(--creed-border)] overflow-y-auto rounded-[var(--radius-lg)] border border-[var(--creed-border)] bg-[var(--creed-surface)]">
-              {proposals.map((proposal) => (
-                <DocumentReviewPillItem
-                  key={proposal.id}
-                  proposal={proposal}
-                  currentContent={currentContent}
-                  documentId={documentId}
-                  users={users}
-                  person={resolvePerson(proposal.authorUserId, proposal.authorAgentLabel)}
-                  busy={busyProposal === proposal.id}
-                  onCommentPosted={onCommentPosted}
-                  onAccept={() => void onResolve(proposal.id, "accept")}
-                  onReject={() => void onResolve(proposal.id, "reject")}
-                />
-              ))}
-            </div>
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
     </div>
   );
 }
 
-// One proposal row inside the pill's reveal: person + section label + diff
-// badges; expands to the rendered diff (bottom of the section) with Reject /
-// Accept and a comment affordance.
-function DocumentReviewPillItem({
-  proposal,
-  currentContent,
-  documentId,
-  users,
+function proposalHistoryLabel(proposal: DocumentProposal) {
+  return proposal.classification || `Proposal ${proposal.hunkIndex + 1}`;
+}
+
+function proposalFamilyTitle(family: ProposalHistoryFamily) {
+  const proposalSummaries = Array.from(
+    new Set(family.proposals.map((proposal) => proposal.summary.trim()).filter(Boolean))
+  );
+  if (proposalSummaries.length === 1) return proposalSummaries[0] ?? "Proposal family";
+
+  const persistedTitles = Array.from(
+    new Set(family.versions.map((version) => version.versionFamilyTitle?.trim()).filter(Boolean))
+  );
+  if (persistedTitles.length === 1 && persistedTitles[0] !== "Updated document content") {
+    return persistedTitles[0] ?? "Proposal family";
+  }
+
+  const entryPrefixes = Array.from(
+    new Set(
+      family.entries
+        .map((entry) => entry.label.split(":")[0]?.trim())
+        .filter((prefix): prefix is string => Boolean(prefix))
+    )
+  );
+  if (entryPrefixes.length === 1) return `${entryPrefixes[0]}: updates content`;
+
+  const versionSummaries = Array.from(
+    new Set(family.versions.map((version) => version.summary.trim()).filter(Boolean))
+  );
+  if (versionSummaries.length === 1) return versionSummaries[0] ?? "Proposal family";
+
+  return "Proposal family";
+}
+
+function entryJumpTarget(entry: ProposalHistoryEntry): DocumentHistoryJumpTarget {
+  return { label: entry.label, before: entry.before, after: entry.after };
+}
+
+function versionJumpTarget(version: DocumentVersion, label: string): DocumentHistoryJumpTarget {
+  const hunk = version.changeHunks?.[0];
+  return { label, before: hunk?.before ?? "", after: hunk?.after ?? "" };
+}
+
+function ProposalFamilyRow({
+  family,
   person,
-  busy,
-  onCommentPosted,
-  onAccept,
-  onReject,
+  open,
+  activeProposalId,
+  isCurrent,
+  reverting,
+  onToggle,
+  onToggleProposal,
+  onJumpToChange,
+  onRevert,
 }: {
-  proposal: DocumentProposal;
-  currentContent: string;
-  documentId: string;
-  users: WorkspaceUser[];
+  family: ProposalHistoryFamily;
   person: Person;
-  busy: boolean;
-  onCommentPosted?: (comment: DocumentComment) => void;
-  onAccept: () => void;
-  onReject: () => void;
+  open: boolean;
+  activeProposalId: string | null;
+  isCurrent: boolean;
+  reverting: boolean;
+  onToggle: () => void;
+  onToggleProposal: (proposalId: string) => void;
+  onJumpToChange?: (target: DocumentHistoryJumpTarget) => void;
+  onRevert?: () => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const [showComments, setShowComments] = useState(false);
-  const { before, after } = proposalDiffPair(proposal, currentContent);
-  const parts = useMemo(() => mdDiffParts(before, after), [before, after]);
-  const stats = useMemo(() => summarizeDiff(parts), [parts]);
-  const label = sectionRowLabel(proposal);
+  const familyTitle = proposalFamilyTitle(family);
+  const firstEntry = family.entries[0] ?? null;
+  const itemLabel = family.entries.length === 1 ? "1 item" : `${family.entries.length} items`;
+  const totals = useMemo(() => {
+    let added = 0;
+    let removed = 0;
+    for (const entry of family.entries) {
+      const stats = summarizeDiff(mdDiffParts(entry.before, entry.after));
+      added += stats.added;
+      removed += stats.removed;
+    }
+    return { added, removed };
+  }, [family.entries]);
 
   return (
     <div>
-      <div className="flex items-center gap-2 px-3 py-2">
+      <div className="flex min-h-10 items-center gap-2 px-3 py-2">
         <button
           type="button"
-          onClick={() => setOpen((value) => !value)}
-          aria-expanded={open}
+          onClick={onToggle}
           className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm"
+          aria-expanded={open}
         >
           <ChevronDown
             className={cn(
@@ -1533,45 +1667,54 @@ function DocumentReviewPillItem({
               open ? "rotate-0" : "-rotate-90"
             )}
           />
-          <PersonBadge person={person} />
-          <span className="truncate text-[13px] text-[var(--creed-text-secondary)]">{label}</span>
+          <span className="min-w-0 flex-1">
+            <span className="flex min-w-0 items-center gap-2">
+              <PersonBadge person={person} />
+              <span className="min-w-0 max-w-full truncate text-[13px] font-medium text-[var(--creed-text-primary)]">
+                {familyTitle}
+              </span>
+              <span className="hidden shrink-0 text-[var(--creed-text-tertiary)] sm:inline">
+                · {itemLabel}
+              </span>
+            </span>
+          </span>
           <span className="ml-auto inline-flex shrink-0 items-center gap-1.5">
-            <DiffBadge tone="added" count={stats.added} size="md" />
-            <DiffBadge tone="removed" count={stats.removed} size="md" />
+            <DiffBadge tone="added" count={totals.added} size="md" />
+            <DiffBadge tone="removed" count={totals.removed} size="md" />
           </span>
         </button>
-        <button
-          type="button"
-          onClick={() => setShowComments((value) => !value)}
-          aria-expanded={showComments}
-          title="Comment on this proposal"
-          className={cn(
-            "flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--creed-text-tertiary)] transition-colors hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)]",
-            showComments ? "text-[var(--creed-text-primary)]" : ""
-          )}
-        >
-          <MessageSquare className="h-4 w-4" />
-        </button>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 gap-1 rounded-md px-2 text-sm text-[var(--creed-text-secondary)] hover:text-[var(--creed-text-primary)]"
-          disabled={busy}
-          onClick={onReject}
-        >
-          <X className="h-3.5 w-3.5" />
-          Reject
-        </Button>
-        <Button
-          size="sm"
-          className="h-7 gap-1 rounded-md bg-[#2563eb] px-2.5 text-sm text-white hover:bg-[#1d4ed8]"
-          disabled={busy}
-          onClick={onAccept}
-        >
-          <Check className="h-3.5 w-3.5" />
-          Accept
-        </Button>
+        {isCurrent ? (
+          <span className="shrink-0 rounded-full bg-[var(--creed-surface-raised)] px-2 py-0.5 text-[11px] text-[var(--creed-text-secondary)]">
+            Current
+          </span>
+        ) : null}
+        {onRevert ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 shrink-0 gap-1 rounded-md px-2 text-[12px] text-[var(--creed-text-secondary)] hover:text-[var(--creed-text-primary)]"
+            disabled={reverting}
+            onClick={onRevert}
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            Revert
+          </Button>
+        ) : null}
+        {firstEntry && onJumpToChange ? (
+          <SimpleTooltip label="Jump to change">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="h-7 w-7 shrink-0 rounded-md text-[var(--creed-text-secondary)] hover:text-[var(--creed-text-primary)]"
+              onClick={() => onJumpToChange(entryJumpTarget(firstEntry))}
+            >
+              <ArrowUpRight className="h-3.5 w-3.5" />
+            </Button>
+          </SimpleTooltip>
+        ) : null}
       </div>
+
       <AnimatePresence initial={false}>
         {open ? (
           <motion.div
@@ -1582,215 +1725,114 @@ function DocumentReviewPillItem({
             className="overflow-hidden"
           >
             <div className="border-t border-[var(--creed-border)]" />
-            {proposal.kind === "document-section" ? (
-              <RenderedProposalBody
-                before={before}
-                after={after}
-                status={proposal.sectionStatus ?? "modified"}
-              />
-            ) : (
-              <RenderedProposalBody before={before} after={after} status="modified" />
-            )}
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
-      <AnimatePresence initial={false}>
-        {showComments ? (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
-            className="overflow-hidden"
-          >
-            <ProposalCommentThread documentId={documentId} proposalId={proposal.id} users={users} onPosted={onCommentPosted} />
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
-    </div>
-  );
-}
-
-// The comment thread anchored to a single proposal. Loaded lazily; open
-// comments here are auto-resolved server-side when the proposal is accepted or
-// rejected.
-function ProposalCommentThread({
-  documentId,
-  proposalId,
-  users,
-  onPosted,
-}: {
-  documentId: string;
-  proposalId: string;
-  users: WorkspaceUser[];
-  onPosted?: (comment: DocumentComment) => void;
-}) {
-  const [comments, setComments] = useState<ProposalComment[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [body, setBody] = useState("");
-  const [posting, setPosting] = useState(false);
-  const usersById = useMemo(() => new Map(users.map((user) => [user.id, user])), [users]);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const response = await fetch(
-        `/api/app/documents/${encodeURIComponent(documentId)}/comments?proposalId=${encodeURIComponent(proposalId)}`,
-        { cache: "no-store" }
-      );
-      if (response.ok) {
-        const payload = (await response.json()) as { comments?: ProposalComment[] };
-        setComments(payload.comments ?? []);
-      }
-    } catch {
-      // Non-fatal.
-    } finally {
-      setLoading(false);
-    }
-  }, [documentId, proposalId]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  async function submit() {
-    const text = body.trim();
-    if (!text || posting) return;
-    // Derive @mentions from the body the same way the normal comment and reply
-    // composers do, so the shared notification pipeline fires for proposal
-    // comments too (a "@Display Name" in the text mentions that member).
-    const mentionedUserIds = users
-      .filter((user) => user.label && text.includes(`@${user.label}`))
-      .map((user) => user.id);
-    setPosting(true);
-    try {
-      const response = await fetch(
-        `/api/app/documents/${encodeURIComponent(documentId)}/comments`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ body: text, proposalId, mentionedUserIds }),
-        }
-      );
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => ({}))) as { error?: string };
-        throw new Error(payload.error || "Could not add comment.");
-      }
-      const payload = (await response.json().catch(() => ({}))) as { comment?: DocumentComment };
-      setBody("");
-      await load();
-      // Surface the new comment to the sidebar (reusing the same comment
-      // placement as normal comments) without a full page reload.
-      if (payload.comment) {
-        onPosted?.(payload.comment);
-      }
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not add comment.");
-    } finally {
-      setPosting(false);
-    }
-  }
-
-  return (
-    <div className="space-y-2 border-t border-[var(--creed-border)] px-3 py-2.5">
-      {loading ? (
-        <div className="flex items-center gap-1.5 text-[12px] text-[var(--creed-text-tertiary)]">
-          <LoaderCircle className="h-3 w-3 animate-spin" />
-          Loading comments…
-        </div>
-      ) : comments.length === 0 ? (
-        <div className="text-[12px] text-[var(--creed-text-tertiary)]">
-          No comments yet. Ask a question or leave a review note.
-        </div>
-      ) : (
-        comments.map((comment) => {
-          const author = comment.createdBy ? usersById.get(comment.createdBy) : undefined;
-          const label = author?.label ?? comment.authorLabel;
-          return (
-            <div key={comment.id} className="flex gap-2">
-              <Avatar size="sm" className="mt-0.5 h-5 w-5 shrink-0">
-                {author?.avatarUrl ? <AvatarImage src={author.avatarUrl} alt={label} /> : null}
-                <AvatarFallback className="text-[10px]">{initialsFor(label)}</AvatarFallback>
-              </Avatar>
-              <div className="min-w-0 flex-1">
-                <div className="text-[12px] text-[var(--creed-text-secondary)]">
-                  <span className="font-medium text-[var(--creed-text-primary)]">{label}</span>
-                  <span className="text-[var(--creed-text-tertiary)]">
-                    {" · "}
-                    {relativeTime(comment.createdAt)}
-                    {comment.status === "resolved" ? " · resolved" : ""}
-                  </span>
-                </div>
-                <div className="whitespace-pre-wrap break-words text-[13px] text-[var(--creed-text-primary)]">
-                  {comment.body}
-                </div>
-              </div>
+            <div className="divide-y divide-[var(--creed-border)]">
+              {family.entries.map((entry) => {
+                const selected = activeProposalId === entry.id;
+                const stats = summarizeDiff(mdDiffParts(entry.before, entry.after));
+                return (
+                  <div key={entry.id}>
+                    <button
+                      type="button"
+                      onClick={() => onToggleProposal(entry.id)}
+                      aria-expanded={selected}
+                      className="flex w-full items-center gap-2 px-6 py-2 text-left text-sm transition-colors hover:bg-[var(--creed-surface-raised)]"
+                    >
+                      <ChevronDown
+                        className={cn(
+                          "h-3.5 w-3.5 shrink-0 text-[var(--creed-text-tertiary)] transition-transform duration-200",
+                          selected ? "rotate-0" : "-rotate-90"
+                        )}
+                      />
+                      <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--creed-text-secondary)]">
+                        {entry.label}
+                      </span>
+                      <span className="shrink-0 text-[12px] text-[var(--creed-text-tertiary)]">
+                        {relativeTime(entry.createdAt)}
+                      </span>
+                      <span className="inline-flex shrink-0 items-center gap-1.5">
+                        <DiffBadge tone="added" count={stats.added} size="md" />
+                        <DiffBadge tone="removed" count={stats.removed} size="md" />
+                      </span>
+                      {onJumpToChange ? (
+                        <SimpleTooltip label="Jump to change">
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--creed-text-tertiary)] transition-colors hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)]"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onJumpToChange(entryJumpTarget(entry));
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key !== "Enter" && event.key !== " ") return;
+                              event.preventDefault();
+                              event.stopPropagation();
+                              onJumpToChange(entryJumpTarget(entry));
+                            }}
+                          >
+                            <ArrowUpRight className="h-3.5 w-3.5" />
+                          </span>
+                        </SimpleTooltip>
+                      ) : null}
+                    </button>
+                    <AnimatePresence initial={false}>
+                      {selected ? (
+                        <motion.div
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: "auto", opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+                          className="overflow-hidden"
+                        >
+                          <div className="px-6 pb-3">
+                            <RenderedProposalBody
+                              before={entry.before}
+                              after={entry.after}
+                              status={entry.status}
+                            />
+                          </div>
+                        </motion.div>
+                      ) : null}
+                    </AnimatePresence>
+                  </div>
+                );
+              })}
             </div>
-          );
-        })
-      )}
-      <div className="space-y-1.5 pt-1">
-        <MentionTextarea
-          value={body}
-          onChange={setBody}
-          users={users}
-          placeholder="Comment on this proposal. Use @ to mention someone."
-          onSubmit={() => void submit()}
-          className="min-h-[52px] rounded-md border border-[var(--creed-border)] bg-[var(--creed-surface-raised)] px-2.5 py-1.5 text-[13px]"
-        />
-        <div className="flex justify-end">
-          <Button
-            size="sm"
-            className="h-8 shrink-0 gap-1 rounded-md bg-[#2563eb] px-2.5 text-[12px] text-white hover:bg-[#1d4ed8]"
-            disabled={posting || !body.trim()}
-            onClick={() => void submit()}
-          >
-            <Send className="h-3.5 w-3.5" />
-          </Button>
-        </div>
-      </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </div>
   );
 }
 
 function VersionRow({
   version,
-  content,
-  previousContent,
-  hasPreviousVersion,
-  loadError,
   person,
   isCurrent,
   expanded,
-  loading,
   reverting,
   onToggle,
+  onJumpToChange,
   onRevert,
 }: {
   version: DocumentVersion;
-  content?: string;
-  previousContent?: string;
-  hasPreviousVersion: boolean;
-  loadError?: string;
   person: Person;
   isCurrent: boolean;
   expanded: boolean;
-  loading: boolean;
   reverting: boolean;
   onToggle: () => void;
+  onJumpToChange?: (target: DocumentHistoryJumpTarget) => void;
   onRevert: () => void;
 }) {
-  const hasContent = typeof content === "string" && (!hasPreviousVersion || typeof previousContent === "string");
-  const before = previousContent ?? "";
-  const after = content ?? "";
-  const parts = useMemo(
-    () => (hasContent ? mdDiffParts(before, after) : []),
-    [after, before, hasContent]
+  const storedHunks = useMemo(() => version.changeHunks ?? [], [version.changeHunks]);
+  const hasStoredHunks = storedHunks.length > 0;
+  const stats = useMemo(
+    () => (hasStoredHunks ? summarizeVersionHunks(storedHunks) : { added: 0, removed: 0 }),
+    [hasStoredHunks, storedHunks]
   );
-  const stats = useMemo(() => summarizeDiff(parts), [parts]);
   const impactLabel = useMemo(
-    () => (hasContent ? versionImpactLabel(before, after) : `Revision ${version.revision}`),
-    [after, before, hasContent, version.revision]
+    () => (hasStoredHunks ? versionHunkImpactLabel(storedHunks) : `Revision ${version.revision}`),
+    [hasStoredHunks, storedHunks, version.revision]
   );
 
   return (
@@ -1809,17 +1851,17 @@ function VersionRow({
             )}
           />
           <PersonBadge person={person} />
-          <span className="max-w-[12rem] shrink-0 truncate text-[13px] text-[var(--creed-text-primary)]">
+          <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--creed-text-primary)]">
             {impactLabel}
           </span>
-          <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--creed-text-secondary)]">
+          <span className="hidden max-w-[13rem] shrink-0 truncate text-[13px] text-[var(--creed-text-secondary)] lg:inline">
             {version.summary || `Revision ${version.revision}`}
           </span>
           <span className="hidden shrink-0 text-[var(--creed-text-tertiary)] sm:inline">
             · {relativeTime(version.createdAt)}
           </span>
           <span className="ml-auto inline-flex shrink-0 items-center gap-1.5">
-            {hasContent ? (
+            {hasStoredHunks ? (
               <>
                 <DiffBadge tone="added" count={stats.added} size="md" />
                 <DiffBadge tone="removed" count={stats.removed} size="md" />
@@ -1843,6 +1885,19 @@ function VersionRow({
             Revert
           </Button>
         )}
+        {onJumpToChange ? (
+          <SimpleTooltip label="Jump to change">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="h-7 w-7 shrink-0 rounded-md text-[var(--creed-text-secondary)] hover:text-[var(--creed-text-primary)]"
+              onClick={() => onJumpToChange(versionJumpTarget(version, impactLabel))}
+            >
+              <ArrowUpRight className="h-3.5 w-3.5" />
+            </Button>
+          </SimpleTooltip>
+        ) : null}
       </div>
       <AnimatePresence initial={false}>
         {expanded ? (
@@ -1855,16 +1910,11 @@ function VersionRow({
           >
             <div className="border-t border-[var(--creed-border)]" />
             <div className="px-3 py-3">
-              {loadError ? (
-                <div className="rounded-md border border-[var(--creed-border)] bg-[var(--creed-surface-raised)] px-3 py-2 text-[13px] text-[#b91c1c] dark:text-[#f87171]">
-                  {loadError}
-                </div>
-              ) : hasContent ? (
-                <SectionGroupedDiff before={before} after={after} />
+              {hasStoredHunks ? (
+                <VersionHunkDiffList hunks={storedHunks} />
               ) : (
-                <div className="inline-flex items-center gap-2 rounded-md border border-[var(--creed-border)] bg-[var(--creed-surface-raised)] px-3 py-2 text-[13px] text-[var(--creed-text-secondary)]">
-                  <LoaderCircle className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
-                  Loading version
+                <div className="rounded-md border border-[var(--creed-border)] bg-[var(--creed-surface-raised)] px-3 py-2 text-[13px] text-[var(--creed-text-secondary)]">
+                  No saved diff for this version
                 </div>
               )}
             </div>

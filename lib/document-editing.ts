@@ -2,16 +2,18 @@ import "server-only";
 import {
   recordDocumentActivity,
   resolveOpenCommentsForProposal,
+  resolveOpenCommentsForProposals,
 } from "@/lib/document-collaboration";
 import {
-  applySectionChange,
-  diffMarkdownSections,
-  sectionChangeLabel,
-  sectionChangeHasReviewableDiff,
-  type SectionChange,
-  type SectionChangeStatus,
-} from "@/lib/document-section-diff";
+  applyHunkChange,
+  diffDocumentHunks,
+  hunkChangeHasReviewableDiff,
+  type DocumentHunkChange,
+  type DocumentHunkConflictStatus,
+  type DocumentHunkStatus,
+} from "@/lib/document-hunk-diff";
 import { appendDocumentVersion, readDocumentVersion, type DocumentVersion } from "@/lib/document-versions";
+import { log } from "@/lib/observability";
 import {
   readSharedDocumentById,
   updateSharedDocumentContent,
@@ -27,18 +29,15 @@ import type { SupabaseLikeClient } from "@/lib/supabase/types";
 //
 // The editor and the MCP document tools both submit a full Markdown body. Under
 // the "propose" policy that whole-content submission is split into one proposal
-// per changed Markdown section (all sharing a `batchId`), so a reviewer can
-// accept or reject each section independently. Each section proposal stores its
-// own before/after so acceptance applies just that section, merge-guarded so
-// siblings can land in any order. Legacy whole-content proposals (draft.kind =
-// 'document-content') are still understood on the accept path.
+// per changed diff hunk (all sharing a `familyId`), so a reviewer can accept or
+// reject each small change independently.
 
 export type DocumentEditAuthor = {
   userId?: string | null;
   agentLabel?: string | null;
 };
 
-export type DocumentProposalKind = "document-content" | "document-section";
+export type DocumentProposalKind = "document-hunk";
 
 export type DocumentProposal = {
   id: string;
@@ -47,8 +46,7 @@ export type DocumentProposal = {
   authorUserId: string | null;
   authorAgentLabel: string | null;
   kind: DocumentProposalKind;
-  // Whole-content proposals: the full proposed body. Section proposals: the
-  // section's proposed body ("" for a removed section).
+  // Proposed body for this local change ("" for a removal).
   content: string;
   summary: string;
   baseRevision: number;
@@ -56,19 +54,21 @@ export type DocumentProposal = {
   createdAt: string;
   resolvedAt: string | null;
   resolvedBy: string | null;
-  // Groups the sibling section proposals produced by one edit. Null for a
-  // legacy whole-content proposal (which reviews as a group of one).
-  batchId: string | null;
-  // Section-scoped fields; all null for a whole-content proposal.
-  sectionKey: string | null;
-  sectionHeading: string | null;
-  sectionLevel: number | null;
-  sectionStatus: SectionChangeStatus | null;
-  sectionBefore: string | null;
-  sectionAfter: string | null;
-  sectionProposedIndex: number | null;
-  sectionPreviousKey: string | null;
-  sectionNextKey: string | null;
+  // Groups the sibling hunk proposals produced by one edit.
+  familyId: string;
+  hunkKey: string;
+  hunkIndex: number;
+  hunkStatus: DocumentHunkStatus;
+  hunkBefore: string;
+  hunkAfter: string;
+  hunkBeforeStart: number;
+  hunkBeforeEnd: number;
+  hunkAfterStart: number;
+  hunkAfterEnd: number;
+  hunkPrefix: string;
+  hunkSuffix: string;
+  classification: string;
+  conflictStatus: DocumentHunkConflictStatus;
 };
 
 type DocumentProposalRow = {
@@ -78,8 +78,10 @@ type DocumentProposalRow = {
   author_user_id: string | null;
   author_agent_label: string | null;
   draft: unknown;
-  section_id: string | null;
-  batch_id: string | null;
+  family_id: string;
+  hunk_index: number;
+  classification: string | null;
+  conflict_status: string | null;
   summary: string | null;
   base_revision: number;
   status: string;
@@ -95,7 +97,21 @@ type EditResult =
 
 type ProposalResult<T> =
   | { ok: true; value: T }
-  | { ok: false; code: "invalid" | "not-found" | "conflict" | "forbidden"; error: string };
+  | {
+      ok: false;
+      code: "invalid" | "not-found" | "conflict" | "forbidden";
+      error: string;
+      settledProposalIds?: string[];
+    };
+
+type BulkProposalResult<T> =
+  | { ok: true; value: T; settledProposalIds?: string[] }
+  | {
+      ok: false;
+      code: "invalid" | "not-found" | "conflict" | "forbidden";
+      error: string;
+      settledProposalIds?: string[];
+    };
 
 const PROPOSAL_COLUMNS = [
   "id",
@@ -104,8 +120,10 @@ const PROPOSAL_COLUMNS = [
   "author_user_id",
   "author_agent_label",
   "draft",
-  "section_id",
-  "batch_id",
+  "family_id",
+  "hunk_index",
+  "classification",
+  "conflict_status",
   "summary",
   "base_revision",
   "status",
@@ -114,96 +132,105 @@ const PROPOSAL_COLUMNS = [
   "resolved_by",
 ].join(", ");
 
-// A section-scoped draft carries the whole SectionChange so acceptance can
-// merge-guard on the author-time `before` and splice in `after`.
-type SectionDraft = {
-  kind: "document-section";
-  section: SectionChange;
+type HunkDraft = {
+  kind: "document-hunk";
+  hunk: DocumentHunkChange;
 };
 
-function isSectionDraft(draft: unknown): draft is SectionDraft {
+function isHunkDraft(draft: unknown): draft is HunkDraft {
   return (
     !!draft &&
     typeof draft === "object" &&
-    (draft as { kind?: unknown }).kind === "document-section" &&
-    typeof (draft as { section?: unknown }).section === "object" &&
-    (draft as { section?: unknown }).section !== null
+    (draft as { kind?: unknown }).kind === "document-hunk" &&
+    typeof (draft as { hunk?: unknown }).hunk === "object" &&
+    (draft as { hunk?: unknown }).hunk !== null
   );
 }
 
-function draftContent(draft: unknown): string {
-  if (draft && typeof draft === "object" && "content" in draft) {
-    const value = (draft as { content?: unknown }).content;
-    if (typeof value === "string") return value;
-  }
-  return "";
+function isHunkStatus(value: unknown): value is DocumentHunkStatus {
+  return value === "added" || value === "removed" || value === "modified";
 }
 
-// Rebuild the SectionChange stored on a section proposal, tolerating partially
-// shaped drafts.
-function sectionFromDraft(draft: unknown): SectionChange | null {
-  if (!isSectionDraft(draft)) return null;
-  const section = draft.section as Partial<SectionChange>;
-  if (typeof section.key !== "string") return null;
+function isConflictStatus(value: unknown): value is DocumentHunkConflictStatus {
+  return value === "clean" || value === "conflict" || value === "resolved";
+}
+
+function hunkFromDraft(draft: unknown): DocumentHunkChange | null {
+  if (!isHunkDraft(draft)) return null;
+  const hunk = draft.hunk as Partial<DocumentHunkChange>;
+  if (typeof hunk.key !== "string") return null;
+  const status = isHunkStatus(hunk.status) ? hunk.status : "modified";
   return {
-    key: section.key,
-    heading: typeof section.heading === "string" ? section.heading : "",
-    level: typeof section.level === "number" ? section.level : 0,
-    status: (section.status as SectionChangeStatus) ?? "modified",
-    before: typeof section.before === "string" ? section.before : "",
-    after: typeof section.after === "string" ? section.after : "",
-    proposedIndex: typeof section.proposedIndex === "number" ? section.proposedIndex : null,
-    previousKey: typeof section.previousKey === "string" ? section.previousKey : null,
-    nextKey: typeof section.nextKey === "string" ? section.nextKey : null,
+    key: hunk.key,
+    index: typeof hunk.index === "number" ? hunk.index : 0,
+    status,
+    before: typeof hunk.before === "string" ? hunk.before : "",
+    after: typeof hunk.after === "string" ? hunk.after : "",
+    beforeStart: typeof hunk.beforeStart === "number" ? hunk.beforeStart : 0,
+    beforeEnd: typeof hunk.beforeEnd === "number" ? hunk.beforeEnd : 0,
+    afterStart: typeof hunk.afterStart === "number" ? hunk.afterStart : 0,
+    afterEnd: typeof hunk.afterEnd === "number" ? hunk.afterEnd : 0,
+    prefix: typeof hunk.prefix === "string" ? hunk.prefix : "",
+    suffix: typeof hunk.suffix === "string" ? hunk.suffix : "",
+    classification: typeof hunk.classification === "string" ? hunk.classification : "",
+    conflictStatus: isConflictStatus(hunk.conflictStatus) ? hunk.conflictStatus : "clean",
   };
 }
 
 function mapProposal(row: DocumentProposalRow): DocumentProposal {
-  const section = sectionFromDraft(row.draft);
-  const kind: DocumentProposalKind = section ? "document-section" : "document-content";
+  const hunk = hunkFromDraft(row.draft);
+  if (!hunk) {
+    throw new Error("Document proposal row is missing hunk data.");
+  }
+  const conflictStatus = isConflictStatus(row.conflict_status)
+    ? row.conflict_status
+    : hunk.conflictStatus;
+  const classification = row.classification ?? hunk.classification;
   return {
     id: row.id,
     documentId: row.document_id,
     actorType: row.actor_type === "agent" ? "agent" : "human",
     authorUserId: row.author_user_id,
     authorAgentLabel: row.author_agent_label,
-    kind,
-    content: section ? section.after : draftContent(row.draft),
+    kind: "document-hunk",
+    content: hunk.after,
     summary: row.summary ?? "",
     baseRevision: row.base_revision,
     status: row.status === "accepted" ? "accepted" : row.status === "rejected" ? "rejected" : "pending",
     createdAt: row.created_at,
     resolvedAt: row.resolved_at,
     resolvedBy: row.resolved_by,
-    batchId: row.batch_id,
-    sectionKey: section ? section.key : row.section_id,
-    sectionHeading: section ? section.heading : null,
-    sectionLevel: section ? section.level : null,
-    sectionStatus: section ? section.status : null,
-    sectionBefore: section ? section.before : null,
-    sectionAfter: section ? section.after : null,
-    sectionProposedIndex: section ? section.proposedIndex : null,
-    sectionPreviousKey: section ? section.previousKey : null,
-    sectionNextKey: section ? section.nextKey : null,
+    familyId: row.family_id,
+    hunkKey: hunk.key,
+    hunkIndex: row.hunk_index,
+    hunkStatus: hunk.status,
+    hunkBefore: hunk.before,
+    hunkAfter: hunk.after,
+    hunkBeforeStart: hunk.beforeStart,
+    hunkBeforeEnd: hunk.beforeEnd,
+    hunkAfterStart: hunk.afterStart,
+    hunkAfterEnd: hunk.afterEnd,
+    hunkPrefix: hunk.prefix,
+    hunkSuffix: hunk.suffix,
+    classification,
+    conflictStatus,
   };
 }
 
 function compareProposalReviewOrder(a: DocumentProposal, b: DocumentProposal) {
-  if (a.batchId && b.batchId && a.batchId === b.batchId) {
-    const aIndex = a.sectionProposedIndex ?? Number.MAX_SAFE_INTEGER;
-    const bIndex = b.sectionProposedIndex ?? Number.MAX_SAFE_INTEGER;
+  if (a.familyId === b.familyId) {
+    const aIndex = a.hunkIndex;
+    const bIndex = b.hunkIndex;
     if (aIndex !== bIndex) return aIndex - bIndex;
   }
 
   const created = a.createdAt.localeCompare(b.createdAt);
   if (created !== 0) return created;
 
-  const aGroup = a.batchId ?? a.id;
-  const bGroup = b.batchId ?? b.id;
-  if (aGroup !== bGroup) return aGroup.localeCompare(bGroup);
+  if (a.familyId !== b.familyId) return a.familyId.localeCompare(b.familyId);
 
-  const aIndex = a.sectionProposedIndex ?? Number.MAX_SAFE_INTEGER;
-  const bIndex = b.sectionProposedIndex ?? Number.MAX_SAFE_INTEGER;
+  const aIndex = a.hunkIndex;
+  const bIndex = b.hunkIndex;
   if (aIndex !== bIndex) return aIndex - bIndex;
 
   return a.id.localeCompare(b.id);
@@ -211,6 +238,24 @@ function compareProposalReviewOrder(a: DocumentProposal, b: DocumentProposal) {
 
 function sortProposalsForReview(proposals: DocumentProposal[]) {
   return [...proposals].sort(compareProposalReviewOrder);
+}
+
+function titleFromHunks(fallback: string, hunks: DocumentHunkChange[]) {
+  const classifications = Array.from(
+    new Set(hunks.map((hunk) => hunk.classification.trim()).filter(Boolean))
+  );
+  if (classifications.length === 1) return classifications[0] ?? fallback;
+
+  const prefixes = Array.from(
+    new Set(
+      classifications
+        .map((classification) => classification.split(":")[0]?.trim())
+        .filter((prefix): prefix is string => Boolean(prefix))
+    )
+  );
+  if (prefixes.length === 1) return `${prefixes[0]}: updates ${hunks.length} areas`;
+
+  return fallback.trim() || "Updated document content";
 }
 
 // Apply a whole-content change to a document (guarded on `expectedRevision`),
@@ -226,11 +271,15 @@ async function applyDocumentContent(
     author: DocumentEditAuthor;
     summary: string;
     sourceProposalId?: string | null;
+    versionFamilyId?: string | null;
+    versionFamilyTitle?: string | null;
+    changeHunks?: DocumentHunkChange[];
   }
 ): Promise<
   | { ok: true; document: SharedDocument; version: DocumentVersion }
   | { ok: false; code: "invalid" | "not-found" | "conflict"; error: string }
 > {
+  const previous = await readSharedDocumentById(client, input.documentId);
   const applied = await updateSharedDocumentContent(client, {
     id: input.documentId,
     content: input.content,
@@ -243,24 +292,165 @@ async function applyDocumentContent(
     return { ok: false, code: applied.code, error: applied.error };
   }
 
-  const version = await appendDocumentVersion(client, {
-    documentId: applied.value.id,
-    revision: applied.value.revision,
-    content: applied.value.content,
-    actorType: input.actorType,
-    authorUserId: input.author.userId ?? null,
-    authorAgentLabel: input.author.agentLabel ?? null,
-    summary: input.summary,
-    sourceProposalId: input.sourceProposalId ?? null,
-  });
+  let version: DocumentVersion;
+  try {
+    version = await appendDocumentVersion(client, {
+      documentId: applied.value.id,
+      revision: applied.value.revision,
+      content: applied.value.content,
+      actorType: input.actorType,
+      authorUserId: input.author.userId ?? null,
+      authorAgentLabel: input.author.agentLabel ?? null,
+      summary: input.summary,
+      sourceProposalId: input.sourceProposalId ?? null,
+      versionFamilyId: input.versionFamilyId ?? null,
+      versionFamilyTitle: input.versionFamilyTitle ?? input.summary,
+      changeHunks: input.changeHunks ?? [],
+    });
+  } catch (error) {
+    if (previous) {
+      const db = client as SupabaseLikeClient;
+      const { error: rollbackError } = (await db
+        .from("creed_documents")
+        .update({
+          content: previous.content,
+          revision: previous.revision,
+          sync_status: previous.syncStatus,
+          last_synced_content_hash: previous.lastSyncedContentHash,
+          last_synced_revision: previous.lastSyncedRevision,
+          updated_at: previous.updatedAt,
+        })
+        .eq("id", previous.id)
+        .eq("revision", applied.value.revision)) as {
+        error: { message: string } | null;
+      };
+      if (rollbackError) {
+        log.error(
+          "document.version.rollback_failed",
+          { documentId: input.documentId, revision: applied.value.revision },
+          rollbackError
+        );
+      }
+    }
+    log.error(
+      "document.version.append_failed",
+      { documentId: input.documentId, revision: applied.value.revision },
+      error
+    );
+    return {
+      ok: false,
+      code: "invalid",
+      error: "Could not record document history. The document was restored; please retry.",
+    };
+  }
 
   return { ok: true, document: applied.value, version };
 }
 
-// Split a whole-content submission into one proposal per changed Markdown
-// section (all sharing a batchId) so each section can be reviewed on its own.
-// Returns the created batch in proposed document order. When nothing changed,
-// returns an empty batch (the caller treats that as "no proposal to record").
+// After a direct edit moves the source of truth, re-evaluate every OTHER pending
+// proposal against the new content. Proposals are content-anchored (not fixed
+// offsets), so this never creates a new proposal - it keeps or removes the
+// existing rows:
+//   - still anchors and produces a change  -> keep it, mark `clean`;
+//   - the edit already made the same change -> delete the now-redundant row;
+//   - the edit removed/changed the anchor   -> delete the stale pending row.
+// Best-effort: the save already succeeded and versioned, so a failure here is
+// logged but not surfaced to the caller.
+async function reconcilePendingProposalsAfterEdit(
+  client: unknown,
+  input: {
+    documentId: string;
+    content: string;
+    actorUserId: string | null;
+    changedHunks?: DocumentHunkChange[];
+    acceptedFamilyId?: string | null;
+    // The proposal being accepted (if any) is settled by its own flow; skip it.
+    excludeProposalId?: string | null;
+  }
+): Promise<void> {
+  const db = client as SupabaseLikeClient;
+
+  let pending: DocumentProposal[];
+  try {
+    pending = await listDocumentProposals(client, input.documentId, { status: "pending" });
+  } catch (error) {
+    log.warn(
+      "document.proposal.reconcile_list_failed",
+      { documentId: input.documentId },
+      error
+    );
+    return;
+  }
+
+  const deletedIds: string[] = [];
+
+  for (const proposal of pending) {
+    if (input.excludeProposalId && proposal.id === input.excludeProposalId) {
+      continue;
+    }
+
+    const sameAcceptedFamily = Boolean(input.acceptedFamilyId && proposal.familyId === input.acceptedFamilyId);
+
+    const hunk: DocumentHunkChange = {
+      key: proposal.hunkKey,
+      index: proposal.hunkIndex,
+      status: proposal.hunkStatus,
+      before: proposal.hunkBefore,
+      after: proposal.hunkAfter,
+      beforeStart: proposal.hunkBeforeStart,
+      beforeEnd: proposal.hunkBeforeEnd,
+      afterStart: proposal.hunkAfterStart,
+      afterEnd: proposal.hunkAfterEnd,
+      prefix: proposal.hunkPrefix,
+      suffix: proposal.hunkSuffix,
+      classification: proposal.classification,
+      conflictStatus: proposal.conflictStatus,
+    };
+
+    const merged = applyHunkChange(input.content, hunk, {
+      allowConflictReplacement: sameAcceptedFamily,
+    });
+
+    // Unanchorable against the new truth, or already applied by the edit:
+    // remove it from pending review instead of leaving a dead accept button.
+    if (!merged.ok || merged.content === input.content) {
+      await db
+        .from("creed_document_proposals")
+        .delete()
+        .eq("id", proposal.id)
+        .eq("status", "pending");
+      deletedIds.push(proposal.id);
+      continue;
+    }
+
+    // Still applies cleanly (possibly re-anchored). Clear any stale conflict.
+    if (proposal.conflictStatus !== "clean") {
+      await db
+        .from("creed_document_proposals")
+        .update({ conflict_status: "clean" })
+        .eq("id", proposal.id)
+        .eq("status", "pending");
+    }
+  }
+
+  if (deletedIds.length === 0) {
+    return;
+  }
+
+  await recordDocumentActivity(client, {
+    documentId: input.documentId,
+    actorUserId: input.actorUserId,
+    action: "document.proposals.reconciled",
+    summary: "Reconciled pending proposals after a direct edit",
+    metadata: {
+      deletedProposalIds: deletedIds,
+    },
+  });
+}
+
+// Split a whole-content submission into one proposal per changed hunk (all
+// sharing a familyId) so each changed span can be reviewed on its own. Returns
+// the created family in proposed document order.
 export async function createDocumentProposal(
   client: unknown,
   input: {
@@ -275,24 +465,26 @@ export async function createDocumentProposal(
 ): Promise<ProposalResult<DocumentProposal[]>> {
   const db = client as SupabaseLikeClient;
 
-  const changed = diffMarkdownSections(input.baseContent, input.content).filter(
-    sectionChangeHasReviewableDiff
+  const changed = diffDocumentHunks(input.baseContent, input.content).filter(
+    hunkChangeHasReviewableDiff
   );
 
   if (changed.length === 0) {
     return { ok: false, code: "invalid", error: "No changes to propose." };
   }
 
-  const batchId = randomUUID();
+  const familyId = randomUUID();
   const now = new Date().toISOString();
-  const rows = changed.map((section) => ({
+  const rows = changed.map((hunk, hunkIndex) => ({
     document_id: input.documentId,
     actor_type: input.actorType,
     author_user_id: input.author.userId ?? null,
     author_agent_label: input.author.agentLabel ?? null,
-    draft: { kind: "document-section", section },
-    section_id: section.key,
-    batch_id: batchId,
+    draft: { kind: "document-hunk", hunk: { ...hunk, index: hunkIndex } },
+    family_id: familyId,
+    hunk_index: hunkIndex,
+    classification: hunk.classification,
+    conflict_status: "clean",
     summary: input.summary,
     base_revision: input.baseRevision,
     status: "pending",
@@ -312,19 +504,19 @@ export async function createDocumentProposal(
     return { ok: false, code: "invalid", error: error?.message || "Could not create proposals." };
   }
 
-  // One activity event for the whole batch keeps the audit trail readable even
-  // when an edit touches many sections.
+  // One activity event for the whole family keeps the audit trail readable even
+  // when an edit touches many places.
   await recordDocumentActivity(client, {
     documentId: input.documentId,
     actorUserId: input.author.userId ?? null,
-    action: "document.proposal.created",
+    action: "document.proposal_family.created",
     summary:
       input.summary ||
-      `Proposed changes to ${changed.length} ${changed.length === 1 ? "section" : "sections"}`,
+      `Proposed ${changed.length} ${changed.length === 1 ? "change" : "changes"}`,
     metadata: {
-      batchId,
+      familyId,
       proposalIds: data.map((row) => row.id),
-      sectionCount: changed.length,
+      hunkCount: changed.length,
       actorType: input.actorType,
       agentLabel: input.author.agentLabel ?? null,
     },
@@ -336,14 +528,17 @@ export async function createDocumentProposal(
 export async function listDocumentProposals(
   client: unknown,
   documentId: string,
-  options?: { status?: "pending" | "accepted" | "rejected" }
+  options?: { status?: "pending" | "accepted" | "rejected" | "all" }
 ): Promise<DocumentProposal[]> {
   const db = client as SupabaseLikeClient;
   let query = db
     .from("creed_document_proposals")
     .select(PROPOSAL_COLUMNS)
     .eq("document_id", documentId);
-  query = query.eq("status", options?.status ?? "pending");
+  const status = options?.status ?? "pending";
+  if (status !== "all") {
+    query = query.eq("status", status);
+  }
 
   const { data, error } = (await query.order("created_at", { ascending: true })) as {
     data: DocumentProposalRow[] | null;
@@ -355,16 +550,15 @@ export async function listDocumentProposals(
   }
 
   const proposals = sortProposalsForReview((data ?? []).map(mapProposal));
-  if ((options?.status ?? "pending") !== "pending") {
+  if (status !== "pending") {
     return proposals;
   }
 
   return proposals.filter((proposal) => {
-    if (proposal.kind !== "document-section") return true;
-    return sectionChangeHasReviewableDiff({
-      status: proposal.sectionStatus ?? "modified",
-      before: proposal.sectionBefore ?? "",
-      after: proposal.sectionAfter ?? "",
+    return hunkChangeHasReviewableDiff({
+      status: proposal.hunkStatus,
+      before: proposal.hunkBefore,
+      after: proposal.hunkAfter,
     });
   });
 }
@@ -386,10 +580,10 @@ export async function routeDocumentEdit(
     return { ok: false, code: "not-found", error: "Document not found." };
   }
 
-  const changedSections = diffMarkdownSections(document.content, input.content).filter(
-    sectionChangeHasReviewableDiff
+  const changedHunks = diffDocumentHunks(document.content, input.content).filter(
+    hunkChangeHasReviewableDiff
   );
-  if (changedSections.length === 0) {
+  if (changedHunks.length === 0) {
     return {
       ok: false,
       code: "invalid",
@@ -432,6 +626,7 @@ export async function routeDocumentEdit(
   }
 
   // direct
+  const directFamilyTitle = titleFromHunks(input.summary, changedHunks);
   const applied = await applyDocumentContent(client, {
     documentId: input.documentId,
     content: input.content,
@@ -439,10 +634,31 @@ export async function routeDocumentEdit(
     actorType: input.actorType,
     author: input.author,
     summary: input.summary,
+    versionFamilyId: randomUUID(),
+    versionFamilyTitle: directFamilyTitle,
+    changeHunks: changedHunks,
   });
   if (!applied.ok) {
     return applied;
   }
+
+  // The source of truth just moved. Re-anchor every other pending proposal
+  // against the new content: drop the ones this edit already satisfied and
+  // flag the ones it broke. Never creates a new proposal.
+  try {
+    await reconcilePendingProposalsAfterEdit(client, {
+      documentId: input.documentId,
+      content: applied.document.content,
+      actorUserId: input.author.userId ?? null,
+    });
+  } catch (error) {
+    log.warn(
+      "document.proposal.reconcile_failed",
+      { documentId: input.documentId },
+      error
+    );
+  }
+
   return { ok: true, outcome: "applied", document: applied.document, version: applied.version };
 }
 
@@ -471,13 +687,51 @@ async function releaseProposalClaim(client: unknown, proposalId: string) {
   await db.from("creed_document_proposals").update({ resolving: false }).eq("id", proposalId);
 }
 
+async function deleteStaleProposal(client: unknown, proposalId: string) {
+  const db = client as SupabaseLikeClient;
+  await db
+    .from("creed_document_proposals")
+    .delete()
+    .eq("id", proposalId)
+    .eq("status", "pending");
+}
+
+async function recordStaleProposalRemoval(
+  client: unknown,
+  input: { documentId: string; actorUserId: string | null; proposalIds: string[] }
+) {
+  if (input.proposalIds.length === 0) return;
+  await recordDocumentActivity(client, {
+    documentId: input.documentId,
+    actorUserId: input.actorUserId,
+    action: "document.proposals.reconciled",
+    summary: "Removed stale pending proposals",
+    metadata: {
+      deletedProposalIds: input.proposalIds,
+    },
+  });
+}
+
+async function familyHasAcceptedSibling(
+  client: unknown,
+  documentId: string,
+  proposal: DocumentProposal
+) {
+  const proposals = await listDocumentProposals(client, documentId, { status: "all" });
+  return proposals.some(
+    (item) =>
+      item.id !== proposal.id &&
+      item.familyId === proposal.familyId &&
+      item.status === "accepted"
+  );
+}
+
 export async function acceptDocumentProposal(
   client: unknown,
   input: {
     documentId: string;
     proposalId: string;
     actorUserId: string;
-    allowStaleSectionUpdate?: boolean;
   }
 ): Promise<ProposalResult<{ document: SharedDocument; version: DocumentVersion }>> {
   const claimed = await claimProposal(client, input.proposalId);
@@ -495,68 +749,47 @@ export async function acceptDocumentProposal(
     await releaseProposalClaim(client, input.proposalId);
     return { ok: false, code: "not-found", error: "Document not found." };
   }
+  const hasAcceptedSibling = await familyHasAcceptedSibling(client, input.documentId, proposal);
 
-  let applied:
-    | { ok: true; document: SharedDocument; version: DocumentVersion }
-    | { ok: false; code: "invalid" | "not-found" | "conflict"; error: string };
+  let acceptedProposalLabel: string | null = null;
 
-  let acceptedSectionLabel: string | null = null;
-
-  if (proposal.kind === "document-section") {
-    const section = sectionFromDraft(claimed.draft);
-    if (!section) {
-      await releaseProposalClaim(client, input.proposalId);
-      return { ok: false, code: "invalid", error: "This section proposal is malformed." };
-    }
-    acceptedSectionLabel = sectionChangeLabel(section);
-
-    // Merge-guarded apply: the section must still match what the author saw, so
-    // sibling section proposals from the same edit can be accepted in any order
-    // even though each acceptance advances the document revision.
-    const merged = applySectionChange(document.content, section, {
-      allowStaleSectionUpdate: input.allowStaleSectionUpdate === true,
-    });
-    if (!merged.ok) {
-      await releaseProposalClaim(client, input.proposalId);
-      return {
-        ok: false,
-        code: "conflict",
-        error:
-          "This section changed since the proposal was created. Re-review it before accepting.",
-      };
-    }
-
-    applied = await applyDocumentContent(client, {
-      documentId: input.documentId,
-      content: merged.content,
-      expectedRevision: document.revision,
-      actorType: proposal.actorType,
-      author: { userId: proposal.authorUserId, agentLabel: proposal.authorAgentLabel },
-      summary: proposal.summary || `Accepted a change to ${sectionChangeLabel(section)}`,
-      sourceProposalId: proposal.id,
-    });
-  } else {
-    // Legacy whole-content proposal: apply against the revision it was authored
-    // on, or accepting would clobber newer content.
-    if (proposal.baseRevision !== document.revision) {
-      await releaseProposalClaim(client, input.proposalId);
-      return {
-        ok: false,
-        code: "conflict",
-        error: "The document changed since this proposal was created. Re-review it before accepting.",
-      };
-    }
-
-    applied = await applyDocumentContent(client, {
-      documentId: input.documentId,
-      content: proposal.content,
-      expectedRevision: document.revision,
-      actorType: proposal.actorType,
-      author: { userId: proposal.authorUserId, agentLabel: proposal.authorAgentLabel },
-      summary: proposal.summary || "Accepted proposal",
-      sourceProposalId: proposal.id,
-    });
+  const hunk = hunkFromDraft(claimed.draft);
+  if (!hunk) {
+    await releaseProposalClaim(client, input.proposalId);
+    return { ok: false, code: "invalid", error: "This change proposal is malformed." };
   }
+  acceptedProposalLabel = proposal.classification || hunk.classification || "Change";
+
+  const merged = applyHunkChange(document.content, hunk, {
+    allowConflictReplacement: proposal.conflictStatus === "conflict" || hasAcceptedSibling,
+  });
+  if (!merged.ok || merged.content === document.content) {
+    await deleteStaleProposal(client, input.proposalId);
+    await recordStaleProposalRemoval(client, {
+      documentId: input.documentId,
+      actorUserId: input.actorUserId,
+      proposalIds: [input.proposalId],
+    });
+    return {
+      ok: false,
+      code: "conflict",
+      error: "This proposal no longer applies and was removed.",
+      settledProposalIds: [input.proposalId],
+    };
+  }
+
+  const applied = await applyDocumentContent(client, {
+    documentId: input.documentId,
+    content: merged.content,
+    expectedRevision: document.revision,
+    actorType: proposal.actorType,
+    author: { userId: proposal.authorUserId, agentLabel: proposal.authorAgentLabel },
+    summary: proposal.summary || acceptedProposalLabel,
+    sourceProposalId: proposal.id,
+    versionFamilyId: proposal.familyId,
+    versionFamilyTitle: proposal.summary || acceptedProposalLabel,
+    changeHunks: [hunk],
+  });
 
   if (!applied.ok) {
     await releaseProposalClaim(client, input.proposalId);
@@ -569,6 +802,7 @@ export async function acceptDocumentProposal(
     .update({
       status: "accepted",
       resolving: false,
+      conflict_status: "resolved",
       resolved_at: new Date().toISOString(),
       resolved_by: input.actorUserId,
     })
@@ -580,18 +814,29 @@ export async function acceptDocumentProposal(
     actorUserId: input.actorUserId,
   });
 
+  await reconcilePendingProposalsAfterEdit(client, {
+    documentId: input.documentId,
+    content: applied.document.content,
+    actorUserId: input.actorUserId,
+    changedHunks: [hunk],
+    acceptedFamilyId: proposal.familyId,
+    excludeProposalId: input.proposalId,
+  });
+
   await recordDocumentActivity(client, {
     documentId: input.documentId,
     actorUserId: input.actorUserId,
     action: "document.proposal.accepted",
-    summary: acceptedSectionLabel
-      ? `Accepted a proposal · ${acceptedSectionLabel}`
+    summary: acceptedProposalLabel
+      ? `Accepted a proposal · ${acceptedProposalLabel}`
       : "Accepted a proposal",
     metadata: {
       proposalId: input.proposalId,
       revision: applied.version.revision,
       versionId: applied.version.id,
-      ...(acceptedSectionLabel ? { sectionName: acceptedSectionLabel } : {}),
+      familyId: proposal.familyId,
+      hunkIndex: proposal.hunkIndex,
+      ...(acceptedProposalLabel ? { changeName: acceptedProposalLabel } : {}),
     },
   });
 
@@ -617,6 +862,7 @@ export async function rejectDocumentProposal(
     .update({
       status: "rejected",
       resolving: false,
+      conflict_status: "resolved",
       resolved_at: new Date().toISOString(),
       resolved_by: input.actorUserId,
     })
@@ -638,15 +884,341 @@ export async function rejectDocumentProposal(
     actorUserId: input.actorUserId,
   });
 
+  const rejectedProposal = mapProposal(data);
+
   await recordDocumentActivity(client, {
     documentId: input.documentId,
     actorUserId: input.actorUserId,
     action: "document.proposal.rejected",
     summary: "Rejected a proposal",
-    metadata: { proposalId: input.proposalId },
+    metadata: {
+      proposalId: input.proposalId,
+      familyId: rejectedProposal.familyId,
+      hunkIndex: rejectedProposal.hunkIndex,
+    },
   });
 
-  return { ok: true, value: mapProposal(data) };
+  return { ok: true, value: rejectedProposal };
+}
+
+function uniqueProposalIds(proposalIds: string[]) {
+  return Array.from(new Set(proposalIds.map((id) => id.trim()).filter(Boolean)));
+}
+
+function proposalToHunk(proposal: DocumentProposal): DocumentHunkChange {
+  return {
+    key: proposal.hunkKey,
+    index: proposal.hunkIndex,
+    status: proposal.hunkStatus,
+    before: proposal.hunkBefore,
+    after: proposal.hunkAfter,
+    beforeStart: proposal.hunkBeforeStart,
+    beforeEnd: proposal.hunkBeforeEnd,
+    afterStart: proposal.hunkAfterStart,
+    afterEnd: proposal.hunkAfterEnd,
+    prefix: proposal.hunkPrefix,
+    suffix: proposal.hunkSuffix,
+    classification: proposal.classification,
+    conflictStatus: proposal.conflictStatus,
+  };
+}
+
+async function claimProposals(
+  client: unknown,
+  input: { documentId: string; proposalIds: string[] }
+): Promise<DocumentProposalRow[]> {
+  const ids = uniqueProposalIds(input.proposalIds);
+  if (ids.length === 0) return [];
+
+  const db = client as SupabaseLikeClient;
+  const { data } = (await db
+    .from("creed_document_proposals")
+    .update({ resolving: true })
+    .eq("document_id", input.documentId)
+    .in("id", ids)
+    .eq("status", "pending")
+    .eq("resolving", false)
+    .select(PROPOSAL_COLUMNS)) as {
+    data: DocumentProposalRow[] | null;
+    error: { message: string } | null;
+  };
+  return data ?? [];
+}
+
+async function releaseProposalClaims(client: unknown, proposalIds: string[]) {
+  const ids = uniqueProposalIds(proposalIds);
+  if (ids.length === 0) return;
+  const db = client as SupabaseLikeClient;
+  await db.from("creed_document_proposals").update({ resolving: false }).in("id", ids);
+}
+
+async function deleteStaleProposals(client: unknown, proposalIds: string[]) {
+  const ids = uniqueProposalIds(proposalIds);
+  if (ids.length === 0) return;
+  const db = client as SupabaseLikeClient;
+  await db
+    .from("creed_document_proposals")
+    .delete()
+    .in("id", ids)
+    .eq("status", "pending");
+}
+
+export async function acceptDocumentProposals(
+  client: unknown,
+  input: {
+    documentId: string;
+    proposalIds: string[];
+    actorUserId: string;
+  }
+): Promise<BulkProposalResult<{ document: SharedDocument; version: DocumentVersion; proposals: DocumentProposal[] }>> {
+  const ids = uniqueProposalIds(input.proposalIds);
+  if (ids.length === 0) {
+    return { ok: false, code: "invalid", error: "No proposals selected." };
+  }
+
+  const claimedRows = await claimProposals(client, {
+    documentId: input.documentId,
+    proposalIds: ids,
+  });
+  if (claimedRows.length !== ids.length) {
+    const claimedIds = claimedRows.map((row) => row.id);
+    await releaseProposalClaims(client, claimedIds);
+    return {
+      ok: false,
+      code: "conflict",
+      error: "One or more proposals are no longer pending.",
+      settledProposalIds: claimedIds,
+    };
+  }
+
+  const proposals = sortProposalsForReview(claimedRows.map(mapProposal));
+  const conflicted = proposals.filter((proposal) => proposal.conflictStatus === "conflict");
+  if (conflicted.length > 0) {
+    await releaseProposalClaims(client, ids);
+    return {
+      ok: false,
+      code: "conflict",
+      error:
+        conflicted.length === 1
+          ? "Resolve the conflict before accepting all."
+          : `Resolve ${conflicted.length} conflicts before accepting all.`,
+      settledProposalIds: [],
+    };
+  }
+  const document = await readSharedDocumentById(client, input.documentId);
+  if (!document) {
+    await releaseProposalClaims(client, ids);
+    return { ok: false, code: "not-found", error: "Document not found.", settledProposalIds: ids };
+  }
+
+  let mergedContent = document.content;
+  const acceptedHunks: DocumentHunkChange[] = [];
+  const acceptedProposals: DocumentProposal[] = [];
+  const acceptedFamilyIdsInBatch = new Set<string>();
+  const staleIds: string[] = [];
+  const acceptedFamilyIdsInHistory = new Set(
+    (await listDocumentProposals(client, input.documentId, { status: "accepted" })).map(
+      (proposal) => proposal.familyId
+    )
+  );
+
+  for (const proposal of proposals) {
+    const hunk = proposalToHunk(proposal);
+    const sameAcceptedFamily =
+      acceptedFamilyIdsInBatch.has(proposal.familyId) ||
+      acceptedFamilyIdsInHistory.has(proposal.familyId);
+    const merged = applyHunkChange(mergedContent, hunk, {
+      allowConflictReplacement: sameAcceptedFamily,
+    });
+    if (!merged.ok || merged.content === mergedContent) {
+      staleIds.push(proposal.id);
+      continue;
+    }
+    mergedContent = merged.content;
+    acceptedHunks.push(hunk);
+    acceptedProposals.push(proposal);
+    acceptedFamilyIdsInBatch.add(proposal.familyId);
+  }
+
+  if (staleIds.length > 0) {
+    await deleteStaleProposals(client, staleIds);
+    await recordStaleProposalRemoval(client, {
+      documentId: input.documentId,
+      actorUserId: input.actorUserId,
+      proposalIds: staleIds,
+    });
+  }
+
+  if (acceptedProposals.length === 0) {
+    return {
+      ok: false,
+      code: "conflict",
+      error: "One or more proposals no longer apply and were removed.",
+      settledProposalIds: staleIds,
+    };
+  }
+
+  if (mergedContent === document.content) {
+    await releaseProposalClaims(client, ids);
+    return {
+      ok: false,
+      code: "invalid",
+      error: "Selected proposals do not change the document.",
+      settledProposalIds: ids,
+    };
+  }
+
+  const summary =
+    acceptedProposals.length === 1
+      ? acceptedProposals[0].summary || acceptedProposals[0].classification || "Accepted proposal"
+      : `Accepted ${acceptedProposals.length} proposals`;
+  const acceptedFamilyIds = Array.from(new Set(acceptedProposals.map((proposal) => proposal.familyId).filter(Boolean)));
+  const acceptedFamilySummaries = Array.from(
+    new Set(acceptedProposals.map((proposal) => proposal.summary.trim()).filter(Boolean))
+  );
+  const versionFamilyId = acceptedFamilyIds.length === 1 ? acceptedFamilyIds[0] ?? randomUUID() : randomUUID();
+  const versionFamilyTitle =
+    acceptedFamilySummaries.length === 1
+      ? acceptedFamilySummaries[0] ?? summary
+      : titleFromHunks(summary, acceptedHunks);
+  const applied = await applyDocumentContent(client, {
+    documentId: input.documentId,
+    content: mergedContent,
+    expectedRevision: document.revision,
+    actorType: acceptedProposals[0]?.actorType ?? "human",
+    author: {
+      userId: acceptedProposals[0]?.authorUserId ?? null,
+      agentLabel: acceptedProposals[0]?.authorAgentLabel ?? null,
+    },
+    summary,
+    sourceProposalId: acceptedProposals.length === 1 ? acceptedProposals[0]?.id ?? null : null,
+    versionFamilyId,
+    versionFamilyTitle,
+    changeHunks: acceptedHunks,
+  });
+
+  if (!applied.ok) {
+    await releaseProposalClaims(client, ids);
+    return { ...applied, settledProposalIds: ids };
+  }
+
+  const now = new Date().toISOString();
+  const db = client as SupabaseLikeClient;
+  const acceptedIds = acceptedProposals.map((proposal) => proposal.id);
+  await db
+    .from("creed_document_proposals")
+    .update({
+      status: "accepted",
+      resolving: false,
+      conflict_status: "resolved",
+      resolved_at: now,
+      resolved_by: input.actorUserId,
+    })
+    .in("id", acceptedIds);
+
+  await resolveOpenCommentsForProposals(client, {
+    proposalIds: acceptedIds,
+    actorUserId: input.actorUserId,
+  });
+
+  await reconcilePendingProposalsAfterEdit(client, {
+    documentId: input.documentId,
+    content: applied.document.content,
+    actorUserId: input.actorUserId,
+    changedHunks: acceptedHunks,
+    acceptedFamilyId: acceptedFamilyIds.length === 1 ? acceptedFamilyIds[0] ?? null : null,
+  });
+
+  await recordDocumentActivity(client, {
+    documentId: input.documentId,
+    actorUserId: input.actorUserId,
+    action: "document.proposals.accepted",
+    summary: acceptedProposals.length === 1 ? "Accepted a proposal" : `Accepted ${acceptedProposals.length} proposals`,
+    metadata: {
+      proposalIds: acceptedIds,
+      revision: applied.version.revision,
+      versionId: applied.version.id,
+      hunkCount: acceptedHunks.length,
+    },
+  });
+
+  return {
+    ok: true,
+    value: { document: applied.document, version: applied.version, proposals: acceptedProposals },
+    settledProposalIds: staleIds,
+  };
+}
+
+export async function rejectDocumentProposals(
+  client: unknown,
+  input: { documentId: string; proposalIds: string[]; actorUserId: string }
+): Promise<BulkProposalResult<{ proposals: DocumentProposal[] }>> {
+  const ids = uniqueProposalIds(input.proposalIds);
+  if (ids.length === 0) {
+    return { ok: false, code: "invalid", error: "No proposals selected." };
+  }
+
+  const claimedRows = await claimProposals(client, {
+    documentId: input.documentId,
+    proposalIds: ids,
+  });
+  if (claimedRows.length !== ids.length) {
+    const claimedIds = claimedRows.map((row) => row.id);
+    await releaseProposalClaims(client, claimedIds);
+    return {
+      ok: false,
+      code: "conflict",
+      error: "One or more proposals are no longer pending.",
+      settledProposalIds: claimedIds,
+    };
+  }
+
+  const proposals = sortProposalsForReview(claimedRows.map(mapProposal));
+  const now = new Date().toISOString();
+  const db = client as SupabaseLikeClient;
+  const { data, error } = (await db
+    .from("creed_document_proposals")
+    .update({
+      status: "rejected",
+      resolving: false,
+      conflict_status: "resolved",
+      resolved_at: now,
+      resolved_by: input.actorUserId,
+    })
+    .eq("document_id", input.documentId)
+    .in("id", ids)
+    .select(PROPOSAL_COLUMNS)) as {
+    data: DocumentProposalRow[] | null;
+    error: { message: string } | null;
+  };
+
+  if (error || !data) {
+    await releaseProposalClaims(client, ids);
+    return {
+      ok: false,
+      code: "invalid",
+      error: error?.message || "Could not reject proposals.",
+      settledProposalIds: ids,
+    };
+  }
+
+  await resolveOpenCommentsForProposals(client, {
+    proposalIds: ids,
+    actorUserId: input.actorUserId,
+  });
+
+  await recordDocumentActivity(client, {
+    documentId: input.documentId,
+    actorUserId: input.actorUserId,
+    action: "document.proposals.rejected",
+    summary: proposals.length === 1 ? "Rejected a proposal" : `Rejected ${proposals.length} proposals`,
+    metadata: {
+      proposalIds: ids,
+      hunkCount: proposals.length,
+    },
+  });
+
+  return { ok: true, value: { proposals: sortProposalsForReview(data.map(mapProposal)) } };
 }
 
 // Revert re-applies an old version's content through the policy-gated route, so

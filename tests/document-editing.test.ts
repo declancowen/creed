@@ -6,12 +6,15 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/document-collaboration", () => ({
   recordDocumentActivity: vi.fn(async () => {}),
   resolveOpenCommentsForProposal: vi.fn(async () => 0),
+  resolveOpenCommentsForProposals: vi.fn(async () => 0),
 }));
 
 import {
   acceptDocumentProposal,
+  acceptDocumentProposals,
   listDocumentProposals,
   rejectDocumentProposal,
+  rejectDocumentProposals,
   revertDocumentToVersion,
   routeDocumentEdit,
 } from "@/lib/document-editing";
@@ -215,7 +218,7 @@ describe("Property 6: concurrency guard", () => {
     expect(client.count(VERSIONS)).toBe(0);
   });
 
-  it("accepting a proposal whose base_revision is stale is rejected", async () => {
+  it("accepting a stale proposal after conflict review applies the chosen replacement once", async () => {
     const { client, documentId } = createFakeClientWithDocument();
     setPolicy(client, { human: "propose", agent: "direct" });
 
@@ -240,12 +243,15 @@ describe("Property 6: concurrency guard", () => {
       summary: "direct",
     });
     expect(client.rows(DOCS)[0].revision).toBe(2);
+    expect(client.rows(PROPOSALS).find((row) => row.id === proposalId)?.conflict_status).toBe(
+      "conflict"
+    );
 
     const accepted = await acceptDocumentProposal(client, { documentId, proposalId, actorUserId: "user-B" });
-    expect(accepted.ok).toBe(false);
-    if (!accepted.ok) expect(accepted.code).toBe("conflict");
-    // Only the agent's direct edit produced a version.
-    expect(client.count(VERSIONS)).toBe(1);
+    expect(accepted.ok).toBe(true);
+    expect(client.rows(DOCS)[0].content).toBe("# Test Doc\nProposed against v1.");
+    expect(client.rows(DOCS)[0].revision).toBe(3);
+    expect(client.count(VERSIONS)).toBe(2);
   });
 });
 
@@ -357,9 +363,19 @@ describe("Property 3 (bonus): revert appends and never deletes", () => {
   });
 });
 
-describe("Per-section proposals (batching + independent accept)", () => {
-  const MULTI = ["# Doc", "Intro.", "", "## Goals", "Old goal.", "", "## Work", "Do work."].join("\n");
-  const BOTH = ["# Doc", "Intro.", "", "## Goals", "New goal.", "", "## Work", "Did work."].join("\n");
+describe("Hunk proposals (families + independent accept)", () => {
+  const MULTI = [
+    "# Doc",
+    "Intro sentence with old tone and stable middle and old ending.",
+    "",
+    "Next line stays.",
+  ].join("\n");
+  const BOTH = [
+    "# Doc",
+    "Intro sentence with new tone and stable middle and fresh ending.",
+    "",
+    "Next line stays.",
+  ].join("\n");
 
   async function proposeBoth() {
     const { client, documentId } = createFakeClientWithDocument({ content: MULTI });
@@ -370,40 +386,27 @@ describe("Per-section proposals (batching + independent accept)", () => {
       author: { userId: "author-A" },
       content: BOTH,
       expectedRevision: 1,
-      summary: "propose two sections",
+      summary: "propose two changes",
     });
     if (!(proposed.ok && proposed.outcome === "proposed")) throw new Error("setup failed");
     return { client, documentId, proposals: proposed.proposals };
   }
 
-  it("splits one edit into a proposal per changed section, sharing a batch", async () => {
-    const { proposals } = await proposeBoth();
+  it("splits one edit into a proposal per changed hunk, sharing a family", async () => {
+    const { client, proposals } = await proposeBoth();
     expect(proposals).toHaveLength(2);
-    expect(proposals[0].batchId).toBeTruthy();
-    expect(proposals[0].batchId).toBe(proposals[1].batchId);
-    expect(proposals.map((p) => p.sectionHeading).sort()).toEqual(["Goals", "Work"]);
+    expect(proposals[0].familyId).toBeTruthy();
+    expect(proposals[0].familyId).toBe(proposals[1].familyId);
+    expect(proposals.map((proposal) => proposal.hunkIndex)).toEqual([0, 1]);
+    expect(proposals.every((proposal) => proposal.kind === "document-hunk")).toBe(true);
+    expect(proposals.every((proposal) => proposal.classification.length > 0)).toBe(true);
     // Creating proposals never touches the document.
-    expect(proposals.every((p) => p.kind === "document-section")).toBe(true);
+    expect(client.rows(DOCS)[0].content).toBe(MULTI);
   });
 
-  it("lists proposals in proposed document order within a batch", async () => {
-    const before = ["# Doc", "Intro.", "", "## Alpha", "A.", "", "## Omega", "Z."].join("\n");
-    const after = [
-      "# Doc",
-      "Intro.",
-      "",
-      "## Alpha",
-      "A.",
-      "",
-      "## Beta",
-      "B.",
-      "",
-      "## Gamma",
-      "G.",
-      "",
-      "## Omega",
-      "Z.",
-    ].join("\n");
+  it("keeps consecutive word edits in one proposal", async () => {
+    const before = "# Doc\nAlpha beta gamma delta.";
+    const after = "# Doc\nAlpha bright green delta.";
     const { client, documentId } = createFakeClientWithDocument({ content: before });
     setPolicy(client, { human: "propose" });
 
@@ -413,120 +416,138 @@ describe("Per-section proposals (batching + independent accept)", () => {
       author: { userId: "author-A" },
       content: after,
       expectedRevision: 1,
-      summary: "add ordered sections",
+      summary: "adjacent words",
     });
     if (!(proposed.ok && proposed.outcome === "proposed")) throw new Error("setup failed");
-    expect(proposed.proposals.map((proposal) => proposal.sectionHeading)).toEqual(["Beta", "Gamma"]);
+    expect(proposed.proposals).toHaveLength(1);
+    expect(proposed.proposals[0].hunkBefore).toContain("beta");
+    expect(proposed.proposals[0].hunkAfter).toContain("bright");
+  });
+
+  it("lists proposals in proposed document order within a family", async () => {
+    const { client, documentId, proposals } = await proposeBoth();
 
     client.seed(PROPOSALS, client.rows(PROPOSALS).reverse());
     const listed = await listDocumentProposals(client, documentId);
-    expect(listed.map((proposal) => proposal.sectionHeading)).toEqual(["Beta", "Gamma"]);
+    expect(listed.map((proposal) => proposal.id)).toEqual(proposals.map((proposal) => proposal.id));
+    expect(listed.map((proposal) => proposal.hunkIndex)).toEqual([0, 1]);
   });
 
-  it("accepts each section independently, advancing the document once per accept", async () => {
+  it("accepts each hunk independently, advancing the document once per accept", async () => {
     const { client, documentId, proposals } = await proposeBoth();
-    const goals = proposals.find((p) => p.sectionHeading === "Goals")!;
-    const work = proposals.find((p) => p.sectionHeading === "Work")!;
+    const firstHunk = proposals.find((proposal) => proposal.hunkIndex === 0)!;
+    const secondHunk = proposals.find((proposal) => proposal.hunkIndex === 1)!;
 
-    const first = await acceptDocumentProposal(client, { documentId, proposalId: goals.id, actorUserId: "u-B" });
+    const first = await acceptDocumentProposal(client, {
+      documentId,
+      proposalId: secondHunk.id,
+      actorUserId: "u-B",
+    });
     expect(first.ok).toBe(true);
-    expect(client.rows(DOCS)[0].content).toContain("New goal.");
-    expect(client.rows(DOCS)[0].content).toContain("Do work."); // Work not yet accepted
+    expect(client.rows(DOCS)[0].content).toContain("old tone");
+    expect(client.rows(DOCS)[0].content).toContain("fresh ending");
     expect(client.rows(DOCS)[0].revision).toBe(2);
 
-    // The Work proposal was authored against revision 1 but must still apply
-    // after the Goals accept advanced the document (per-section merge guard).
-    const second = await acceptDocumentProposal(client, { documentId, proposalId: work.id, actorUserId: "u-B" });
+    // The first hunk was authored against revision 1 but must still apply after
+    // its sibling advanced the document.
+    const second = await acceptDocumentProposal(client, {
+      documentId,
+      proposalId: firstHunk.id,
+      actorUserId: "u-B",
+    });
     expect(second.ok).toBe(true);
-    expect(client.rows(DOCS)[0].content).toContain("New goal.");
-    expect(client.rows(DOCS)[0].content).toContain("Did work.");
+    expect(client.rows(DOCS)[0].content).toBe(BOTH);
     expect(client.rows(DOCS)[0].revision).toBe(3);
     expect(client.count(VERSIONS)).toBe(2);
   });
 
-  it("rejecting one section leaves its sibling acceptable", async () => {
+  it("bulk accepts selected hunks in one document revision and one version", async () => {
     const { client, documentId, proposals } = await proposeBoth();
-    const goals = proposals.find((p) => p.sectionHeading === "Goals")!;
-    const work = proposals.find((p) => p.sectionHeading === "Work")!;
 
-    const rejected = await rejectDocumentProposal(client, { documentId, proposalId: goals.id, actorUserId: "u-B" });
+    const accepted = await acceptDocumentProposals(client, {
+      documentId,
+      proposalIds: proposals.map((proposal) => proposal.id),
+      actorUserId: "u-B",
+    });
+
+    expect(accepted.ok).toBe(true);
+    expect(client.rows(DOCS)[0].content).toBe(BOTH);
+    expect(client.rows(DOCS)[0].revision).toBe(2);
+    expect(client.count(VERSIONS)).toBe(1);
+    expect(client.rows(VERSIONS)[0].change_hunks).toHaveLength(2);
+    expect(client.rows(PROPOSALS).map((row) => row.status)).toEqual(["accepted", "accepted"]);
+  });
+
+  it("bulk accept is blocked while any selected hunk is conflicted", async () => {
+    const { client, documentId, proposals } = await proposeBoth();
+    const rows = client.rows(PROPOSALS);
+    client.seed(
+      PROPOSALS,
+      rows.map((row, index) =>
+        index === 0 ? { ...row, conflict_status: "conflict" } : row
+      )
+    );
+
+    const accepted = await acceptDocumentProposals(client, {
+      documentId,
+      proposalIds: proposals.map((proposal) => proposal.id),
+      actorUserId: "u-B",
+    });
+
+    expect(accepted.ok).toBe(false);
+    if (!accepted.ok) {
+      expect(accepted.code).toBe("conflict");
+      expect(accepted.error).toBe("Resolve the conflict before accepting all.");
+    }
+    expect(client.rows(DOCS)[0].content).toBe(MULTI);
+    expect(client.rows(DOCS)[0].revision).toBe(1);
+    expect(client.count(VERSIONS)).toBe(0);
+    expect(client.rows(PROPOSALS).map((row) => row.status)).toEqual(["pending", "pending"]);
+  });
+
+  it("bulk rejects selected hunks without changing the document or version history", async () => {
+    const { client, documentId, proposals } = await proposeBoth();
+
+    const rejected = await rejectDocumentProposals(client, {
+      documentId,
+      proposalIds: proposals.map((proposal) => proposal.id),
+      actorUserId: "u-B",
+    });
+
+    expect(rejected.ok).toBe(true);
+    expect(client.rows(DOCS)[0].content).toBe(MULTI);
+    expect(client.rows(DOCS)[0].revision).toBe(1);
+    expect(client.count(VERSIONS)).toBe(0);
+    expect(client.rows(PROPOSALS).map((row) => row.status)).toEqual(["rejected", "rejected"]);
+  });
+
+  it("rejecting one hunk leaves its sibling acceptable", async () => {
+    const { client, documentId, proposals } = await proposeBoth();
+    const firstHunk = proposals.find((proposal) => proposal.hunkIndex === 0)!;
+    const secondHunk = proposals.find((proposal) => proposal.hunkIndex === 1)!;
+
+    const rejected = await rejectDocumentProposal(client, {
+      documentId,
+      proposalId: firstHunk.id,
+      actorUserId: "u-B",
+    });
     expect(rejected.ok).toBe(true);
 
-    const accepted = await acceptDocumentProposal(client, { documentId, proposalId: work.id, actorUserId: "u-B" });
+    const accepted = await acceptDocumentProposal(client, {
+      documentId,
+      proposalId: secondHunk.id,
+      actorUserId: "u-B",
+    });
     expect(accepted.ok).toBe(true);
-    // Only Work landed; Goals still reads the original.
-    expect(client.rows(DOCS)[0].content).toContain("Old goal.");
-    expect(client.rows(DOCS)[0].content).toContain("Did work.");
+    expect(client.rows(DOCS)[0].content).toContain("old tone");
+    expect(client.rows(DOCS)[0].content).toContain("fresh ending");
     expect(client.count(VERSIONS)).toBe(1);
   });
 
-  it("preserves proposed document order when added sections are accepted out of order", async () => {
-    const before = ["# Doc", "Intro.", "", "## Alpha", "A.", "", "## Omega", "Z."].join("\n");
-    const after = [
-      "# Doc",
-      "Intro.",
-      "",
-      "## Alpha",
-      "A.",
-      "",
-      "## Beta",
-      "B.",
-      "",
-      "## Gamma",
-      "G.",
-      "",
-      "## Omega",
-      "Z.",
-    ].join("\n");
-    const { client, documentId } = createFakeClientWithDocument({ content: before });
-    setPolicy(client, { human: "propose" });
-
-    const proposed = await routeDocumentEdit(client, {
-      documentId,
-      actorType: "human",
-      author: { userId: "author-A" },
-      content: after,
-      expectedRevision: 1,
-      summary: "add ordered sections",
-    });
-    if (!(proposed.ok && proposed.outcome === "proposed")) throw new Error("setup failed");
-
-    const beta = proposed.proposals.find((p) => p.sectionHeading === "Beta")!;
-    const gamma = proposed.proposals.find((p) => p.sectionHeading === "Gamma")!;
-
-    const first = await acceptDocumentProposal(client, {
-      documentId,
-      proposalId: gamma.id,
-      actorUserId: "u-B",
-    });
-    expect(first.ok).toBe(true);
-    expect(client.rows(DOCS)[0].content).toBe([
-      "# Doc",
-      "Intro.",
-      "",
-      "## Alpha",
-      "A.",
-      "",
-      "## Gamma",
-      "G.",
-      "",
-      "## Omega",
-      "Z.",
-    ].join("\n"));
-
-    const second = await acceptDocumentProposal(client, {
-      documentId,
-      proposalId: beta.id,
-      actorUserId: "u-B",
-    });
-    expect(second.ok).toBe(true);
-    expect(client.rows(DOCS)[0].content).toBe(after);
-  });
-
-  it("accepts a later proposal update to a section that another proposal just created", async () => {
-    const before = ["# Doc", "Intro.", "", "## Existing", "Old."].join("\n");
-    const firstDraft = `${before}\n\n## New Section\nFirst draft.`;
-    const secondDraft = `${before}\n\n## New Section\nSecond draft.`;
+  it("lets a chosen conflict proposal replace the current conflicting text", async () => {
+    const before = "# Doc\nOld goal.";
+    const firstDraft = "# Doc\nFirst accepted goal.";
+    const secondDraft = "# Doc\nSecond accepted goal.";
     const { client, documentId } = createFakeClientWithDocument({ content: before });
     setPolicy(client, { human: "propose" });
 
@@ -536,7 +557,7 @@ describe("Per-section proposals (batching + independent accept)", () => {
       author: { userId: "author-A" },
       content: firstDraft,
       expectedRevision: 1,
-      summary: "add new section",
+      summary: "first goal update",
     });
     if (!(firstProposed.ok && firstProposed.outcome === "proposed")) throw new Error("setup failed");
 
@@ -546,61 +567,12 @@ describe("Per-section proposals (batching + independent accept)", () => {
       author: { userId: "author-A" },
       content: secondDraft,
       expectedRevision: 1,
-      summary: "update new section",
+      summary: "second goal update",
     });
     if (!(secondProposed.ok && secondProposed.outcome === "proposed")) throw new Error("setup failed");
 
-    const first = firstProposed.proposals.find((p) => p.sectionHeading === "New Section")!;
-    const second = secondProposed.proposals.find((p) => p.sectionHeading === "New Section")!;
-
-    const acceptedFirst = await acceptDocumentProposal(client, {
-      documentId,
-      proposalId: first.id,
-      actorUserId: "u-B",
-    });
-    expect(acceptedFirst.ok).toBe(true);
-    expect(client.rows(DOCS)[0].content).toContain("First draft.");
-
-    const acceptedSecond = await acceptDocumentProposal(client, {
-      documentId,
-      proposalId: second.id,
-      actorUserId: "u-B",
-    });
-    expect(acceptedSecond.ok).toBe(true);
-    expect(client.rows(DOCS)[0].content).toContain("## New Section\nSecond draft.");
-    expect(client.rows(DOCS)[0].content).not.toContain("First draft.");
-    expect(client.rows(DOCS)[0].revision).toBe(3);
-  });
-
-  it("bulk accept rebases a later proposal update to the same existing section", async () => {
-    const before = ["# Doc", "Intro.", "", "## Goals", "Old goal."].join("\n");
-    const firstDraft = before.replace("Old goal.", "First accepted goal.");
-    const secondDraft = before.replace("Old goal.", "Second accepted goal.");
-    const { client, documentId } = createFakeClientWithDocument({ content: before });
-    setPolicy(client, { human: "propose" });
-
-    const firstProposed = await routeDocumentEdit(client, {
-      documentId,
-      actorType: "human",
-      author: { userId: "author-A" },
-      content: firstDraft,
-      expectedRevision: 1,
-      summary: "first goals update",
-    });
-    if (!(firstProposed.ok && firstProposed.outcome === "proposed")) throw new Error("setup failed");
-
-    const secondProposed = await routeDocumentEdit(client, {
-      documentId,
-      actorType: "human",
-      author: { userId: "author-A" },
-      content: secondDraft,
-      expectedRevision: 1,
-      summary: "second goals update",
-    });
-    if (!(secondProposed.ok && secondProposed.outcome === "proposed")) throw new Error("setup failed");
-
-    const first = firstProposed.proposals.find((p) => p.sectionHeading === "Goals")!;
-    const second = secondProposed.proposals.find((p) => p.sectionHeading === "Goals")!;
+    const first = firstProposed.proposals[0];
+    const second = secondProposed.proposals[0];
 
     const acceptedFirst = await acceptDocumentProposal(client, {
       documentId,
@@ -610,23 +582,21 @@ describe("Per-section proposals (batching + independent accept)", () => {
     expect(acceptedFirst.ok).toBe(true);
     expect(client.rows(DOCS)[0].content).toContain("First accepted goal.");
 
-    const strictSecond = await acceptDocumentProposal(client, {
-      documentId,
-      proposalId: second.id,
-      actorUserId: "u-B",
-    });
-    expect(strictSecond.ok).toBe(false);
-    if (!strictSecond.ok) expect(strictSecond.code).toBe("conflict");
+    expect(client.rows(PROPOSALS).find((row) => row.id === second.id)?.conflict_status).toBe(
+      "conflict"
+    );
 
-    const rebasedSecond = await acceptDocumentProposal(client, {
+    const acceptedSecond = await acceptDocumentProposal(client, {
       documentId,
       proposalId: second.id,
       actorUserId: "u-B",
-      allowStaleSectionUpdate: true,
     });
-    expect(rebasedSecond.ok).toBe(true);
-    expect(client.rows(DOCS)[0].content).toContain("Second accepted goal.");
+    expect(acceptedSecond.ok).toBe(true);
     expect(client.rows(DOCS)[0].content).not.toContain("First accepted goal.");
+    expect(client.rows(DOCS)[0].content).toContain("Second accepted goal.");
     expect(client.rows(DOCS)[0].revision).toBe(3);
+    expect(client.rows(PROPOSALS).find((row) => row.id === second.id)?.conflict_status).toBe(
+      "resolved"
+    );
   });
 });

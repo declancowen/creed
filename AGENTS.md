@@ -9,18 +9,14 @@ If a human is reading this, the document you want is [`README.md`](./README.md).
 
 ## What Creed is
 
-One personal context profile every AI reads before answering the user.
-10 sections (5 always-on, 5 optional). Plain Markdown content. Connected
-agents read it and propose updates; users approve.
+Creed is a shared Markdown document workspace for invited users. Personal Creed
+profiles and the old 10-section profile contract have been removed. Connected
+agents work through shared documents only.
 
-Creed is **not** a notes app, journal, chat memory store, or generic AI
-wrapper. If a change would make it feel like one of those, it's the
-wrong change.
-
-Creed also has a shared Markdown document workspace for invited users. That
-workspace is **Supabase-only**: Supabase is the source of truth, and versioning
-and review happen inside Creed via proposals and an append-only version history.
-There is no GitHub syncing for documents (push/pull/publish were removed).
+The workspace is **Supabase-only**: Supabase is the source of truth, and
+versioning and review happen inside Creed via hunk-level proposals and an
+append-only version history. There is no GitHub syncing for documents
+(push/pull/publish were removed).
 
 Agents working through MCP must:
 - list/read shared documents through the Creed MCP document tools;
@@ -29,22 +25,36 @@ Agents working through MCP must:
   `folderId`/`path`); use `creed_get_folder` (by id or slug) to inspect one
   folder plus the child folders and documents it directly contains;
 - read current comments before changing a document when review context matters;
+- read hunk-level proposal diffs with `creed_list_document_proposals` when a
+  task involves proposals, conflicts, or review history;
+- treat a proposal `conflictStatus` of `conflict` as "needs human review
+  against the current document", not automatically as a multi-user disagreement;
+  real conflict resolution is a human UI workflow over overlapping pending
+  proposal hunks, while agents should re-read, comment, or make a fresh targeted
+  proposal instead of trying to resolve someone else's proposal;
 - update document content with `expectedRevision` and re-read on conflicts;
 - use document metadata tools for status/type/stage/lifecycle/priority/size;
 - expect that document content edits are governed by the workspace Agent edit
-  policy: a change is applied directly, recorded as a pending proposal for a
-  workspace member to approve, or rejected outright. Read the `outcome` in the
-  tool result to know which happened; do not assume an edit was applied;
+  policy: a change is applied directly, split into pending hunk proposals for a
+  workspace member to approve, or rejected outright. Read the `outcome` and
+  `proposalCount` in the tool result to know what happened; do not assume an
+  edit was applied;
 - add comments for questions, uncertainty, review notes, and suggested changes
   that should not be applied silently; comments you add through MCP are recorded
   as private pending proposals that the user reviews and approves before anyone
   else sees them, and once approved they appear as the user's own comment (never
   labelled as an agent);
+- add comments/replies to either document content or a proposal diff; pass
+  `proposalId` when the comment belongs to a specific diff/proposal. Agents may
+  read proposals created by the current user or by others, but must not edit or
+  delete other people's proposals;
+- edit, delete, resolve, or reopen only comments/replies authored by the OAuth
+  user whose token the agent is using; do not modify other people's comments;
 - mention a user only when their attention is actually needed (a mention in a
   pending comment only notifies once the user approves it).
-- make targeted edits only: read the latest section/document, preserve
-  unchanged Markdown exactly, and do not re-upload, reorder, or reformat a whole
-  document for a small change;
+- make targeted edits only: read the latest document, preserve unchanged
+  Markdown exactly, and do not re-upload, reorder, or reformat a whole document
+  for a small change;
 - compare the intended content with the latest read before calling any mutation
   tool. If there is no visible change, do not submit a proposal or edit; the MCP
   server rejects no-op changes.
@@ -76,11 +86,16 @@ live in `components/creed/extensions/url-reference.tsx` and the tokens in
 `lib/url-reference.ts`. Parsing/serialization is in `lib/rich-text.ts` and
 `lib/creed-data.ts` alongside the doc-reference and table handling.
 
-Document and Creed content is Markdown with a rich component set that round-trips
-through the Tiptap editor: `##`/`###` headings, bullet/numbered lists, `>`
-callouts, `---` dividers, inline `#tags`, fenced code blocks, GFM pipe tables,
-and ```mermaid diagrams. Both agents (via MCP) and users (via the editor's slash
-menu) choose the clearest shape for the content:
+Document content is Markdown with a rich component set that round-trips through
+the Tiptap editor: `#`/`##`/`###` headings, bullet/numbered lists, `>` callouts,
+`---` dividers, inline `#tags`, fenced code blocks, GFM pipe tables, and
+```mermaid diagrams. The document title is metadata; do not repeat it as an H1
+in the body unless the user explicitly asks. Headings drive outline/navigation
+only; they do not create section records, and agents must not write
+`<!-- creed:depth -->` markers. A document may start at H2; the sidebar treats
+the highest heading level present as the root and indents deeper headings from
+there. Both agents (via MCP) and users (via the editor's slash menu) choose the
+clearest shape for the content:
 
 - a **table** (`| A | B |` over a `| --- | --- |` delimiter row) for comparing
   items across shared attributes;
@@ -89,10 +104,19 @@ menu) choose the clearest shape for the content:
   branches, don't just list steps;
 - lists for simple enumerations.
 
+Each non-touching content change becomes its own proposal hunk. Consecutive word
+changes inside the same range stay one proposal. Accepted proposal families are
+shown grouped in version history; expanding a family reveals the individual
+hunks and selecting one shows only that diff. Proposal/change family titles
+should be short descriptive sentence fragments, usually under 72 characters,
+rather than vague labels like "Header update" or paragraph-length summaries.
+When calling `creed_update_document` through MCP, pass that family title as
+`changeTitle` when you can name the change clearly.
+
 Tables and mermaid blocks parse in `lib/rich-text.ts` (`markdownToRichHtml`) and
-serialize back in `lib/creed-data.ts` (`sectionToMarkdown`); the editor registers
-them via `@tiptap/extension-table`'s `TableKit` and `MermaidBlock`. Keep those
-two functions in lockstep if you touch either component.
+serialize back through `lib/creed-data.ts` (`richHtmlToMarkdown`); the editor
+registers them via `@tiptap/extension-table`'s `TableKit` and `MermaidBlock`.
+Keep those two functions in lockstep if you touch either component.
 
 Do not attempt to push, pull, or publish shared documents to GitHub — documents
 live only in Supabase.
@@ -183,9 +207,10 @@ These are non-negotiable. Don't cross them without asking.
 4. **Marketing routes never read user state.** The root layout skips
    `loadCreedState` based on the `x-pathname` header set by `proxy.ts`.
    Don't reintroduce a fan-out without that gate.
-5. **Don't touch `lib/creed-data.ts:collaborationRules`** without
-   thinking carefully — it ships to every connected agent on every
-   read. Test across at least 2 models if you do.
+5. **Don't touch `lib/creed-data.ts:buildAgentReadPayload`** without
+   thinking carefully. It ships the workspace contract to every connected agent
+   on every MCP read. Keep it aligned with the MCP tool list and document edit
+   policy.
 6. **No em dashes in product copy** unless the user explicitly asked for
    them. Em dashes in code comments are fine.
 7. **No `console.log` in committed code.** Use `lib/observability.ts`

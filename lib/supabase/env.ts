@@ -29,6 +29,12 @@ export function getSiteUrl() {
     return configuredSiteUrl;
   }
 
+  const vercelUrl = process.env.VERCEL_URL?.trim();
+
+  if (vercelUrl) {
+    return vercelUrl.startsWith("http") ? vercelUrl : `https://${vercelUrl}`;
+  }
+
   // Development convenience only. Production must set NEXT_PUBLIC_SITE_URL
   // explicitly - there's no hardcoded production fallback so forks can't
   // accidentally leak OAuth callbacks / API URLs to the upstream domain.

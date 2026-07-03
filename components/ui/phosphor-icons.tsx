@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  ArrowUpRight,
   ArrowDown,
   ArrowBendUpLeft,
   Archive,
@@ -14,6 +15,7 @@ import {
   CaretDown,
   CaretLeft,
   CaretRight,
+  Checkerboard,
   Check,
   CheckCircle,
   CircleHalfTilt,
@@ -23,6 +25,7 @@ import {
   CloudArrowUp,
   Code,
   CircleDashed,
+  Columns,
   Copy,
   DownloadSimple,
   DotsThree,
@@ -55,6 +58,7 @@ import {
   PlusSquare,
   Plugs,
   Plug,
+  Rows,
   Sidebar,
   Share,
   Shield,
@@ -100,6 +104,7 @@ function icon(Component: PhosphorIcon) {
 const ArrowLeftIcon = icon(ArrowLeft);
 const ArrowRightIcon = icon(ArrowRight);
 const ArrowUpIcon = icon(ArrowUp);
+const ArrowUpRightIcon = icon(ArrowUpRight);
 const ArrowDownIcon = icon(ArrowDown);
 const ArrowBendUpLeftIcon = icon(ArrowBendUpLeft);
 const ArchiveIcon = icon(Archive);
@@ -107,6 +112,7 @@ const AtSignIcon = icon(At);
 const BellIcon = icon(Bell);
 const BookmarkIcon = icon(BookmarkSimple);
 const BoldIcon = icon(TextB);
+const CheckerboardIcon = icon(Checkerboard);
 export const CheckIcon = icon(Check);
 const CheckCircleIcon = icon(CheckCircle);
 const ChevronDownIcon = icon(CaretDown);
@@ -118,6 +124,7 @@ const Clock3Icon = icon(Clock);
 const CloudDownloadIcon = icon(CloudArrowDown);
 const CloudUploadIcon = icon(CloudArrowUp);
 const Code2Icon = icon(Code);
+const ColumnsIcon = icon(Columns);
 const CopyIcon = icon(Copy);
 const DeleteIcon = icon(Trash);
 const DownloadIcon = icon(DownloadSimple);
@@ -134,6 +141,41 @@ const FolderTreeIcon = icon(TreeStructure);
 const FunnelIcon = icon(Funnel);
 const SettingsIcon = icon(GearSix);
 const GripVerticalIcon = icon(DotsThreeVertical);
+const Heading1Icon = forwardRef<SVGSVGElement, LegacyIconProps>(
+  (
+    {
+      absoluteStrokeWidth: _absoluteStrokeWidth,
+      color = "currentColor",
+      mirrored: _mirrored,
+      size = "1em",
+      strokeWidth = 2,
+      weight: _weight,
+      ...props
+    },
+    ref
+  ) => (
+    <svg
+      ref={ref}
+      xmlns="http://www.w3.org/2000/svg"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke={color}
+      strokeWidth={strokeWidth}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      {...props}
+    >
+      <path d="M4 6v12" />
+      <path d="M12 6v12" />
+      <path d="M4 12h8" />
+      <path d="M17 10l3-2v10" />
+      <path d="M17 18h6" />
+    </svg>
+  )
+);
+Heading1Icon.displayName = "Heading1Icon";
 const Heading2Icon = icon(TextHTwo);
 const Heading3Icon = icon(TextHThree);
 const HistoryIcon = icon(ClockCounterClockwise);
@@ -158,6 +200,7 @@ const PlusSquareIcon = icon(PlusSquare);
 const PlusIcon = icon(Plus);
 const RotateCcwIcon = icon(ArrowCounterClockwise);
 const RotateCwIcon = icon(ArrowClockwise);
+const RowsIcon = icon(Rows);
 const SearchIcon = icon(MagnifyingGlass);
 const SendIcon = icon(PaperPlaneTilt);
 const SaveIcon = icon(FloppyDisk);
@@ -176,12 +219,50 @@ const TShirtIcon = icon(TShirt);
 const UnplugIcon = icon(Plugs);
 const UserCircleIcon = icon(UserCircle);
 const AlertTriangleIcon = icon(Warning);
+const GitDiffIcon = forwardRef<SVGSVGElement, LegacyIconProps>(
+  (
+    {
+      absoluteStrokeWidth: _absoluteStrokeWidth,
+      color = "currentColor",
+      mirrored: _mirrored,
+      size = "1em",
+      strokeWidth = 2,
+      weight: _weight,
+      ...props
+    },
+    ref
+  ) => (
+    <svg
+      ref={ref}
+      xmlns="http://www.w3.org/2000/svg"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke={color}
+      strokeWidth={strokeWidth}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      {...props}
+    >
+      <path d="M6 3v18" />
+      <circle cx="6" cy="5" r="2" />
+      <circle cx="6" cy="19" r="2" />
+      <path d="M18 3v4a4 4 0 0 1-4 4H6" />
+      <path d="M18 21v-4a4 4 0 0 0-4-4H6" />
+      <circle cx="18" cy="5" r="2" />
+      <circle cx="18" cy="19" r="2" />
+    </svg>
+  )
+);
+GitDiffIcon.displayName = "GitDiffIcon";
 export const XIcon = icon(X);
 
 export {
   ArrowLeftIcon as ArrowLeft,
   ArrowRightIcon as ArrowRight,
   ArrowUpIcon as ArrowUp,
+  ArrowUpRightIcon as ArrowUpRight,
   ArrowDownIcon as ArrowDown,
   ArrowBendUpLeftIcon as Reply,
   ArchiveIcon as Archive,
@@ -190,6 +271,7 @@ export {
   BellIcon as Bell,
   BookmarkIcon as Bookmark,
   BoldIcon as Bold,
+  CheckerboardIcon as Checkerboard,
   CheckIcon as Check,
   CheckCircleIcon as CheckCircle2,
   ChevronDownIcon as ChevronDown,
@@ -201,6 +283,7 @@ export {
   CloudDownloadIcon as CloudDownload,
   CloudUploadIcon as CloudUpload,
   Code2Icon as Code2,
+  ColumnsIcon as Columns,
   CopyIcon as Copy,
   DeleteIcon as Delete,
   DownloadIcon as Download,
@@ -214,8 +297,10 @@ export {
   FolderUpIcon as FolderUp,
   FrameCornersIcon as Embed,
   FunnelIcon as Funnel,
+  GitDiffIcon as GitDiff,
   SettingsIcon as Settings,
   GripVerticalIcon as GripVertical,
+  Heading1Icon as Heading1,
   Heading2Icon as Heading2,
   Heading3Icon as Heading3,
   HistoryIcon as History,
@@ -239,6 +324,7 @@ export {
   PlusSquareIcon as PlusSquare,
   RotateCcwIcon as RotateCcw,
   RotateCwIcon as RotateCw,
+  RowsIcon as Rows,
   SearchIcon as Search,
   SaveIcon as Save,
   SendIcon as Send,
