@@ -3287,8 +3287,28 @@ export function FileScreen({
       const payload = ((await response.json().catch(() => null)) ?? {}) as {
         document?: SharedDocument;
         error?: string;
+        settledProposalIds?: string[];
       };
       if (!response.ok) {
+        const settledProposalIds = payload.settledProposalIds ?? [];
+        if (settledProposalIds.length > 0) {
+          setDocumentPendingProposals((rows) => {
+            const settled = new Set(settledProposalIds);
+            const next = rows.filter((proposal) => !settled.has(proposal.id));
+            if (next.length === 0) {
+              setDocumentDiffOpen(false);
+              setDocumentDiffSidebarOpen(false);
+            }
+            return next;
+          });
+          setActiveDocumentDiffProposalId((current) =>
+            current && settledProposalIds.includes(current) ? null : current
+          );
+          await reloadDocumentActivity(currentDocument.id);
+          setReviewRefreshKey((key) => key + 1);
+          toast.warning(payload.error || "Proposal no longer applies and was removed.");
+          return;
+        }
         throw new Error(payload.error || `Could not ${action} the proposal.`);
       }
 
@@ -3343,8 +3363,28 @@ export function FileScreen({
       const payload = ((await response.json().catch(() => null)) ?? {}) as {
         document?: SharedDocument;
         error?: string;
+        settledProposalIds?: string[];
       };
       if (!response.ok) {
+        const settledProposalIds = payload.settledProposalIds ?? [];
+        if (settledProposalIds.length > 0) {
+          setDocumentPendingProposals((rows) => {
+            const settled = new Set(settledProposalIds);
+            const next = rows.filter((proposal) => !settled.has(proposal.id));
+            if (next.length === 0) {
+              setDocumentDiffOpen(false);
+              setDocumentDiffSidebarOpen(false);
+            }
+            return next;
+          });
+          setActiveDocumentDiffProposalId((current) =>
+            current && settledProposalIds.includes(current) ? null : current
+          );
+          await reloadDocumentActivity(currentDocument.id);
+          setReviewRefreshKey((key) => key + 1);
+          toast.warning(payload.error || "Proposals no longer apply and were removed.");
+          return;
+        }
         throw new Error(payload.error || `Could not ${action} the proposals.`);
       }
 

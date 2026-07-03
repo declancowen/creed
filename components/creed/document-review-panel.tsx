@@ -87,6 +87,7 @@ type EditOutcomeResponse = {
   outcome?: "applied" | "proposed";
   document?: SharedDocument;
   error?: string;
+  settledProposalIds?: string[];
 };
 
 async function readEditOutcome(response: Response): Promise<EditOutcomeResponse> {
@@ -1044,6 +1045,11 @@ export function DocumentReviewPanel({
         );
         const payload = await readEditOutcome(response);
         if (!response.ok) {
+          if ((payload.settledProposalIds?.length ?? 0) > 0) {
+            toast.warning(payload.error || "Proposal no longer applies and was removed.");
+            await Promise.all([refreshProposals(), refreshAcceptedProposals(), refreshVersions()]);
+            return;
+          }
           throw new Error(payload.error || `Could not ${action} the proposals.`);
         }
         if (action === "accept" && payload.document) {

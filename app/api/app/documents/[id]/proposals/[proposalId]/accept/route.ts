@@ -24,7 +24,10 @@ export async function POST(
   });
 
   if (!result.ok) {
-    return NextResponse.json({ error: result.error }, { status: statusForCode(result.code) });
+    return NextResponse.json(
+      { error: result.error, settledProposalIds: result.settledProposalIds ?? [] },
+      { status: statusForCode(result.code) }
+    );
   }
 
   return NextResponse.json({ document: result.value.document, version: result.value.version });

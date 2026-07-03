@@ -97,7 +97,12 @@ type EditResult =
 
 type ProposalResult<T> =
   | { ok: true; value: T }
-  | { ok: false; code: "invalid" | "not-found" | "conflict" | "forbidden"; error: string };
+  | {
+      ok: false;
+      code: "invalid" | "not-found" | "conflict" | "forbidden";
+      error: string;
+      settledProposalIds?: string[];
+    };
 
 type BulkProposalResult<T> =
   | { ok: true; value: T }
@@ -344,11 +349,11 @@ async function applyDocumentContent(
 
 // After a direct edit moves the source of truth, re-evaluate every OTHER pending
 // proposal against the new content. Proposals are content-anchored (not fixed
-// offsets), so this never creates a new proposal - it updates or removes the
+// offsets), so this never creates a new proposal - it keeps or removes the
 // existing rows:
 //   - still anchors and produces a change  -> keep it, mark `clean`;
 //   - the edit already made the same change -> delete the now-redundant row;
-//   - the edit changed the anchored span    -> keep it, mark `conflict` for re-review.
+//   - the edit removed/changed the anchor   -> delete the stale pending row.
 // Best-effort: the save already succeeded and versioned, so a failure here is
 // logged but not surfaced to the caller.
 async function reconcilePendingProposalsAfterEdit(
@@ -358,6 +363,7 @@ async function reconcilePendingProposalsAfterEdit(
     content: string;
     actorUserId: string | null;
     changedHunks?: DocumentHunkChange[];
+    acceptedFamilyId?: string | null;
     // The proposal being accepted (if any) is settled by its own flow; skip it.
     excludeProposalId?: string | null;
   }
@@ -377,30 +383,13 @@ async function reconcilePendingProposalsAfterEdit(
   }
 
   const deletedIds: string[] = [];
-  const conflictedIds: string[] = [];
 
   for (const proposal of pending) {
     if (input.excludeProposalId && proposal.id === input.excludeProposalId) {
       continue;
     }
 
-    const overlapsAcceptedChange =
-      input.changedHunks?.some(
-        (changed) =>
-          proposal.hunkBeforeStart < changed.beforeEnd &&
-          changed.beforeStart < proposal.hunkBeforeEnd
-      ) ?? false;
-    if (overlapsAcceptedChange) {
-      if (proposal.conflictStatus !== "conflict") {
-        await db
-          .from("creed_document_proposals")
-          .update({ conflict_status: "conflict" })
-          .eq("id", proposal.id)
-          .eq("status", "pending");
-        conflictedIds.push(proposal.id);
-      }
-      continue;
-    }
+    const sameAcceptedFamily = Boolean(input.acceptedFamilyId && proposal.familyId === input.acceptedFamilyId);
 
     const hunk: DocumentHunkChange = {
       key: proposal.hunkKey,
@@ -418,24 +407,13 @@ async function reconcilePendingProposalsAfterEdit(
       conflictStatus: proposal.conflictStatus,
     };
 
-    const merged = applyHunkChange(input.content, hunk);
+    const merged = applyHunkChange(input.content, hunk, {
+      allowConflictReplacement: sameAcceptedFamily,
+    });
 
-    // Unanchorable against the new truth: flag for human re-review.
-    if (!merged.ok) {
-      if (proposal.conflictStatus !== "conflict") {
-        await db
-          .from("creed_document_proposals")
-          .update({ conflict_status: "conflict" })
-          .eq("id", proposal.id)
-          .eq("status", "pending");
-        conflictedIds.push(proposal.id);
-      }
-      continue;
-    }
-
-    // Applies but produces no change -> the edit already contains this change,
-    // so the proposal is redundant. Delete it outright.
-    if (merged.content === input.content) {
+    // Unanchorable against the new truth, or already applied by the edit:
+    // remove it from pending review instead of leaving a dead accept button.
+    if (!merged.ok || merged.content === input.content) {
       await db
         .from("creed_document_proposals")
         .delete()
@@ -455,7 +433,7 @@ async function reconcilePendingProposalsAfterEdit(
     }
   }
 
-  if (deletedIds.length === 0 && conflictedIds.length === 0) {
+  if (deletedIds.length === 0) {
     return;
   }
 
@@ -466,7 +444,6 @@ async function reconcilePendingProposalsAfterEdit(
     summary: "Reconciled pending proposals after a direct edit",
     metadata: {
       deletedProposalIds: deletedIds,
-      conflictedProposalIds: conflictedIds,
     },
   });
 }
@@ -710,12 +687,29 @@ async function releaseProposalClaim(client: unknown, proposalId: string) {
   await db.from("creed_document_proposals").update({ resolving: false }).eq("id", proposalId);
 }
 
-async function markProposalConflict(client: unknown, proposalId: string) {
+async function deleteStaleProposal(client: unknown, proposalId: string) {
   const db = client as SupabaseLikeClient;
   await db
     .from("creed_document_proposals")
-    .update({ resolving: false, conflict_status: "conflict" })
-    .eq("id", proposalId);
+    .delete()
+    .eq("id", proposalId)
+    .eq("status", "pending");
+}
+
+async function recordStaleProposalRemoval(
+  client: unknown,
+  input: { documentId: string; actorUserId: string | null; proposalIds: string[] }
+) {
+  if (input.proposalIds.length === 0) return;
+  await recordDocumentActivity(client, {
+    documentId: input.documentId,
+    actorUserId: input.actorUserId,
+    action: "document.proposals.reconciled",
+    summary: "Removed stale pending proposals",
+    metadata: {
+      deletedProposalIds: input.proposalIds,
+    },
+  });
 }
 
 async function familyHasAcceptedSibling(
@@ -755,22 +749,7 @@ export async function acceptDocumentProposal(
     await releaseProposalClaim(client, input.proposalId);
     return { ok: false, code: "not-found", error: "Document not found." };
   }
-  const hasAcceptedSibling =
-    proposal.conflictStatus !== "conflict" && proposal.baseRevision < document.revision
-      ? await familyHasAcceptedSibling(client, input.documentId, proposal)
-      : false;
-  if (
-    proposal.conflictStatus !== "conflict" &&
-    proposal.baseRevision < document.revision &&
-    !hasAcceptedSibling
-  ) {
-    await markProposalConflict(client, input.proposalId);
-    return {
-      ok: false,
-      code: "conflict",
-      error: "This proposal needs review because the document has changed.",
-    };
-  }
+  const hasAcceptedSibling = await familyHasAcceptedSibling(client, input.documentId, proposal);
 
   let acceptedProposalLabel: string | null = null;
 
@@ -782,14 +761,20 @@ export async function acceptDocumentProposal(
   acceptedProposalLabel = proposal.classification || hunk.classification || "Change";
 
   const merged = applyHunkChange(document.content, hunk, {
-    allowConflictReplacement: proposal.conflictStatus === "conflict",
+    allowConflictReplacement: proposal.conflictStatus === "conflict" || hasAcceptedSibling,
   });
-  if (!merged.ok) {
-    await markProposalConflict(client, input.proposalId);
+  if (!merged.ok || merged.content === document.content) {
+    await deleteStaleProposal(client, input.proposalId);
+    await recordStaleProposalRemoval(client, {
+      documentId: input.documentId,
+      actorUserId: input.actorUserId,
+      proposalIds: [input.proposalId],
+    });
     return {
       ok: false,
       code: "conflict",
-      error: merged.error,
+      error: "This proposal no longer applies and was removed.",
+      settledProposalIds: [input.proposalId],
     };
   }
 
@@ -834,6 +819,7 @@ export async function acceptDocumentProposal(
     content: applied.document.content,
     actorUserId: input.actorUserId,
     changedHunks: [hunk],
+    acceptedFamilyId: proposal.familyId,
     excludeProposalId: input.proposalId,
   });
 
@@ -966,14 +952,15 @@ async function releaseProposalClaims(client: unknown, proposalIds: string[]) {
   await db.from("creed_document_proposals").update({ resolving: false }).in("id", ids);
 }
 
-async function markProposalConflicts(client: unknown, proposalIds: string[]) {
+async function deleteStaleProposals(client: unknown, proposalIds: string[]) {
   const ids = uniqueProposalIds(proposalIds);
   if (ids.length === 0) return;
   const db = client as SupabaseLikeClient;
   await db
     .from("creed_document_proposals")
-    .update({ resolving: false, conflict_status: "conflict" })
-    .in("id", ids);
+    .delete()
+    .in("id", ids)
+    .eq("status", "pending");
 }
 
 export async function acceptDocumentProposals(
@@ -1026,27 +1013,39 @@ export async function acceptDocumentProposals(
 
   let mergedContent = document.content;
   const acceptedHunks: DocumentHunkChange[] = [];
+  const acceptedFamilyIdsInBatch = new Set<string>();
   const conflictedIds: string[] = [];
 
   for (const proposal of proposals) {
     const hunk = proposalToHunk(proposal);
-    const merged = applyHunkChange(mergedContent, hunk);
-    if (!merged.ok) {
+    const sameAcceptedFamily =
+      acceptedFamilyIdsInBatch.has(proposal.familyId) ||
+      (await familyHasAcceptedSibling(client, input.documentId, proposal));
+    const merged = applyHunkChange(mergedContent, hunk, {
+      allowConflictReplacement: sameAcceptedFamily,
+    });
+    if (!merged.ok || merged.content === mergedContent) {
       conflictedIds.push(proposal.id);
       continue;
     }
     mergedContent = merged.content;
     acceptedHunks.push(hunk);
+    acceptedFamilyIdsInBatch.add(proposal.familyId);
   }
 
   if (conflictedIds.length > 0) {
-    await markProposalConflicts(client, conflictedIds);
+    await deleteStaleProposals(client, conflictedIds);
     await releaseProposalClaims(client, ids.filter((id) => !conflictedIds.includes(id)));
+    await recordStaleProposalRemoval(client, {
+      documentId: input.documentId,
+      actorUserId: input.actorUserId,
+      proposalIds: conflictedIds,
+    });
     return {
       ok: false,
       code: "conflict",
-      error: "One or more proposals no longer match the document. Re-review them before accepting.",
-      settledProposalIds: ids,
+      error: "One or more proposals no longer apply and were removed.",
+      settledProposalIds: conflictedIds,
     };
   }
 
@@ -1117,6 +1116,7 @@ export async function acceptDocumentProposals(
     content: applied.document.content,
     actorUserId: input.actorUserId,
     changedHunks: acceptedHunks,
+    acceptedFamilyId: acceptedFamilyIds.length === 1 ? acceptedFamilyIds[0] ?? null : null,
   });
 
   await recordDocumentActivity(client, {
