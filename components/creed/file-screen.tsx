@@ -3284,7 +3284,10 @@ export function FileScreen({
         `/api/app/documents/${encodeURIComponent(currentDocument.id)}/proposals/${encodeURIComponent(proposalId)}/${action}`,
         { method: "POST" }
       );
-      const payload = (await response.json()) as { document?: SharedDocument; error?: string };
+      const payload = ((await response.json().catch(() => null)) ?? {}) as {
+        document?: SharedDocument;
+        error?: string;
+      };
       if (!response.ok) {
         throw new Error(payload.error || `Could not ${action} the proposal.`);
       }
@@ -3337,7 +3340,10 @@ export function FileScreen({
           body: JSON.stringify({ action, proposalIds: ids }),
         }
       );
-      const payload = (await response.json()) as { document?: SharedDocument; error?: string };
+      const payload = ((await response.json().catch(() => null)) ?? {}) as {
+        document?: SharedDocument;
+        error?: string;
+      };
       if (!response.ok) {
         throw new Error(payload.error || `Could not ${action} the proposals.`);
       }

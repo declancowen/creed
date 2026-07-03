@@ -274,6 +274,7 @@ async function applyDocumentContent(
   | { ok: true; document: SharedDocument; version: DocumentVersion }
   | { ok: false; code: "invalid" | "not-found" | "conflict"; error: string }
 > {
+  const previous = await readSharedDocumentById(client, input.documentId);
   const applied = await updateSharedDocumentContent(client, {
     id: input.documentId,
     content: input.content,
@@ -286,19 +287,57 @@ async function applyDocumentContent(
     return { ok: false, code: applied.code, error: applied.error };
   }
 
-  const version = await appendDocumentVersion(client, {
-    documentId: applied.value.id,
-    revision: applied.value.revision,
-    content: applied.value.content,
-    actorType: input.actorType,
-    authorUserId: input.author.userId ?? null,
-    authorAgentLabel: input.author.agentLabel ?? null,
-    summary: input.summary,
-    sourceProposalId: input.sourceProposalId ?? null,
-    versionFamilyId: input.versionFamilyId ?? null,
-    versionFamilyTitle: input.versionFamilyTitle ?? input.summary,
-    changeHunks: input.changeHunks ?? [],
-  });
+  let version: DocumentVersion;
+  try {
+    version = await appendDocumentVersion(client, {
+      documentId: applied.value.id,
+      revision: applied.value.revision,
+      content: applied.value.content,
+      actorType: input.actorType,
+      authorUserId: input.author.userId ?? null,
+      authorAgentLabel: input.author.agentLabel ?? null,
+      summary: input.summary,
+      sourceProposalId: input.sourceProposalId ?? null,
+      versionFamilyId: input.versionFamilyId ?? null,
+      versionFamilyTitle: input.versionFamilyTitle ?? input.summary,
+      changeHunks: input.changeHunks ?? [],
+    });
+  } catch (error) {
+    if (previous) {
+      const db = client as SupabaseLikeClient;
+      const { error: rollbackError } = (await db
+        .from("creed_documents")
+        .update({
+          content: previous.content,
+          revision: previous.revision,
+          sync_status: previous.syncStatus,
+          last_synced_content_hash: previous.lastSyncedContentHash,
+          last_synced_revision: previous.lastSyncedRevision,
+          updated_at: previous.updatedAt,
+        })
+        .eq("id", previous.id)
+        .eq("revision", applied.value.revision)) as {
+        error: { message: string } | null;
+      };
+      if (rollbackError) {
+        log.error(
+          "document.version.rollback_failed",
+          { documentId: input.documentId, revision: applied.value.revision },
+          rollbackError
+        );
+      }
+    }
+    log.error(
+      "document.version.append_failed",
+      { documentId: input.documentId, revision: applied.value.revision },
+      error
+    );
+    return {
+      ok: false,
+      code: "invalid",
+      error: "Could not record document history. The document was restored; please retry.",
+    };
+  }
 
   return { ok: true, document: applied.value, version };
 }

@@ -89,6 +89,11 @@ type EditOutcomeResponse = {
   error?: string;
 };
 
+async function readEditOutcome(response: Response): Promise<EditOutcomeResponse> {
+  const payload = (await response.json().catch(() => null)) as EditOutcomeResponse | null;
+  return payload ?? {};
+}
+
 export type DocumentHistoryJumpTarget = {
   label: string;
   before: string;
@@ -1037,7 +1042,7 @@ export function DocumentReviewPanel({
             body: JSON.stringify({ action, proposalIds }),
           }
         );
-        const payload = (await response.json()) as EditOutcomeResponse;
+        const payload = await readEditOutcome(response);
         if (!response.ok) {
           throw new Error(payload.error || `Could not ${action} the proposals.`);
         }
@@ -1070,7 +1075,7 @@ export function DocumentReviewPanel({
           body: JSON.stringify({ expectedRevision: revision }),
         }
       );
-      const payload = (await response.json()) as EditOutcomeResponse;
+      const payload = await readEditOutcome(response);
       if (!response.ok) {
         throw new Error(payload.error || "Could not revert.");
       }
@@ -1398,6 +1403,13 @@ function DocumentVersionHistoryPill({
             <div className="creed-scrollbar max-h-[60vh] divide-y divide-[var(--creed-border)] overflow-y-auto rounded-[var(--radius-lg)] border border-[var(--creed-border)] bg-[var(--creed-surface)] shadow-[0_8px_24px_rgba(28,28,26,0.04)]">
               {visibleHistoryItems.map((item) => {
                 if (item.type === "family") {
+                  const familyRevisionStart = Math.min(
+                    ...item.family.versions.map((version) => version.revision)
+                  );
+                  const isCurrent = versions[0]?.id === item.family.latestVersion.id;
+                  const revertTargetId = isCurrent
+                    ? versions.find((version) => version.revision < familyRevisionStart)?.id ?? null
+                    : item.family.latestVersion.id;
                   return (
                     <ProposalFamilyRow
                       key={item.family.id}
@@ -1408,12 +1420,12 @@ function DocumentVersionHistoryPill({
                       )}
                       open={openFamilyId === item.family.id}
                       activeProposalId={activeProposalId}
-                      isCurrent={versions[0]?.id === item.family.latestVersion.id}
-                      reverting={revertingVersion === item.family.latestVersion.id}
+                      isCurrent={isCurrent}
+                      reverting={revertTargetId ? revertingVersion === revertTargetId : false}
                       onToggle={() => toggleFamily(item.family.id)}
                       onToggleProposal={toggleHistoryProposal}
                       onJumpToChange={onJumpToChange}
-                      onRevert={() => onRevert(item.family.latestVersion.id)}
+                      onRevert={revertTargetId ? () => onRevert(revertTargetId) : undefined}
                     />
                   );
                 }
@@ -1582,13 +1594,6 @@ function proposalFamilyTitle(family: ProposalHistoryFamily) {
   return "Proposal family";
 }
 
-function proposalFamilyDefinition(family: ProposalHistoryFamily) {
-  const proposalCount = Math.max(family.entries.length, family.proposals.length);
-  const proposalLabel = proposalCount === 1 ? "1 proposal" : `${proposalCount} proposals`;
-  const versionLabel = family.versions.length === 1 ? "1 version" : `${family.versions.length} versions`;
-  return `One edit split into ${proposalLabel} across ${versionLabel}`;
-}
-
 function entryJumpTarget(entry: ProposalHistoryEntry): DocumentHistoryJumpTarget {
   return { label: entry.label, before: entry.before, after: entry.after };
 }
@@ -1619,11 +1624,11 @@ function ProposalFamilyRow({
   onToggle: () => void;
   onToggleProposal: (proposalId: string) => void;
   onJumpToChange?: (target: DocumentHistoryJumpTarget) => void;
-  onRevert: () => void;
+  onRevert?: () => void;
 }) {
   const familyTitle = proposalFamilyTitle(family);
-  const familyDefinition = proposalFamilyDefinition(family);
   const firstEntry = family.entries[0] ?? null;
+  const itemLabel = family.entries.length === 1 ? "1 item" : `${family.entries.length} items`;
   const totals = useMemo(() => {
     let added = 0;
     let removed = 0;
@@ -1657,13 +1662,8 @@ function ProposalFamilyRow({
                 {familyTitle}
               </span>
               <span className="hidden shrink-0 text-[var(--creed-text-tertiary)] sm:inline">
-                · {relativeTime(family.latestVersion.createdAt)}
+                · {itemLabel}
               </span>
-            </span>
-            <span className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-[var(--creed-text-secondary)]">
-              <span className="truncate">{familyDefinition}</span>
-              <span className="text-[var(--creed-text-tertiary)]">·</span>
-              <span>{family.entries.length === 1 ? "1 item" : `${family.entries.length} items`}</span>
             </span>
           </span>
           <span className="ml-auto mt-1 inline-flex shrink-0 items-center gap-1.5">
@@ -1675,7 +1675,8 @@ function ProposalFamilyRow({
           <span className="shrink-0 rounded-full bg-[var(--creed-surface-raised)] px-2 py-0.5 text-[11px] text-[var(--creed-text-secondary)]">
             Current
           </span>
-        ) : (
+        ) : null}
+        {onRevert ? (
           <Button
             variant="ghost"
             size="sm"
@@ -1686,7 +1687,7 @@ function ProposalFamilyRow({
             <RotateCcw className="h-3.5 w-3.5" />
             Revert
           </Button>
-        )}
+        ) : null}
         {firstEntry && onJumpToChange ? (
           <SimpleTooltip label="Jump to change">
             <Button
@@ -1734,7 +1735,7 @@ function ProposalFamilyRow({
                         {entry.label}
                       </span>
                       <span className="shrink-0 text-[12px] text-[var(--creed-text-tertiary)]">
-                        Revision {entry.revision}
+                        {relativeTime(entry.createdAt)}
                       </span>
                       <span className="inline-flex shrink-0 items-center gap-1.5">
                         <DiffBadge tone="added" count={stats.added} size="md" />
