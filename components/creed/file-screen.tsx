@@ -936,7 +936,13 @@ function DocumentPropertyBar({
 
 type DocumentDiffSegment =
   | { type: "content"; key: string; markdown: string }
-  | { type: "proposal"; key: string; proposal: DocumentProposal; conflict: boolean };
+  | {
+      type: "proposal";
+      key: string;
+      proposal: DocumentProposal;
+      proposalIds: string[];
+      conflict: boolean;
+    };
 
 function positionsOf(content: string, needle: string) {
   if (!needle) return [];
@@ -1018,7 +1024,8 @@ function buildDocumentDiffSegments(content: string, proposals: DocumentProposal[
   );
   let cursor = 0;
 
-  for (const proposal of ordered) {
+  for (let index = 0; index < ordered.length; index += 1) {
+    const proposal = ordered[index];
     const range = resolveProposalRange(content, proposal, cursor);
     if (range.start > cursor) {
       segments.push({
@@ -1028,10 +1035,29 @@ function buildDocumentDiffSegments(content: string, proposals: DocumentProposal[
       });
     }
 
+    const groupedProposals = [proposal];
+    for (let nextIndex = index + 1; nextIndex < ordered.length; nextIndex += 1) {
+      const candidate = ordered[nextIndex];
+      if (
+        candidate.hunkBeforeStart !== proposal.hunkBeforeStart ||
+        candidate.hunkBeforeEnd !== proposal.hunkBeforeEnd ||
+        candidate.hunkBefore !== proposal.hunkBefore ||
+        candidate.hunkAfter !== proposal.hunkAfter ||
+        candidate.hunkPrefix !== proposal.hunkPrefix ||
+        candidate.hunkSuffix !== proposal.hunkSuffix ||
+        candidate.conflictStatus !== proposal.conflictStatus
+      ) {
+        break;
+      }
+      groupedProposals.push(candidate);
+      index = nextIndex;
+    }
+
     segments.push({
       type: "proposal",
-      key: `proposal:${proposal.id}`,
+      key: `proposal:${groupedProposals.map((item) => item.id).join(":")}`,
       proposal,
+      proposalIds: groupedProposals.map((item) => item.id),
       conflict: range.conflict,
     });
     cursor = Math.max(cursor, range.end);
@@ -1226,22 +1252,26 @@ function DiffAvatarStack({ people }: { people: DiffPerson[] }) {
 // paragraph.
 function DiffHoverToolbar({
   proposal,
+  proposalIds,
   people,
   active,
   busy,
   conflict,
   commentCount,
   onResolve,
+  onResolveMany,
   onStartComment,
   onShowConflict,
 }: {
   proposal: DocumentProposal;
+  proposalIds: string[];
   people: DiffPerson[];
   active: boolean;
   busy: boolean;
   conflict: boolean;
   commentCount: number;
   onResolve: (proposalId: string, action: "accept" | "reject") => Promise<void>;
+  onResolveMany: (proposalIds: string[], action: "accept" | "reject") => Promise<void>;
   onStartComment: (proposalId: string) => void;
   onShowConflict: (proposalId: string) => void;
 }) {
@@ -1323,7 +1353,13 @@ function DiffHoverToolbar({
         </button>
         <button
           type="button"
-          onClick={() => void onResolve(proposal.id, "reject")}
+          onClick={() => {
+            if (proposalIds.length > 1) {
+              void onResolveMany(proposalIds, "reject");
+              return;
+            }
+            void onResolve(proposal.id, "reject");
+          }}
           disabled={busy}
           aria-label="Reject this diff"
           className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-[var(--creed-text-secondary)] transition-colors hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)] disabled:opacity-50"
@@ -1336,6 +1372,10 @@ function DiffHoverToolbar({
           onClick={() => {
             if (conflict) {
               onShowConflict(proposal.id);
+              return;
+            }
+            if (proposalIds.length > 1) {
+              void onResolveMany(proposalIds, "accept");
               return;
             }
             void onResolve(proposal.id, "accept");
@@ -1372,6 +1412,7 @@ function RenderedMarkdownSegment({ markdown }: { markdown: string }) {
 
 function DocumentProposalInlineDiff({
   proposal,
+  proposalIds,
   conflict,
   showConflictAction,
   active,
@@ -1379,11 +1420,13 @@ function DocumentProposalInlineDiff({
   busy,
   commentCount,
   onResolve,
+  onResolveMany,
   onStartComment,
   onShowConflict,
   onHover,
 }: {
   proposal: DocumentProposal;
+  proposalIds: string[];
   conflict: boolean;
   showConflictAction: boolean;
   active: boolean;
@@ -1391,6 +1434,7 @@ function DocumentProposalInlineDiff({
   busy: boolean;
   commentCount: number;
   onResolve: (proposalId: string, action: "accept" | "reject") => Promise<void>;
+  onResolveMany: (proposalIds: string[], action: "accept" | "reject") => Promise<void>;
   onStartComment: (proposalId: string) => void;
   onShowConflict: (proposalId: string) => void;
   onHover: () => void;
@@ -1400,6 +1444,7 @@ function DocumentProposalInlineDiff({
   return (
     <div
       data-document-diff-proposal-id={proposal.id}
+      data-document-diff-proposal-ids={proposalIds.join(",")}
       data-active={active ? "true" : "false"}
       data-conflict={conflict ? "true" : "false"}
       data-has-comments={commentCount > 0 ? "true" : "false"}
@@ -1412,12 +1457,14 @@ function DocumentProposalInlineDiff({
           the active/selected one. */}
       <DiffHoverToolbar
         proposal={proposal}
+        proposalIds={proposalIds}
         people={people}
         active={active}
         busy={busy}
         conflict={showConflictAction}
         commentCount={commentCount}
         onResolve={onResolve}
+        onResolveMany={onResolveMany}
         onStartComment={onStartComment}
         onShowConflict={onShowConflict}
       />
@@ -1523,6 +1570,7 @@ function splitContentFlow(markdown: string): ContentFlowPart[] {
 // highlighting continues to work.
 function InlineDocumentProposalHunk({
   proposal,
+  proposalIds,
   conflict,
   showConflictAction,
   active,
@@ -1530,11 +1578,13 @@ function InlineDocumentProposalHunk({
   busy,
   commentCount,
   onResolve,
+  onResolveMany,
   onStartComment,
   onShowConflict,
   onHover,
 }: {
   proposal: DocumentProposal;
+  proposalIds: string[];
   conflict: boolean;
   showConflictAction: boolean;
   active: boolean;
@@ -1542,6 +1592,7 @@ function InlineDocumentProposalHunk({
   busy: boolean;
   commentCount: number;
   onResolve: (proposalId: string, action: "accept" | "reject") => Promise<void>;
+  onResolveMany: (proposalIds: string[], action: "accept" | "reject") => Promise<void>;
   onStartComment: (proposalId: string) => void;
   onShowConflict: (proposalId: string) => void;
   onHover: () => void;
@@ -1551,6 +1602,7 @@ function InlineDocumentProposalHunk({
   return (
     <span
       data-document-diff-proposal-id={proposal.id}
+      data-document-diff-proposal-ids={proposalIds.join(",")}
       data-active={active ? "true" : "false"}
       data-conflict={conflict ? "true" : "false"}
       data-has-comments={commentCount > 0 ? "true" : "false"}
@@ -1562,12 +1614,14 @@ function InlineDocumentProposalHunk({
     >
       <DiffHoverToolbar
         proposal={proposal}
+        proposalIds={proposalIds}
         people={people}
         active={active}
         busy={busy}
         conflict={showConflictAction}
         commentCount={commentCount}
         onResolve={onResolve}
+        onResolveMany={onResolveMany}
         onStartComment={onStartComment}
         onShowConflict={onShowConflict}
       />
@@ -1714,15 +1768,22 @@ function DocumentProposalDiffBody({
         return;
       }
       const ids: string[] = [];
+      const collectProposalIds = (el: HTMLElement) => {
+        const grouped = el.getAttribute("data-document-diff-proposal-ids");
+        const values = grouped
+          ? grouped.split(",").map((id) => id.trim()).filter(Boolean)
+          : [el.getAttribute("data-document-diff-proposal-id")].filter((id): id is string => Boolean(id));
+        for (const id of values) {
+          if (!ids.includes(id)) ids.push(id);
+        }
+      };
       for (const block of Array.from(container.children) as HTMLElement[]) {
         if (!range.intersectsNode(block)) continue;
         if (block.matches("[data-document-diff-proposal-id]")) {
-          const id = block.getAttribute("data-document-diff-proposal-id");
-          if (id && !ids.includes(id)) ids.push(id);
+          collectProposalIds(block);
         }
         block.querySelectorAll<HTMLElement>("[data-document-diff-proposal-id]").forEach((el) => {
-          const id = el.getAttribute("data-document-diff-proposal-id");
-          if (id && !ids.includes(id) && range.intersectsNode(el)) ids.push(id);
+          if (range.intersectsNode(el)) collectProposalIds(el);
         });
       }
       setSelectedProposalIds(ids);
@@ -1976,11 +2037,20 @@ function DocumentProposalDiffBody({
       }
 
       const proposal = segment.proposal;
+      const groupedProposals = segment.proposalIds
+        .map((id) => proposals.find((candidate) => candidate.id === id))
+        .filter((item): item is DocumentProposal => Boolean(item));
       const person = resolveProposalPerson(proposal, usersById);
       const people = segment.conflict
         ? conflictPeopleByProposal.get(proposal.id) ?? [person]
-        : [person];
+        : groupedProposals.map((item) => resolveProposalPerson(item, usersById));
       const showConflictAction = conflictChoiceProposalIds.has(proposal.id);
+      const active = segment.proposalIds.includes(activeProposalId ?? "");
+      const busy = segment.proposalIds.includes(busyProposal ?? "") || busyProposal === "__bulk__";
+      const commentCount = segment.proposalIds.reduce(
+        (total, id) => total + (proposalCommentCounts.get(id) ?? 0),
+        0
+      );
       const blockHunk =
         isBlockMarkdownSlice(proposal.hunkBefore) || isBlockMarkdownSlice(proposal.hunkAfter);
       // Inside an open callout run, keep the hunk inline so it stays within the
@@ -1992,13 +2062,15 @@ function DocumentProposalDiffBody({
           <DocumentProposalInlineDiff
             key={segment.key}
             proposal={proposal}
+            proposalIds={segment.proposalIds}
             conflict={showConflictAction}
             showConflictAction={showConflictAction}
-            active={activeProposalId === proposal.id}
+            active={active}
             people={people}
-            busy={busyProposal === proposal.id}
-            commentCount={proposalCommentCounts.get(proposal.id) ?? 0}
+            busy={busy}
+            commentCount={commentCount}
             onResolve={onResolve}
+            onResolveMany={onResolveMany}
             onStartComment={onStartComment}
             onShowConflict={onShowConflict}
             onHover={onClearActive}
@@ -2009,13 +2081,15 @@ function DocumentProposalDiffBody({
           <InlineDocumentProposalHunk
             key={segment.key}
             proposal={proposal}
+            proposalIds={segment.proposalIds}
             conflict={showConflictAction}
             showConflictAction={showConflictAction}
-            active={activeProposalId === proposal.id}
+            active={active}
             people={people}
-            busy={busyProposal === proposal.id}
-            commentCount={proposalCommentCounts.get(proposal.id) ?? 0}
+            busy={busy}
+            commentCount={commentCount}
             onResolve={onResolve}
+            onResolveMany={onResolveMany}
             onStartComment={onStartComment}
             onShowConflict={onShowConflict}
             onHover={onClearActive}
@@ -2034,7 +2108,9 @@ function DocumentProposalDiffBody({
     proposalCommentCounts,
     conflictPeopleByProposal,
     conflictChoiceProposalIds,
+    proposals,
     onResolve,
+    onResolveMany,
     onStartComment,
     onShowConflict,
     onClearActive,
