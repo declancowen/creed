@@ -37,8 +37,13 @@ export function proposalIdsInBlockRange(
       typeof (node as HTMLElement).matches === "function" &&
       node.matches("[data-document-diff-proposal-id]")
     ) {
-      const id = node.getAttribute("data-document-diff-proposal-id");
-      if (id && !ids.includes(id)) ids.push(id);
+      const grouped = node.getAttribute("data-document-diff-proposal-ids");
+      const proposalIds = grouped
+        ? grouped.split(",").map((id) => id.trim()).filter(Boolean)
+        : [node.getAttribute("data-document-diff-proposal-id")].filter((id): id is string => Boolean(id));
+      for (const id of proposalIds) {
+        if (!ids.includes(id)) ids.push(id);
+      }
     }
   };
 

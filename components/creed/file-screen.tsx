@@ -936,7 +936,13 @@ function DocumentPropertyBar({
 
 type DocumentDiffSegment =
   | { type: "content"; key: string; markdown: string }
-  | { type: "proposal"; key: string; proposal: DocumentProposal; conflict: boolean };
+  | {
+      type: "proposal";
+      key: string;
+      proposal: DocumentProposal;
+      proposalIds: string[];
+      conflict: boolean;
+    };
 
 function positionsOf(content: string, needle: string) {
   if (!needle) return [];
@@ -1018,7 +1024,8 @@ function buildDocumentDiffSegments(content: string, proposals: DocumentProposal[
   );
   let cursor = 0;
 
-  for (const proposal of ordered) {
+  for (let index = 0; index < ordered.length; index += 1) {
+    const proposal = ordered[index];
     const range = resolveProposalRange(content, proposal, cursor);
     if (range.start > cursor) {
       segments.push({
@@ -1028,10 +1035,29 @@ function buildDocumentDiffSegments(content: string, proposals: DocumentProposal[
       });
     }
 
+    const groupedProposals = [proposal];
+    for (let nextIndex = index + 1; nextIndex < ordered.length; nextIndex += 1) {
+      const candidate = ordered[nextIndex];
+      if (
+        candidate.hunkBeforeStart !== proposal.hunkBeforeStart ||
+        candidate.hunkBeforeEnd !== proposal.hunkBeforeEnd ||
+        candidate.hunkBefore !== proposal.hunkBefore ||
+        candidate.hunkAfter !== proposal.hunkAfter ||
+        candidate.hunkPrefix !== proposal.hunkPrefix ||
+        candidate.hunkSuffix !== proposal.hunkSuffix ||
+        candidate.conflictStatus !== proposal.conflictStatus
+      ) {
+        break;
+      }
+      groupedProposals.push(candidate);
+      index = nextIndex;
+    }
+
     segments.push({
       type: "proposal",
-      key: `proposal:${proposal.id}`,
+      key: `proposal:${groupedProposals.map((item) => item.id).join(":")}`,
       proposal,
+      proposalIds: groupedProposals.map((item) => item.id),
       conflict: range.conflict,
     });
     cursor = Math.max(cursor, range.end);
@@ -1226,22 +1252,26 @@ function DiffAvatarStack({ people }: { people: DiffPerson[] }) {
 // paragraph.
 function DiffHoverToolbar({
   proposal,
+  proposalIds,
   people,
   active,
   busy,
   conflict,
   commentCount,
   onResolve,
+  onResolveMany,
   onStartComment,
   onShowConflict,
 }: {
   proposal: DocumentProposal;
+  proposalIds: string[];
   people: DiffPerson[];
   active: boolean;
   busy: boolean;
   conflict: boolean;
   commentCount: number;
   onResolve: (proposalId: string, action: "accept" | "reject") => Promise<void>;
+  onResolveMany: (proposalIds: string[], action: "accept" | "reject") => Promise<void>;
   onStartComment: (proposalId: string) => void;
   onShowConflict: (proposalId: string) => void;
 }) {
@@ -1323,7 +1353,13 @@ function DiffHoverToolbar({
         </button>
         <button
           type="button"
-          onClick={() => void onResolve(proposal.id, "reject")}
+          onClick={() => {
+            if (proposalIds.length > 1) {
+              void onResolveMany(proposalIds, "reject");
+              return;
+            }
+            void onResolve(proposal.id, "reject");
+          }}
           disabled={busy}
           aria-label="Reject this diff"
           className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-[var(--creed-text-secondary)] transition-colors hover:bg-[var(--creed-surface-raised)] hover:text-[var(--creed-text-primary)] disabled:opacity-50"
@@ -1336,6 +1372,10 @@ function DiffHoverToolbar({
           onClick={() => {
             if (conflict) {
               onShowConflict(proposal.id);
+              return;
+            }
+            if (proposalIds.length > 1) {
+              void onResolveMany(proposalIds, "accept");
               return;
             }
             void onResolve(proposal.id, "accept");
@@ -1372,6 +1412,7 @@ function RenderedMarkdownSegment({ markdown }: { markdown: string }) {
 
 function DocumentProposalInlineDiff({
   proposal,
+  proposalIds,
   conflict,
   showConflictAction,
   active,
@@ -1379,11 +1420,13 @@ function DocumentProposalInlineDiff({
   busy,
   commentCount,
   onResolve,
+  onResolveMany,
   onStartComment,
   onShowConflict,
   onHover,
 }: {
   proposal: DocumentProposal;
+  proposalIds: string[];
   conflict: boolean;
   showConflictAction: boolean;
   active: boolean;
@@ -1391,6 +1434,7 @@ function DocumentProposalInlineDiff({
   busy: boolean;
   commentCount: number;
   onResolve: (proposalId: string, action: "accept" | "reject") => Promise<void>;
+  onResolveMany: (proposalIds: string[], action: "accept" | "reject") => Promise<void>;
   onStartComment: (proposalId: string) => void;
   onShowConflict: (proposalId: string) => void;
   onHover: () => void;
@@ -1400,6 +1444,7 @@ function DocumentProposalInlineDiff({
   return (
     <div
       data-document-diff-proposal-id={proposal.id}
+      data-document-diff-proposal-ids={proposalIds.join(",")}
       data-active={active ? "true" : "false"}
       data-conflict={conflict ? "true" : "false"}
       data-has-comments={commentCount > 0 ? "true" : "false"}
@@ -1412,12 +1457,14 @@ function DocumentProposalInlineDiff({
           the active/selected one. */}
       <DiffHoverToolbar
         proposal={proposal}
+        proposalIds={proposalIds}
         people={people}
         active={active}
         busy={busy}
         conflict={showConflictAction}
         commentCount={commentCount}
         onResolve={onResolve}
+        onResolveMany={onResolveMany}
         onStartComment={onStartComment}
         onShowConflict={onShowConflict}
       />
@@ -1523,6 +1570,7 @@ function splitContentFlow(markdown: string): ContentFlowPart[] {
 // highlighting continues to work.
 function InlineDocumentProposalHunk({
   proposal,
+  proposalIds,
   conflict,
   showConflictAction,
   active,
@@ -1530,11 +1578,13 @@ function InlineDocumentProposalHunk({
   busy,
   commentCount,
   onResolve,
+  onResolveMany,
   onStartComment,
   onShowConflict,
   onHover,
 }: {
   proposal: DocumentProposal;
+  proposalIds: string[];
   conflict: boolean;
   showConflictAction: boolean;
   active: boolean;
@@ -1542,6 +1592,7 @@ function InlineDocumentProposalHunk({
   busy: boolean;
   commentCount: number;
   onResolve: (proposalId: string, action: "accept" | "reject") => Promise<void>;
+  onResolveMany: (proposalIds: string[], action: "accept" | "reject") => Promise<void>;
   onStartComment: (proposalId: string) => void;
   onShowConflict: (proposalId: string) => void;
   onHover: () => void;
@@ -1551,6 +1602,7 @@ function InlineDocumentProposalHunk({
   return (
     <span
       data-document-diff-proposal-id={proposal.id}
+      data-document-diff-proposal-ids={proposalIds.join(",")}
       data-active={active ? "true" : "false"}
       data-conflict={conflict ? "true" : "false"}
       data-has-comments={commentCount > 0 ? "true" : "false"}
@@ -1562,12 +1614,14 @@ function InlineDocumentProposalHunk({
     >
       <DiffHoverToolbar
         proposal={proposal}
+        proposalIds={proposalIds}
         people={people}
         active={active}
         busy={busy}
         conflict={showConflictAction}
         commentCount={commentCount}
         onResolve={onResolve}
+        onResolveMany={onResolveMany}
         onStartComment={onStartComment}
         onShowConflict={onShowConflict}
       />
@@ -1714,15 +1768,22 @@ function DocumentProposalDiffBody({
         return;
       }
       const ids: string[] = [];
+      const collectProposalIds = (el: HTMLElement) => {
+        const grouped = el.getAttribute("data-document-diff-proposal-ids");
+        const values = grouped
+          ? grouped.split(",").map((id) => id.trim()).filter(Boolean)
+          : [el.getAttribute("data-document-diff-proposal-id")].filter((id): id is string => Boolean(id));
+        for (const id of values) {
+          if (!ids.includes(id)) ids.push(id);
+        }
+      };
       for (const block of Array.from(container.children) as HTMLElement[]) {
         if (!range.intersectsNode(block)) continue;
         if (block.matches("[data-document-diff-proposal-id]")) {
-          const id = block.getAttribute("data-document-diff-proposal-id");
-          if (id && !ids.includes(id)) ids.push(id);
+          collectProposalIds(block);
         }
         block.querySelectorAll<HTMLElement>("[data-document-diff-proposal-id]").forEach((el) => {
-          const id = el.getAttribute("data-document-diff-proposal-id");
-          if (id && !ids.includes(id) && range.intersectsNode(el)) ids.push(id);
+          if (range.intersectsNode(el)) collectProposalIds(el);
         });
       }
       setSelectedProposalIds(ids);
@@ -1976,11 +2037,20 @@ function DocumentProposalDiffBody({
       }
 
       const proposal = segment.proposal;
+      const groupedProposals = segment.proposalIds
+        .map((id) => proposals.find((candidate) => candidate.id === id))
+        .filter((item): item is DocumentProposal => Boolean(item));
       const person = resolveProposalPerson(proposal, usersById);
       const people = segment.conflict
         ? conflictPeopleByProposal.get(proposal.id) ?? [person]
-        : [person];
+        : groupedProposals.map((item) => resolveProposalPerson(item, usersById));
       const showConflictAction = conflictChoiceProposalIds.has(proposal.id);
+      const active = segment.proposalIds.includes(activeProposalId ?? "");
+      const busy = segment.proposalIds.includes(busyProposal ?? "") || busyProposal === "__bulk__";
+      const commentCount = segment.proposalIds.reduce(
+        (total, id) => total + (proposalCommentCounts.get(id) ?? 0),
+        0
+      );
       const blockHunk =
         isBlockMarkdownSlice(proposal.hunkBefore) || isBlockMarkdownSlice(proposal.hunkAfter);
       // Inside an open callout run, keep the hunk inline so it stays within the
@@ -1992,13 +2062,15 @@ function DocumentProposalDiffBody({
           <DocumentProposalInlineDiff
             key={segment.key}
             proposal={proposal}
+            proposalIds={segment.proposalIds}
             conflict={showConflictAction}
             showConflictAction={showConflictAction}
-            active={activeProposalId === proposal.id}
+            active={active}
             people={people}
-            busy={busyProposal === proposal.id}
-            commentCount={proposalCommentCounts.get(proposal.id) ?? 0}
+            busy={busy}
+            commentCount={commentCount}
             onResolve={onResolve}
+            onResolveMany={onResolveMany}
             onStartComment={onStartComment}
             onShowConflict={onShowConflict}
             onHover={onClearActive}
@@ -2009,13 +2081,15 @@ function DocumentProposalDiffBody({
           <InlineDocumentProposalHunk
             key={segment.key}
             proposal={proposal}
+            proposalIds={segment.proposalIds}
             conflict={showConflictAction}
             showConflictAction={showConflictAction}
-            active={activeProposalId === proposal.id}
+            active={active}
             people={people}
-            busy={busyProposal === proposal.id}
-            commentCount={proposalCommentCounts.get(proposal.id) ?? 0}
+            busy={busy}
+            commentCount={commentCount}
             onResolve={onResolve}
+            onResolveMany={onResolveMany}
             onStartComment={onStartComment}
             onShowConflict={onShowConflict}
             onHover={onClearActive}
@@ -2034,7 +2108,9 @@ function DocumentProposalDiffBody({
     proposalCommentCounts,
     conflictPeopleByProposal,
     conflictChoiceProposalIds,
+    proposals,
     onResolve,
+    onResolveMany,
     onStartComment,
     onShowConflict,
     onClearActive,
@@ -2448,6 +2524,7 @@ export function FileScreen({
   // inline hover toolbar's Comment button can open it while the composer itself
   // stays in the rail (where there's room for the textarea).
   const [diffCommentProposalId, setDiffCommentProposalId] = useState<string | null>(null);
+  const [diffCommentFamilyId, setDiffCommentFamilyId] = useState<string | null>(null);
   const [savingDocumentProperty, setSavingDocumentProperty] = useState<DocumentPropertyName | null>(null);
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [shareUrl, setShareUrl] = useState("");
@@ -2502,6 +2579,7 @@ export function FileScreen({
       setActiveConflictProposalId(null);
       setShowAllConflictGroups(false);
       setDiffCommentProposalId(null);
+      setDiffCommentFamilyId(null);
       return;
     }
 
@@ -2527,6 +2605,7 @@ export function FileScreen({
     setActiveConflictProposalId(null);
     setShowAllConflictGroups(false);
     setDiffCommentProposalId(null);
+    setDiffCommentFamilyId(null);
     setShareUrl(
       sharedDocument.document.publicShareEnabled && sharedDocument.document.publicShareId
         ? `${window.location.origin}/share/${encodeURIComponent(sharedDocument.document.publicShareId)}`
@@ -2545,6 +2624,7 @@ export function FileScreen({
       setDocumentDiffOpen(false);
       setActiveDocumentDiffProposalId(null);
       setDiffCommentProposalId(null);
+      setDiffCommentFamilyId(null);
     }
   }, [documentMode, documentPendingProposals.length]);
 
@@ -2673,11 +2753,11 @@ export function FileScreen({
     [documentMode, state.sections]
   );
   const rootDocumentComments = useMemo(
-    () => documentComments.filter((comment) => !comment.parentId && !comment.proposalId),
+    () => documentComments.filter((comment) => !comment.parentId && !comment.proposalId && !comment.proposalFamilyId),
     [documentComments]
   );
   const rootPendingComments = useMemo(
-    () => pendingComments.filter((comment) => !comment.parentId && !comment.proposalId),
+    () => pendingComments.filter((comment) => !comment.parentId && !comment.proposalId && !comment.proposalFamilyId),
     [pendingComments]
   );
   const proposalRootCommentsByProposalId = useMemo(() => {
@@ -2696,11 +2776,35 @@ export function FileScreen({
     }
     return map;
   }, [pendingComments]);
+  const familyRootCommentsByFamilyId = useMemo(() => {
+    const map = new Map<string, DocumentComment[]>();
+    for (const comment of documentComments) {
+      if (!comment.proposalFamilyId || comment.parentId) continue;
+      map.set(comment.proposalFamilyId, [...(map.get(comment.proposalFamilyId) ?? []), comment]);
+    }
+    return map;
+  }, [documentComments]);
+  const familyPendingCommentsByFamilyId = useMemo(() => {
+    const map = new Map<string, DocumentComment[]>();
+    for (const comment of pendingComments) {
+      if (!comment.proposalFamilyId || comment.parentId) continue;
+      map.set(comment.proposalFamilyId, [...(map.get(comment.proposalFamilyId) ?? []), comment]);
+    }
+    return map;
+  }, [pendingComments]);
   const proposalCommentCountsByProposalId = useMemo(() => {
     const map = new Map<string, number>();
     for (const comment of [...documentComments, ...pendingComments]) {
       if (!comment.proposalId || comment.status !== "open") continue;
       map.set(comment.proposalId, (map.get(comment.proposalId) ?? 0) + 1);
+    }
+    return map;
+  }, [documentComments, pendingComments]);
+  const familyCommentCountsByFamilyId = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const comment of [...documentComments, ...pendingComments]) {
+      if (!comment.proposalFamilyId || comment.status !== "open") continue;
+      map.set(comment.proposalFamilyId, (map.get(comment.proposalFamilyId) ?? 0) + 1);
     }
     return map;
   }, [documentComments, pendingComments]);
@@ -3561,6 +3665,43 @@ export function FileScreen({
         body,
         parentId: null,
         proposalId: proposal.id,
+        referenceQuote: quote || null,
+        mentionedUserIds: [],
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(await readError(response, "Could not add comment."));
+    }
+    const payload = (await response.json()) as { comment?: DocumentComment };
+    if (payload.comment) {
+      setDocumentComments((rows) => [...rows, payload.comment!]);
+      toast.success("Comment added");
+    }
+    await reloadDocumentActivity(currentDocument.id);
+  }
+
+  async function createDocumentCommentForProposalFamily(familyId: string, bodyValue: string) {
+    if (!currentDocument) {
+      return;
+    }
+    const body = bodyValue.trim();
+    if (!body) {
+      return;
+    }
+    const familyProposals = documentPendingProposals.filter((proposal) => proposal.familyId === familyId);
+    const quote = familyProposals
+      .map(proposalDiffLabel)
+      .filter(Boolean)
+      .slice(0, 4)
+      .join("; ")
+      .slice(0, 280);
+    const response = await fetch(`/api/app/documents/${encodeURIComponent(currentDocument.id)}/comments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        body,
+        parentId: null,
+        proposalFamilyId: familyId,
         referenceQuote: quote || null,
         mentionedUserIds: [],
       }),
@@ -4914,13 +5055,19 @@ export function FileScreen({
                   proposalCommentsById={proposalRootCommentsByProposalId}
                   proposalPendingCommentsById={proposalPendingCommentsByProposalId}
                   proposalCommentCounts={proposalCommentCountsByProposalId}
+                  familyCommentsById={familyRootCommentsByFamilyId}
+                  familyPendingCommentsById={familyPendingCommentsByFamilyId}
+                  familyCommentCounts={familyCommentCountsByFamilyId}
                   mentionLabels={documentUsers.map((user) => user.label)}
                   commentingProposalId={diffCommentProposalId}
+                  commentingFamilyId={diffCommentFamilyId}
                   onCommentingProposalIdChange={setDiffCommentProposalId}
+                  onCommentingFamilyIdChange={setDiffCommentFamilyId}
                   onNavigate={scrollToDocumentDiffProposal}
                   onResolve={resolveDocumentDiffProposal}
                   onShowConflict={showDocumentConflict}
                   onComment={createDocumentCommentForProposal}
+                  onCommentFamily={createDocumentCommentForProposalFamily}
                   onApprovePending={(commentId) => void approvePendingComment(commentId)}
                   onRejectPending={(commentId) => void rejectPendingComment(commentId)}
                   onClose={() => setDocumentDiffSidebarOpen(false)}
@@ -5837,13 +5984,19 @@ function DocumentDiffRail({
   proposalCommentsById,
   proposalPendingCommentsById,
   proposalCommentCounts,
+  familyCommentsById,
+  familyPendingCommentsById,
+  familyCommentCounts,
   mentionLabels,
   commentingProposalId,
+  commentingFamilyId,
   onCommentingProposalIdChange,
+  onCommentingFamilyIdChange,
   onNavigate,
   onResolve,
   onShowConflict,
   onComment,
+  onCommentFamily,
   onApprovePending,
   onRejectPending,
   onClose,
@@ -5857,13 +6010,19 @@ function DocumentDiffRail({
   proposalCommentsById: Map<string, DocumentComment[]>;
   proposalPendingCommentsById: Map<string, DocumentComment[]>;
   proposalCommentCounts: Map<string, number>;
+  familyCommentsById: Map<string, DocumentComment[]>;
+  familyPendingCommentsById: Map<string, DocumentComment[]>;
+  familyCommentCounts: Map<string, number>;
   mentionLabels: string[];
   commentingProposalId: string | null;
+  commentingFamilyId: string | null;
   onCommentingProposalIdChange: (proposalId: string | null) => void;
+  onCommentingFamilyIdChange: (familyId: string | null) => void;
   onNavigate: (proposalId: string) => void;
   onResolve: (proposalId: string, action: "accept" | "reject") => Promise<void>;
   onShowConflict: (proposalId: string) => void;
   onComment: (proposal: DocumentProposal, body: string) => Promise<void>;
+  onCommentFamily: (familyId: string, body: string) => Promise<void>;
   onApprovePending: (commentId: string) => void;
   onRejectPending: (commentId: string) => void;
   onClose: () => void;
@@ -5940,6 +6099,21 @@ function DocumentDiffRail({
     }
   }
 
+  async function submitFamilyComment(familyId: string) {
+    const body = commentBody.trim();
+    if (!body || commentingBusy) return;
+    try {
+      setCommentingBusy(true);
+      await onCommentFamily(familyId, body);
+      setCommentBody("");
+      onCommentingFamilyIdChange(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not add comment.");
+    } finally {
+      setCommentingBusy(false);
+    }
+  }
+
   const totals = useMemo(() => {
     let added = 0;
     let removed = 0;
@@ -5972,6 +6146,36 @@ function DocumentDiffRail({
     }
     return rows.sort((left, right) => right.comment.createdAt.localeCompare(left.comment.createdAt));
   }, [proposals, proposalCommentsById, proposalPendingCommentsById]);
+  const familyGroups = useMemo(() => {
+    const byFamily = new Map<string, DocumentProposal[]>();
+    for (const proposal of proposals) {
+      byFamily.set(proposal.familyId, [...(byFamily.get(proposal.familyId) ?? []), proposal]);
+    }
+    const familyIds = new Set<string>([
+      ...byFamily.keys(),
+      ...familyCommentsById.keys(),
+      ...familyPendingCommentsById.keys(),
+    ]);
+    return Array.from(familyIds)
+      .map((familyId) => {
+        const familyProposals = (byFamily.get(familyId) ?? []).sort((left, right) => left.hunkIndex - right.hunkIndex);
+        const comments = familyCommentsById.get(familyId) ?? [];
+        const pendingComments = familyPendingCommentsById.get(familyId) ?? [];
+        return {
+          familyId,
+          proposals: familyProposals,
+          comments,
+          pendingComments,
+          commentCount: familyCommentCounts.get(familyId) ?? comments.length + pendingComments.length,
+        };
+      })
+      .filter((group) => group.proposals.length > 1 || group.comments.length > 0 || group.pendingComments.length > 0)
+      .sort((left, right) => {
+        const leftTime = left.proposals[0]?.createdAt ?? left.comments[0]?.createdAt ?? "";
+        const rightTime = right.proposals[0]?.createdAt ?? right.comments[0]?.createdAt ?? "";
+        return rightTime.localeCompare(leftTime);
+      });
+  }, [familyCommentCounts, familyCommentsById, familyPendingCommentsById, proposals]);
 
   const navigateToRailComment = useCallback(
     (proposalId: string, commentId: string) => {
@@ -6050,6 +6254,141 @@ function DocumentDiffRail({
               ))
             ) : proposals.length ? (
               <>
+                {familyGroups.length > 0 ? (
+                  <div className="mb-2 space-y-2">
+                    {familyGroups.map((family) => {
+                      const commenting = commentingFamilyId === family.familyId;
+                      const label =
+                        family.proposals[0]?.summary ||
+                        family.proposals[0]?.classification ||
+                        "Proposal family";
+                      return (
+                        <div
+                          key={family.familyId}
+                          className="rounded-[10px] border border-[var(--creed-border)] bg-[var(--creed-surface)] p-2.5"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="text-[12px] font-medium text-[var(--creed-text-primary)]">
+                                {label}
+                              </div>
+                              <div className="mt-1 text-[11px] text-[var(--creed-text-tertiary)]">
+                                {family.proposals.length} linked {family.proposals.length === 1 ? "proposal" : "proposals"}
+                              </div>
+                            </div>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className={cn(
+                                "h-6 gap-1 rounded-md px-1.5 text-[11.5px]",
+                                commenting
+                                  ? "bg-[var(--creed-surface-raised)] text-[var(--creed-text-primary)]"
+                                  : "text-[var(--creed-text-secondary)] hover:text-[var(--creed-text-primary)]"
+                              )}
+                              disabled={commentingBusy}
+                              onClick={() => {
+                                onCommentingProposalIdChange(null);
+                                onCommentingFamilyIdChange(commenting ? null : family.familyId);
+                                setCommentBody("");
+                              }}
+                            >
+                              <MessageSquare className="h-3.5 w-3.5" />
+                              {family.commentCount > 0 ? <span>{family.commentCount}</span> : <span>Comment</span>}
+                            </Button>
+                          </div>
+                          {family.proposals.length ? (
+                            <div className="mt-2 flex flex-wrap gap-1.5">
+                              {family.proposals.map((proposal) => (
+                                <button
+                                  key={proposal.id}
+                                  type="button"
+                                  onClick={() => onNavigate(proposal.id)}
+                                  className="max-w-full truncate rounded-full bg-[var(--creed-surface-raised)] px-2 py-0.5 text-[10.5px] font-medium text-[var(--creed-text-secondary)] transition hover:text-[var(--creed-text-primary)]"
+                                >
+                                  {proposalDiffLabel(proposal)}
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
+                          {family.comments.length || family.pendingComments.length ? (
+                            <div className="mt-2 space-y-2 rounded-[10px] border border-[var(--creed-border)]/70 bg-[var(--creed-background)] p-2">
+                              {[...family.comments, ...family.pendingComments].map((comment) => {
+                                const pending = comment.proposalStatus === "pending";
+                                return (
+                                  <div key={comment.id} className="rounded-lg px-2 py-1.5">
+                                    <div className="flex items-center justify-between gap-2 text-[11px] text-[var(--creed-text-tertiary)]">
+                                      <span className="truncate font-medium text-[var(--creed-text-secondary)]">
+                                        {pending ? `${comment.proposedByAgentLabel || "Agent"} · pending` : comment.authorLabel}
+                                      </span>
+                                      <span className="shrink-0">{formatDocumentTimestamp(comment.createdAt)}</span>
+                                    </div>
+                                    <div className="mt-1 text-[12px] leading-5 text-[var(--creed-text-primary)]">
+                                      <MentionText text={comment.body} mentionLabels={mentionLabels} />
+                                    </div>
+                                    {pending ? (
+                                      <div className="mt-2 flex items-center justify-end gap-1.5">
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          className="h-6 gap-1 rounded-md px-2 text-[11.5px] text-[var(--creed-text-secondary)] hover:text-[var(--creed-text-primary)]"
+                                          onClick={() => onRejectPending(comment.id)}
+                                        >
+                                          <X className="h-3.5 w-3.5" />
+                                          Reject
+                                        </Button>
+                                        <Button
+                                          size="sm"
+                                          className="h-6 gap-1 rounded-md bg-[var(--creed-accent)] px-2 text-[11.5px] text-white shadow-none hover:bg-[var(--creed-accent-hover)]"
+                                          onClick={() => onApprovePending(comment.id)}
+                                        >
+                                          <Check className="h-3.5 w-3.5" />
+                                          Share
+                                        </Button>
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ) : null}
+                          {commenting ? (
+                            <div className="mt-2 space-y-2">
+                              <Textarea
+                                value={commentBody}
+                                onChange={(event) => setCommentBody(event.target.value)}
+                                placeholder="Comment on this proposal family"
+                                className="min-h-16 resize-none rounded-lg border-[var(--creed-border)] bg-[var(--creed-background)] text-[12px]"
+                              />
+                              <div className="flex justify-end gap-1.5">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-7 rounded-md px-2 text-[12px]"
+                                  disabled={commentingBusy}
+                                  onClick={() => {
+                                    onCommentingFamilyIdChange(null);
+                                    setCommentBody("");
+                                  }}
+                                >
+                                  Cancel
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  className="h-7 gap-1.5 rounded-md bg-[var(--creed-accent)] px-2.5 text-[12px] text-white hover:bg-[var(--creed-accent-hover)]"
+                                  disabled={!commentBody.trim() || commentingBusy}
+                                  onClick={() => void submitFamilyComment(family.familyId)}
+                                >
+                                  {commentingBusy ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
+                                  Save comment
+                                </Button>
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
                 {commentActivity.length > 0 ? (
                   <div className="mb-2 rounded-[10px] border border-[var(--creed-border)] bg-[var(--creed-surface)] p-2.5">
                     <div className="flex items-center justify-between gap-2 px-0.5">

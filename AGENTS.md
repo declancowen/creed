@@ -24,6 +24,17 @@ Agents working through MCP must:
   the whole workspace regardless of nesting (each document reports its
   `folderId`/`path`); use `creed_get_folder` (by id or slug) to inspect one
   folder plus the child folders and documents it directly contains;
+- inspect large shared documents with `creed_outline_document`,
+  `creed_read_document_block`, and `creed_search_document` when reading the full
+  body would be too large for the agent context;
+- use `creed_read_document_digest` first when you need whole-document awareness
+  for a large document without reading the full Markdown body;
+- use `creed_update_document_patch` for exact block replacements in large
+  documents, and `creed_update_document` for normal full-body content changes;
+- never ask the user to paste a large document just because
+  `creed_read_document` is too large; use the digest, outline, block, search,
+  and patch tools. If those tools are missing, the active MCP client must
+  reconnect or reinitialize Creed to refresh its tool list;
 - read current comments before changing a document when review context matters;
 - read hunk-level proposal diffs with `creed_list_document_proposals` when a
   task involves proposals, conflicts, or review history;
@@ -40,14 +51,16 @@ Agents working through MCP must:
   `proposalCount` in the tool result to know what happened; do not assume an
   edit was applied;
 - add comments for questions, uncertainty, review notes, and suggested changes
-  that should not be applied silently; comments you add through MCP are recorded
-  as private pending proposals that the user reviews and approves before anyone
-  else sees them, and once approved they appear as the user's own comment (never
-  labelled as an agent);
-- add comments/replies to either document content or a proposal diff; pass
-  `proposalId` when the comment belongs to a specific diff/proposal. Agents may
-  read proposals created by the current user or by others, but must not edit or
-  delete other people's proposals;
+  that should not be applied silently; comments you add through MCP are pending
+  user-approval comments (private until the user approves them), and once
+  approved they appear as the user's own comment (never labelled as an agent);
+- add comments/replies to document content, a specific proposal diff, or a
+  proposal family. Use `creed_create_document_comment` only for document-content
+  comments. If the note is about a proposed edit, create or find the proposal
+  first, then use `creed_create_proposal_comment` with `proposalId` for one diff
+  or `proposalFamilyId` for the whole linked family.
+  Agents may read proposals created by the current user or by others, but must
+  not edit or delete other people's proposals;
 - edit, delete, resolve, or reopen only comments/replies authored by the OAuth
   user whose token the agent is using; do not modify other people's comments;
 - mention a user only when their attention is actually needed (a mention in a
@@ -110,8 +123,9 @@ shown grouped in version history; expanding a family reveals the individual
 hunks and selecting one shows only that diff. Proposal/change family titles
 should be short descriptive sentence fragments, usually under 72 characters,
 rather than vague labels like "Header update" or paragraph-length summaries.
-When calling `creed_update_document` through MCP, pass that family title as
-`changeTitle` when you can name the change clearly.
+When calling `creed_update_document` or `creed_update_document_patch` through
+MCP, pass that family title as `changeTitle` when you can name the change
+clearly.
 
 Tables and mermaid blocks parse in `lib/rich-text.ts` (`markdownToRichHtml`) and
 serialize back through `lib/creed-data.ts` (`richHtmlToMarkdown`); the editor
